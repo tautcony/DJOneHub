@@ -10,7 +10,7 @@
       if (theme === "light" || theme === "dark") document.documentElement.dataset.theme = theme;
     } catch (_) {}
   </script>
-  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/style.css?v=20260729-gps-ui">
 </head>
 <body>
   <header class="app-header">
@@ -25,8 +25,20 @@
         <button class="theme-option" type="button" data-theme-option="dark" aria-pressed="false">深色</button>
         <button class="theme-option" type="button" data-theme-option="auto" aria-pressed="true">自动</button>
       </div>
-      <button id="workmode-sms" class="secondary compact" type="button">短信模式</button>
-      <button id="workmode-network" class="secondary compact" type="button">上网模式</button>
+      <div class="network-policy-control">
+        <span class="network-policy-copy">
+          <strong>4G</strong>
+        </span>
+        <button id="cellular-policy-toggle" class="network-policy-toggle" type="button" role="switch" aria-checked="true" aria-label="4G" title="关闭后强制禁止 Mac 使用 4G；短信和来电监控不受影响">
+          <span class="switch-thumb" aria-hidden="true"></span>
+        </button>
+      </div>
+      <div class="network-policy-control gps-policy-control">
+        <span class="network-policy-copy"><strong>GPS</strong></span>
+        <button id="gps-header-toggle" class="network-policy-toggle" type="button" role="switch" aria-checked="false" aria-label="GPS 定位" title="默认关闭；开启后仅在本机读取定位信息">
+          <span class="switch-thumb" aria-hidden="true"></span>
+        </button>
+      </div>
       <button id="refresh" class="compact icon-button" title="刷新状态" aria-label="刷新状态">↻</button>
     </div>
   </header>
@@ -39,7 +51,7 @@
       <div><span>信号</span><strong id="signal">--</strong></div>
       <div><span>网络</span><strong id="network-mode">--</strong></div>
       <div><span>SIM</span><strong id="sim">--</strong></div>
-      <div><span>工作模式</span><strong id="work-mode">--</strong></div>
+      <div><span>运行策略</span><strong id="work-mode">--</strong></div>
       <div><span>当前下载</span><strong id="traffic-rx-rate">--</strong></div>
       <div><span>当前上传</span><strong id="traffic-tx-rate">--</strong></div>
       <div><span>本次下载流量</span><strong id="traffic-session-rx">--</strong></div>
@@ -50,10 +62,30 @@
     <section id="hardware-details" class="hardware-details" hidden></section>
     <p id="workmode-status" class="inline-status" hidden></p>
 
+    <section id="call-panel" class="call-panel" aria-live="polite">
+      <div class="call-panel-heading">
+        <div><span class="section-kicker">CALL MONITOR</span><h2>来电监控</h2></div>
+        <small id="call-monitor-status">正在连接模块</small>
+      </div>
+      <div id="active-call" class="active-call" hidden>
+        <div>
+          <span id="active-call-label">正在来电</span>
+          <strong id="active-call-number">未知号码</strong>
+          <small id="active-call-time"></small>
+        </div>
+        <button id="reject-call" class="danger" type="button">拒接</button>
+      </div>
+      <details class="call-history-panel">
+        <summary><span>最近通话记录</span><small id="call-history-count">0 条</small></summary>
+        <div id="call-history" class="list empty">暂无记录</div>
+      </details>
+    </section>
+
     <nav class="task-nav" aria-label="功能导航">
       <button class="tab active" data-view="sms"><span>短信</span><small>收件箱</small></button>
       <button class="tab" data-view="esim"><span>eSIM/卡片</span><small>Profile</small></button>
       <button class="tab" data-view="network"><span>网络</span><small>4G USB</small></button>
+      <button class="tab" data-view="gps"><span>定位</span><small>GNSS</small></button>
       <button class="tab" data-view="at"><span>AT 调试</span><small>诊断</small></button>
     </nav>
 
@@ -73,6 +105,20 @@
       </div>
       <p id="sms-status" class="inline-status">尚未读取短信</p>
       <div id="sms-list" class="list empty">暂无短信</div>
+    </section>
+
+    <section id="gps" class="view">
+      <div class="view-intro"><div><span class="section-kicker">LOCAL GNSS</span><h2>定位服务</h2></div><p>默认关闭，仅在本机显示坐标；定位期间每 15 秒刷新一次。</p></div>
+      <div class="section-heading">
+        <h2>当前位置</h2>
+        <div class="heading-actions">
+          <button id="gps-refresh" class="secondary" type="button">立即刷新</button>
+          <button id="gps-toggle" type="button">启动定位</button>
+        </div>
+      </div>
+      <p id="gps-status" class="inline-status">定位服务未启动。</p>
+      <div id="gps-result" class="diagnostic-grid" hidden></div>
+      <p class="inline-status">室内可能无法获得定位。停止定位后，模块将不再持续搜索卫星。</p>
     </section>
 
     <section id="esim" class="view">
@@ -133,15 +179,8 @@
         <button id="check-proxy-route" class="secondary" type="button">检测代理</button>
       </div>
       <div id="network-checks" class="list empty">尚未检测</div>
-      <h2 class="subheading">USB 网卡模式</h2>
-      <div class="control-panel">
-        <button id="usbnet-mode-0" class="secondary" type="button">模式 0 · 短信/管理</button>
-        <button id="usbnet-mode-1" class="secondary" type="button">模式 1 · 4G 网卡</button>
-        <button id="usbnet-mode-2" class="secondary" type="button">模式 2 · 实验</button>
-        <button id="usbnet-mode-3" class="secondary" type="button">模式 3 · 实验</button>
-        <button id="reboot-module" class="secondary danger" type="button">重启模块</button>
-      </div>
-      <p class="inline-status">模式 0 适合短信和 AT 管理；模式 1 是目前确认可用的 USB 网卡模式。切换 usbnet 后通常需要重启模块。</p>
+      <h2 class="subheading">网络策略</h2>
+      <p class="inline-status">模块固定保持 usbnet=1，短信、来电监控和 4G 网卡同时在线。macOS 优先使用 Wi‑Fi，Wi‑Fi 不可用时自动使用 4G，不再切换模块模式或重启模块。</p>
       <h2 class="subheading">macOS 网络接口</h2>
       <div id="network-interfaces" class="list empty">尚未读取接口</div>
     </section>
@@ -171,6 +210,6 @@
     </form>
   </div>
   <div id="notice" role="status" aria-live="polite"></div>
-  <script src="/app.js"></script>
+  <script src="/app.js?v=20260729-gps-ui"></script>
 </body>
 </html>

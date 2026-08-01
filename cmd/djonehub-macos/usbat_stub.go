@@ -22,3 +22,7 @@ func (u *usbAT) Command(_ string, _ time.Duration) (string, error) {
 func (u *usbAT) CommandWithPrompt(_ string, _ []byte, _ time.Duration) (string, error) {
 	return "", errors.New("USB AT is unavailable in this build")
 }
+
+func (u *usbAT) Description() string {
+	return "USB AT (unavailable)"
+}

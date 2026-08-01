@@ -4,6 +4,10 @@
 # Build outputs
 /dist/
 /bin/
+**/.build/
+**/dist/
+backups/
+.cache/
 *.test
 *.out
 
@@ -18,4 +22,3 @@
 
 # Frontend dependencies are not used by the native DJOneHub page
 node_modules/
-

@@ -64,7 +64,42 @@ func TestParseUSBATOperator(t *testing.T) {
 				t.Fatalf("parseUSBATOperator(%q) = %q, want %q", tt.response, got, tt.want)
 			}
 		})
+}
+
+func TestParseMacNetworkServices(t *testing.T) {
+	input := `An asterisk (*) denotes that a network service is disabled.
+(1) Wi-Fi
+(Hardware Port: Wi-Fi, Device: en0)
+
+(2) Baiwang 2
+(Hardware Port: Baiwang, Device: en8)
+
+(*) Baiwang
+(Hardware Port: Baiwang, Device: en10)
+`
+	services := parseMacNetworkServices(input)
+	if len(services) != 3 {
+		t.Fatalf("service count = %d, want 3", len(services))
 	}
+	if services[1].Name != "Baiwang 2" || services[1].Device != "en8" ||
+		services[1].Disabled || !isDJICellularService(services[1]) {
+		t.Fatalf("active cellular service = %+v", services[1])
+	}
+	if !services[2].Disabled || !isDJICellularService(services[2]) {
+		t.Fatalf("disabled cellular service = %+v", services[2])
+	}
+}
+
+func TestParseMacIPv4ServiceInfo(t *testing.T) {
+	info := parseMacIPv4ServiceInfo(`DHCP Configuration
+IP address: 192.168.225.29
+Subnet mask: 255.255.255.0
+Router: 192.168.225.1
+`)
+	if info.Address != "192.168.225.29" || info.Subnet != "255.255.255.0" {
+		t.Fatalf("IPv4 service info = %+v", info)
+	}
+}
 }
 
 func TestInitUSBATESIMManagerAfterDelayedUSBOpen(t *testing.T) {

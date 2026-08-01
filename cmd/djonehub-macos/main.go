@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -95,6 +96,21 @@ type app struct {
 	smsLastPoll      time.Time
 	smsLastPollError string
 
+	callMu            sync.RWMutex
+	activeCall        *callRecord
+	callHistory       []callRecord
+	callPollInterval  time.Duration
+	callLastPoll      time.Time
+	callLastPollError string
+	callConfigured    bool
+	callNotifier      func(callRecord)
+
+	gpsMu          sync.RWMutex
+	gpsEnabled     bool
+	gpsLastFix     *gpsFix
+	gpsLastChecked time.Time
+	gpsLastError   string
+
 	profileNotesMu     sync.Mutex
 	profileNotes       map[string]profileNote
 	profileNotesLoaded bool
@@ -104,6 +120,14 @@ type app struct {
 
 	trafficMu        sync.Mutex
 	trafficBaselines map[string]networkByteCounters
+
+	networkPolicyMu     sync.Mutex
+	networkPolicyLoaded bool
+	force4GOff          bool
+	disabled4GServices  []string
+	networkPolicyPath   string
+
+	networkRepairMu sync.Mutex
 }
 
 type usbInterfaceStatus struct {
@@ -180,6 +204,11 @@ type networkCheckResult struct {
 	Detail  string `json:"detail"`
 }
 
+type cellularPolicyStatus struct {
+	ForceOff bool     `json:"force_off"`
+	Services []string `json:"services"`
+}
+
 func main() {
 	var port string
 	var listen string
@@ -210,6 +239,7 @@ func main() {
 				smsPollInterval:  8 * time.Second,
 				smsAutoCleanupME: true,
 				smsReassembler:   smscodec.NewReassembler(),
+				callPollInterval: 3 * time.Second,
 			}
 			if usbDevice != nil {
 				log.Printf("DJI USB device detected without AT serial port: %s %s (%s:%s)",
@@ -223,9 +253,13 @@ func main() {
 				defer usbATDevice.Close()
 				log.Printf("USB AT bridge opened on DJI %s", usbATDevice.Description())
 				instance.initUSBATESIMManager()
+				instance.ensureCellularDHCP()
 			}
 			log.Printf("modem discovery skipped: %v", err)
 			go instance.startSMSPoller(context.Background())
+			go instance.startCallPoller(context.Background())
+			go instance.startGPSPoller(context.Background())
+			go instance.syncGPSState()
 			serve(instance, listen)
 			return
 		}
@@ -249,7 +283,11 @@ func main() {
 		log.Fatalf("create modem manager: %v", err)
 	}
 
-	instance := &app{modem: manager, port: port, smsPollInterval: 8 * time.Second, smsAutoCleanupME: true}
+	instance := &app{
+		modem: manager, port: port,
+		smsPollInterval: 8 * time.Second, smsAutoCleanupME: true,
+		callPollInterval: 3 * time.Second,
+	}
 	manager.SetSMSCallback(instance.recordSMS)
 	if err := manager.Start(); err != nil {
 		log.Fatalf("open modem on %s: %v", port, err)
@@ -274,6 +312,9 @@ func main() {
 	}
 
 	go manager.CheckAllSMS()
+	go instance.startCallPoller(context.Background())
+	go instance.startGPSPoller(context.Background())
+	go instance.syncGPSState()
 
 	serve(instance, listen)
 }
@@ -326,6 +367,9 @@ func serve(instance *app, listen string) {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if !instance.demo {
+		go instance.startCellularPolicyGuard(ctx)
+	}
 
 	if !instance.demo {
 		log.Printf("DJOneHub is using %s", instance.port)
@@ -354,9 +398,10 @@ func serve(instance *app, listen string) {
 func newDemoApp() *app {
 	now := time.Now()
 	return &app{
-		demo:            true,
-		port:            "Demo · Quectel EG25-G",
-		smsPollInterval: 8 * time.Second,
+		demo:             true,
+		port:             "Demo · Quectel EG25-G",
+		smsPollInterval:  8 * time.Second,
+		callPollInterval: 3 * time.Second,
 		sms: []receivedSMS{
 			{
 				Sender:    "10086",
@@ -661,6 +706,7 @@ func (a *app) ensureUSBAT() error {
 	// The first open may fail while USB is re-enumerating. When a later poll
 	// succeeds, rebuild the eSIM service that startup could not create.
 	a.initUSBATESIMManager()
+	a.ensureCellularDHCP()
 	return nil
 }
 
@@ -690,6 +736,9 @@ func (a *app) markUSBATDetached(reason string) {
 	a.discoveryError = "DJI USB device is not connected"
 	a.usbATBackoffUntil = time.Now().Add(2 * time.Second)
 	a.usbATBackoffErr = reason
+	a.callMu.Lock()
+	a.callConfigured = false
+	a.callMu.Unlock()
 	if manager, _ := a.currentESIMManager(); manager != nil {
 		manager.NotifyModemReset()
 	}
@@ -704,9 +753,17 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("POST /api/sms/send", a.sendSMS)
 	mux.HandleFunc("POST /api/sms/refresh", a.refreshSMS)
 	mux.HandleFunc("POST /api/sms/clear-module", a.clearModuleSMS)
+	mux.HandleFunc("GET /api/calls/status", a.callStatus)
+	mux.HandleFunc("POST /api/calls/reject", a.rejectCall)
+	mux.HandleFunc("GET /api/gps", a.gpsStatus)
+	mux.HandleFunc("POST /api/gps/start", a.startGPS)
+	mux.HandleFunc("POST /api/gps/stop", a.stopGPS)
+	mux.HandleFunc("POST /api/gps/refresh", a.refreshGPS)
 	mux.HandleFunc("POST /api/at", a.executeAT)
 	mux.HandleFunc("GET /api/network", a.networkDiagnostic)
 	mux.HandleFunc("GET /api/network/traffic", a.networkTraffic)
+	mux.HandleFunc("GET /api/network/cellular-policy", a.getCellularPolicy)
+	mux.HandleFunc("POST /api/network/cellular-policy", a.setCellularPolicy)
 	mux.HandleFunc("POST /api/network/check-4g", a.check4GRoute)
 	mux.HandleFunc("POST /api/network/check-proxy", a.checkProxyRoute)
 	mux.HandleFunc("POST /api/network/usbnet", a.setUSBNetMode)
@@ -1408,6 +1465,11 @@ func (a *app) networkTraffic(w http.ResponseWriter, _ *http.Request) {
 	snapshot := networkTrafficSnapshot{
 		SampledAtMS: time.Now().UnixMilli(),
 	}
+	if policy, err := a.cellularPolicyStatus(); err == nil && policy.ForceOff {
+		snapshot.Error = "4G 已关闭"
+		writeJSON(w, http.StatusOK, snapshot)
+		return
+	}
 
 	interfaces := discoverMacNetworkInterfaces()
 	name := selectUSBTrafficInterface(interfaces, discoverMacDefaultRoute())
@@ -1528,6 +1590,363 @@ func (a *app) checkProxyRoute(w http.ResponseWriter, _ *http.Request) {
 		Summary: "代理响应异常",
 		Detail:  fmt.Sprintf("127.0.0.1:7890 返回 %s", resp.Status),
 	})
+}
+
+type macNetworkService struct {
+	Name         string
+	HardwarePort string
+	Device       string
+	Disabled     bool
+}
+
+func discoverMacNetworkServices() ([]macNetworkService, error) {
+	out, err := exec.Command("/usr/sbin/networksetup", "-listnetworkserviceorder").CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("读取 macOS 网络服务失败: %s", strings.TrimSpace(string(out)))
+	}
+	return parseMacNetworkServices(string(out)), nil
+}
+
+func parseMacNetworkServices(output string) []macNetworkService {
+	header := regexp.MustCompile(`^\((\*|\d+)\)\s+(.+)$`)
+	detail := regexp.MustCompile(`^\(Hardware Port:\s*([^,]+),\s*Device:\s*([^)]+)\)$`)
+	lines := strings.Split(strings.ReplaceAll(output, "\r\n", "\n"), "\n")
+	var services []macNetworkService
+	for index := 0; index+1 < len(lines); index++ {
+		match := header.FindStringSubmatch(strings.TrimSpace(lines[index]))
+		if len(match) != 3 {
+			continue
+		}
+		info := detail.FindStringSubmatch(strings.TrimSpace(lines[index+1]))
+		if len(info) != 3 {
+			continue
+		}
+		services = append(services, macNetworkService{
+			Name:         strings.TrimSpace(match[2]),
+			HardwarePort: strings.TrimSpace(info[1]),
+			Device:       strings.TrimSpace(info[2]),
+			Disabled:     match[1] == "*",
+		})
+	}
+	return services
+}
+
+func isDJICellularService(service macNetworkService) bool {
+	return strings.EqualFold(strings.TrimSpace(service.HardwarePort), "Baiwang") &&
+		regexp.MustCompile(`^en\d+$`).MatchString(service.Device)
+}
+
+func setMacNetworkServiceEnabled(name string, enabled bool) error {
+	value := "off"
+	if enabled {
+		value = "on"
+	}
+	out, err := exec.Command("/usr/sbin/networksetup", "-setnetworkserviceenabled", name, value).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s: %s", name, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func renewMacNetworkServiceDHCP(name string) error {
+	out, err := exec.Command("/usr/sbin/networksetup", "-setdhcp", name).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s: %s", name, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// ensureCellularDHCP renews DHCP on the DJI cellular network service when its
+// USB network interface has no usable IPv4 address. It runs after the USB AT
+// bridge reopens so a re-enumerated module regains its 4G fallback route
+// without user interaction.
+func (a *app) ensureCellularDHCP() {
+	if a.demo || a.modem != nil {
+		return
+	}
+	a.networkRepairMu.Lock()
+	defer a.networkRepairMu.Unlock()
+
+	services, err := discoverMacNetworkServices()
+	if err != nil {
+		log.Printf("cellular DHCP repair: %v", err)
+		return
+	}
+	var target string
+	for _, service := range services {
+		if isDJICellularService(service) && !service.Disabled {
+			target = service.Name
+			break
+		}
+	}
+	if target == "" {
+		log.Printf("cellular DHCP repair: no enabled DJI cellular network service")
+		return
+	}
+	if info, err := readMacIPv4ServiceInfo(target); err == nil {
+		log.Printf("cellular DHCP repair: %s already has IPv4 %s", target, info.Address)
+		return
+	}
+	const attempts = 2
+	for attempt := 1; attempt <= attempts; attempt++ {
+		if err := renewMacNetworkServiceDHCP(target); err != nil {
+			log.Printf("cellular DHCP repair: renew DHCP for %s failed: %v", target, err)
+			return
+		}
+		info, waitErr := waitForMacIPv4Service(target, 15*time.Second)
+		if waitErr == nil {
+			log.Printf("cellular DHCP repair: %s -> %s", target, info.Address)
+			return
+		}
+		log.Printf("cellular DHCP repair: attempt %d/2: %v", attempt, waitErr)
+	}
+}
+
+type macIPv4ServiceInfo struct {
+	Address string
+	Subnet  string
+}
+
+func parseMacIPv4ServiceInfo(output string) macIPv4ServiceInfo {
+	var info macIPv4ServiceInfo
+	for _, line := range strings.Split(strings.ReplaceAll(output, "\r\n", "\n"), "\n") {
+		key, value, found := strings.Cut(line, ":")
+		if !found {
+			continue
+		}
+		switch strings.TrimSpace(key) {
+		case "IP address":
+			info.Address = strings.TrimSpace(value)
+		case "Subnet mask":
+			info.Subnet = strings.TrimSpace(value)
+		}
+	}
+	return info
+}
+
+func readMacIPv4ServiceInfo(name string) (macIPv4ServiceInfo, error) {
+	out, err := exec.Command("/usr/sbin/networksetup", "-getinfo", name).CombinedOutput()
+	if err != nil {
+		return macIPv4ServiceInfo{}, fmt.Errorf("%s: %s", name, strings.TrimSpace(string(out)))
+	}
+	info := parseMacIPv4ServiceInfo(string(out))
+	address := net.ParseIP(info.Address)
+	if address == nil || address.IsUnspecified() || address.IsLinkLocalUnicast() || net.ParseIP(info.Subnet) == nil {
+		return macIPv4ServiceInfo{}, fmt.Errorf("%s: 4G 网卡尚未取得有效 IPv4 地址", name)
+	}
+	return info, nil
+}
+
+func waitForMacIPv4Service(name string, timeout time.Duration) (macIPv4ServiceInfo, error) {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for {
+		info, err := readMacIPv4ServiceInfo(name)
+		if err == nil {
+			return info, nil
+		}
+		lastErr = err
+		if time.Now().After(deadline) {
+			return macIPv4ServiceInfo{}, lastErr
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+}
+
+func blockMacNetworkServiceRoute(name string, info macIPv4ServiceInfo) error {
+	// Keep the USB ECM interface and its local address alive, but point its
+	// router at itself. macOS therefore cannot use it as an internet fallback.
+	// Restoring DHCP later returns the real QDC507 gateway without disabling
+	// the network service, which avoids dropping the ECM carrier.
+	out, err := exec.Command(
+		"/usr/sbin/networksetup",
+		"-setmanual",
+		name,
+		info.Address,
+		info.Subnet,
+		info.Address,
+	).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s: %s", name, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func (a *app) loadNetworkPolicyLocked() error {
+	if a.networkPolicyLoaded {
+		return nil
+	}
+	if a.networkPolicyPath == "" {
+		configDir, err := os.UserConfigDir()
+		if err != nil {
+			return err
+		}
+		a.networkPolicyPath = filepath.Join(configDir, "DJOneHub", "network-policy.json")
+	}
+	var state cellularPolicyStatus
+	data, err := os.ReadFile(a.networkPolicyPath)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if len(data) > 0 {
+		if err := json.Unmarshal(data, &state); err != nil {
+			return err
+		}
+	}
+	a.force4GOff = state.ForceOff
+	a.disabled4GServices = append([]string(nil), state.Services...)
+	a.networkPolicyLoaded = true
+	return nil
+}
+
+func (a *app) persistNetworkPolicyLocked() error {
+	if err := os.MkdirAll(filepath.Dir(a.networkPolicyPath), 0o700); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(cellularPolicyStatus{
+		ForceOff: a.force4GOff,
+		Services: a.disabled4GServices,
+	}, "", "  ")
+	if err != nil {
+		return err
+	}
+	temporary := a.networkPolicyPath + ".tmp"
+	if err := os.WriteFile(temporary, data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(temporary, a.networkPolicyPath)
+}
+
+func appendUnique(items []string, value string) []string {
+	for _, item := range items {
+		if item == value {
+			return items
+		}
+	}
+	return append(items, value)
+}
+
+func (a *app) applyCellularPolicyLocked() error {
+	services, err := discoverMacNetworkServices()
+	if err != nil {
+		return err
+	}
+	if a.force4GOff {
+		// Keep the ECM carrier online for SMS/calls, but remove its usable internet
+		// gateway. This is deliberately stronger than changing service priority:
+		// an automatic fallback may still select 4G, but it cannot send traffic
+		// through a route whose gateway is the interface itself.
+		var skipped []string
+		applied := 0
+		for _, service := range services {
+			if !isDJICellularService(service) || service.Disabled {
+				continue
+			}
+			info, err := readMacIPv4ServiceInfo(service.Name)
+			if err != nil {
+				skipped = append(skipped, err.Error())
+				continue
+			}
+			if err := blockMacNetworkServiceRoute(service.Name, info); err != nil {
+				skipped = append(skipped, err.Error())
+				continue
+			}
+			a.disabled4GServices = appendUnique(a.disabled4GServices, service.Name)
+			applied++
+		}
+		if applied == 0 {
+			if len(skipped) == 0 {
+				return errors.New("未找到可用的 4G 网络服务")
+			}
+			return errors.New(strings.Join(skipped, "; "))
+		}
+		return a.persistNetworkPolicyLocked()
+	}
+	var restoreErrors []string
+	for _, name := range a.disabled4GServices {
+		if err := renewMacNetworkServiceDHCP(name); err != nil {
+			log.Printf("restore DHCP for 4G network service %q: %v", name, err)
+			restoreErrors = append(restoreErrors, err.Error())
+		}
+	}
+	if len(restoreErrors) > 0 {
+		if err := a.persistNetworkPolicyLocked(); err != nil {
+			restoreErrors = append(restoreErrors, err.Error())
+		}
+		return errors.New(strings.Join(restoreErrors, "; "))
+	}
+	a.disabled4GServices = nil
+	return a.persistNetworkPolicyLocked()
+}
+
+func (a *app) cellularPolicyStatus() (cellularPolicyStatus, error) {
+	a.networkPolicyMu.Lock()
+	defer a.networkPolicyMu.Unlock()
+	if err := a.loadNetworkPolicyLocked(); err != nil {
+		return cellularPolicyStatus{}, err
+	}
+	return cellularPolicyStatus{
+		ForceOff: a.force4GOff,
+		Services: append([]string(nil), a.disabled4GServices...),
+	}, nil
+}
+
+func (a *app) getCellularPolicy(w http.ResponseWriter, _ *http.Request) {
+	state, err := a.cellularPolicyStatus()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, state)
+}
+
+func (a *app) setCellularPolicy(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ForceOff bool `json:"force_off"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	a.networkPolicyMu.Lock()
+	defer a.networkPolicyMu.Unlock()
+	if err := a.loadNetworkPolicyLocked(); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	previousForceOff := a.force4GOff
+	previousServices := append([]string(nil), a.disabled4GServices...)
+	a.force4GOff = body.ForceOff
+	if err := a.applyCellularPolicyLocked(); err != nil {
+		a.force4GOff = previousForceOff
+		a.disabled4GServices = previousServices
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, cellularPolicyStatus{
+		ForceOff: a.force4GOff,
+		Services: append([]string(nil), a.disabled4GServices...),
+	})
+}
+
+func (a *app) startCellularPolicyGuard(ctx context.Context) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		a.networkPolicyMu.Lock()
+		if err := a.loadNetworkPolicyLocked(); err != nil {
+			log.Printf("load cellular policy: %v", err)
+		} else if a.force4GOff {
+			if err := a.applyCellularPolicyLocked(); err != nil {
+				log.Printf("enforce cellular force-off policy: %v", err)
+			}
+		}
+		a.networkPolicyMu.Unlock()
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
 }
 
 func (a *app) setUSBNetMode(w http.ResponseWriter, r *http.Request) {
@@ -1718,16 +2137,24 @@ func hasLikelyUSBNetworkInterface(interfaces []macNetInterface) bool {
 
 func selectUSBTrafficInterface(interfaces []macNetInterface, route macDefaultRoute) string {
 	for _, item := range interfaces {
-		if item.Name == route.Interface && item.Kind == "ethernet" && item.Name != "en0" && item.Status == "active" {
+		if item.Name == route.Interface && isUsableUSBTrafficInterface(item) {
 			return item.Name
 		}
 	}
 	for _, item := range interfaces {
-		if item.Kind == "ethernet" && item.Name != "en0" && item.Status == "active" {
+		if isUsableUSBTrafficInterface(item) {
 			return item.Name
 		}
 	}
 	return ""
+}
+
+func isUsableUSBTrafficInterface(item macNetInterface) bool {
+	if item.Kind != "ethernet" || item.Name == "en0" || item.Status != "active" {
+		return false
+	}
+	address := net.ParseIP(item.IPv4)
+	return address != nil && !address.IsUnspecified() && !address.IsLinkLocalUnicast()
 }
 
 func discoverMacInterfaceCounters() (map[string]networkByteCounters, error) {

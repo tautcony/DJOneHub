@@ -5,6 +5,11 @@ let esimHealthInFlight = false;
 let networkTrafficTimer = null;
 let networkTrafficPrevious = null;
 let networkTrafficInFlight = false;
+let callPollInFlight = false;
+let lastActiveCallID = null;
+let cellularPolicyBusy = false;
+let gpsRefreshTimer = null;
+let gpsRefreshInFlight = false;
 
 function setThemePreference(theme) {
   if (theme === "light" || theme === "dark") {
@@ -63,6 +68,47 @@ async function api(path, options = {}) {
   if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
   return data;
 }
+
+function renderCellularPolicy(state) {
+  const button = $("#cellular-policy-toggle");
+  const forceOff = Boolean(state?.force_off);
+  const enabled = !forceOff;
+  button.setAttribute("aria-checked", String(enabled));
+  setNetworkTrafficPolling(enabled);
+  button.title = forceOff
+    ? "开启 Wi‑Fi 优先、4G 自动备用"
+    : "关闭后强制禁止 Mac 使用 4G；短信和来电监控不受影响";
+}
+
+async function loadCellularPolicy() {
+  try {
+    renderCellularPolicy(await api("/api/network/cellular-policy"));
+  } catch (error) {
+    $("#cellular-policy-toggle").title = error.message;
+  }
+}
+
+$("#cellular-policy-toggle").addEventListener("click", async () => {
+  if (cellularPolicyBusy) return;
+  cellularPolicyBusy = true;
+  const button = $("#cellular-policy-toggle");
+  button.disabled = true;
+  const forceOff = button.getAttribute("aria-checked") === "true";
+  try {
+    const state = await api("/api/network/cellular-policy", {
+      method: "POST",
+      body: JSON.stringify({ force_off: forceOff }),
+    });
+    renderCellularPolicy(state);
+    notice(forceOff ? "已强制关闭 4G，短信和来电监控保持运行" : "已恢复 Wi‑Fi 优先、4G 自动备用");
+  } catch (error) {
+    notice(error.message);
+    await loadCellularPolicy();
+  } finally {
+    button.disabled = false;
+    cellularPolicyBusy = false;
+  }
+});
 
 function notice(message) {
   const el = $("#notice");
@@ -196,8 +242,8 @@ function displayWorkMode(value) {
 	  return { label: "待读取", tone: "muted" };
 	}
   switch (Number(value)) {
-    case 0: return { label: "短信模式", tone: "info" };
-    case 1: return { label: "上网模式", tone: "info" };
+    case 0: return { label: "传统短信模式", tone: "muted" };
+    case 1: return { label: "短信常驻 · 4G 备用", tone: "info" };
     case 2: return { label: "实验模式 2", tone: "warn" };
     case 3: return { label: "实验模式 3", tone: "warn" };
     default: return { label: "待读取", tone: "muted" };
@@ -290,6 +336,80 @@ async function loadSMS() {
   } catch (error) {
     $("#sms-status").textContent = `读取列表失败：${error.message}`;
     notice(error.message);
+  }
+}
+
+function callStateLabel(call) {
+  switch (call?.state) {
+    case "incoming": return "正在来电";
+    case "waiting": return "来电等待";
+    case "active": return "通话已接通";
+    case "dialing": return "正在拨号";
+    case "alerting": return "等待接听";
+    case "held": return "通话保持";
+    default: return "通话状态";
+  }
+}
+
+function renderCallHistory(history) {
+  const list = $("#call-history");
+  const rows = Array.isArray(history) ? history : [];
+  $("#call-history-count").textContent = `${rows.length} 条`;
+  if (!rows.length) {
+    list.className = "list empty";
+    list.textContent = "暂无记录";
+    return;
+  }
+  list.className = "list";
+  list.replaceChildren(...rows.map((call) => {
+    const row = document.createElement("article");
+    row.className = "item call-history-item";
+    const number = document.createElement("strong");
+    number.textContent = call.number || "未知号码";
+    const state = document.createElement("p");
+    state.textContent = call.missed ? "未接来电" : "通话结束";
+    const time = document.createElement("time");
+    time.textContent = new Date(call.started_at).toLocaleString();
+    row.append(number, state, time);
+    return row;
+  }));
+}
+
+async function loadCalls() {
+  if (callPollInFlight) return;
+  callPollInFlight = true;
+  try {
+    const status = await api("/api/calls/status");
+    const active = status.active;
+    const panel = $("#active-call");
+    const pollText = status.polling
+      ? `每 ${status.poll_interval_s || 3} 秒检查`
+      : "演示模式";
+    $("#call-monitor-status").textContent = status.last_poll_error
+      ? `${pollText} · ${status.last_poll_error}`
+      : `${pollText} · 监听正常`;
+
+    if (active) {
+      panel.hidden = false;
+      $("#active-call-label").textContent = callStateLabel(active);
+      $("#active-call-number").textContent = active.number || "未知号码";
+      $("#active-call-time").textContent = new Date(active.started_at).toLocaleString();
+      $("#reject-call").hidden = !["incoming", "waiting", "active"].includes(active.state);
+      if (active.id !== lastActiveCallID &&
+          active.direction === "incoming" &&
+          ["incoming", "waiting"].includes(active.state)) {
+        notice(`来电：${active.number || "未知号码"}`);
+      }
+      lastActiveCallID = active.id;
+    } else {
+      panel.hidden = true;
+      lastActiveCallID = null;
+    }
+    renderCallHistory(status.history);
+  } catch (error) {
+    $("#call-monitor-status").textContent = `监听异常：${error.message}`;
+  } finally {
+    callPollInFlight = false;
   }
 }
 
@@ -546,6 +666,87 @@ async function runNetworkCheck(label, path, button) {
   }
 }
 
+function renderGPS(state) {
+  const grid = $("#gps-result");
+  const status = $("#gps-status");
+  const toggle = $("#gps-toggle");
+  const headerToggle = $("#gps-header-toggle");
+  const enabled = Boolean(state?.enabled);
+  toggle.textContent = enabled ? "停止定位" : "启动定位";
+  toggle.classList.toggle("danger", enabled);
+  headerToggle.setAttribute("aria-checked", String(enabled));
+  headerToggle.title = enabled ? "GPS 定位已开启，点击停止" : "默认关闭；开启后仅在本机读取定位信息";
+  $("#gps-refresh").disabled = !enabled;
+  if (!enabled) {
+    status.textContent = "定位服务未启动。坐标只会保留在本机当前进程中。";
+    grid.hidden = true;
+    grid.replaceChildren();
+    return;
+  }
+  const fix = state?.last_fix;
+  if (!fix) {
+    status.textContent = state?.last_error || "正在搜索卫星，请移至窗边或室外后等待。";
+    grid.hidden = true;
+    grid.replaceChildren();
+    return;
+  }
+  status.textContent = `定位已更新；后台每 ${state.poll_interval_s || 15} 秒刷新一次。`;
+  grid.hidden = false;
+  grid.replaceChildren(
+    diagnosticCard("纬度", fix.latitude || "未知", "本机显示，不上传"),
+    diagnosticCard("经度", fix.longitude || "未知", "本机显示，不上传"),
+    diagnosticCard("卫星数", fix.satellites || "未知", "模块本次定位使用的卫星数"),
+    diagnosticCard("精度 HDOP", fix.hdop || "未知", "数值越小通常越稳定"),
+    diagnosticCard("海拔", fix.altitude || "未知", "模块返回值"),
+    diagnosticCard("定位时间", fix.utc || "未知", "模块 UTC 时间"),
+  );
+}
+
+async function toggleGPS() {
+  const pageButton = $("#gps-toggle");
+  const headerButton = $("#gps-header-toggle");
+  if (pageButton.disabled || headerButton.disabled) return;
+  pageButton.disabled = true;
+  headerButton.disabled = true;
+  try {
+    const status = await api("/api/gps");
+    if (status.enabled) {
+      await api("/api/gps/stop", { method: "POST" });
+      notice("定位已停止");
+    } else {
+      await api("/api/gps/start", { method: "POST" });
+      notice("定位已启动，请移至窗边或室外等待");
+    }
+    await loadGPS();
+  } catch (error) {
+    notice(error.message);
+    await loadGPS();
+  } finally {
+    pageButton.disabled = false;
+    headerButton.disabled = false;
+  }
+}
+
+async function loadGPS() {
+  if (gpsRefreshInFlight) return;
+  gpsRefreshInFlight = true;
+  try {
+    renderGPS(await api("/api/gps"));
+  } catch (error) {
+    $("#gps-status").textContent = `定位服务不可用：${error.message}`;
+  } finally {
+    gpsRefreshInFlight = false;
+  }
+}
+
+function setGPSPolling(enabled) {
+  if (gpsRefreshTimer) {
+    clearInterval(gpsRefreshTimer);
+    gpsRefreshTimer = null;
+  }
+  if (enabled) gpsRefreshTimer = setInterval(loadGPS, 5000);
+}
+
 async function loadNetwork() {
   const grid = $("#network-grid");
   const ifaceList = $("#network-interfaces");
@@ -666,82 +867,15 @@ function setNetworkTrafficPolling(enabled) {
   networkTrafficTimer = null;
   if (!enabled) {
     networkTrafficPrevious = null;
+    setValue("#traffic-rx-rate", "--", "muted");
+    setValue("#traffic-tx-rate", "--", "muted");
+    setValue("#traffic-session-rx", "--", "muted");
+    setValue("#traffic-session-tx", "--", "muted");
+    setValue("#traffic-session-total", "--", "muted");
     return;
   }
   void loadNetworkTraffic();
   networkTrafficTimer = setInterval(loadNetworkTraffic, 1000);
-}
-
-async function setUSBNetMode(mode) {
-  const label = `模式 ${mode}`;
-  const confirmed = await showModal({
-    title: `切换到${label}`,
-    message: `将写入 usbnet=${mode}，重启模块后生效。`,
-    confirmLabel: "继续切换",
-  });
-  if (!confirmed) return;
-  try {
-    const result = await api("/api/network/usbnet", {
-      method: "POST",
-      body: JSON.stringify({ mode }),
-    });
-    notice(`usbnet 已写入 ${result.mode}，请重启模块`);
-    await loadNetwork();
-  } catch (error) {
-    notice(error.message);
-  }
-}
-
-async function switchWorkMode(mode, label, button) {
-  const confirmed = await showModal({
-    title: `切换到${label}`,
-    message: `将写入 usbnet=${mode} 并重启模块，USB 会短暂断开。`,
-    confirmLabel: "确认切换",
-  });
-  if (!confirmed) return;
-  const status = $("#workmode-status");
-  const buttons = [$("#workmode-sms"), $("#workmode-network")];
-  buttons.forEach((item) => { item.disabled = true; });
-  status.hidden = false;
-  status.textContent = `正在切到${label}...`;
-  try {
-    const result = await api("/api/network/usbnet", {
-      method: "POST",
-      body: JSON.stringify({ mode }),
-    });
-    status.textContent = `usbnet 已写入 ${result.mode}，正在重启模块...`;
-    await api("/api/network/reboot-module", { method: "POST" });
-    status.textContent = `${label}已写入，等待模块重新枚举后自动刷新。`;
-    notice(`${label}切换中`);
-    setTimeout(loadStatus, 8000);
-    setTimeout(loadNetwork, 12000);
-    setTimeout(() => {
-      status.textContent = `${label}切换完成后，请确认状态卡和网络诊断。`;
-      buttons.forEach((item) => { item.disabled = false; });
-    }, 13000);
-  } catch (error) {
-    status.hidden = false;
-    status.textContent = `${label}切换失败：${error.message}`;
-    notice(error.message);
-    buttons.forEach((item) => { item.disabled = false; });
-  }
-}
-
-async function rebootModule() {
-  const confirmed = await showModal({
-    title: "重启模块",
-    message: "模块会重新枚举 USB，网页可能短暂断开。",
-    confirmLabel: "确认重启",
-  });
-  if (!confirmed) return;
-  try {
-    await api("/api/network/reboot-module", { method: "POST" });
-    notice("模块正在重启，稍后刷新状态");
-    setTimeout(loadStatus, 8000);
-    setTimeout(loadNetwork, 12000);
-  } catch (error) {
-    notice(error.message);
-  }
 }
 
 async function loadESIM() {
@@ -980,6 +1114,12 @@ document.querySelectorAll(".tab").forEach((tab) => {
     if (tab.dataset.view === "esim") loadESIM();
     else setESIMHealthPolling(false);
     if (tab.dataset.view === "network") loadNetwork();
+    if (tab.dataset.view === "gps") {
+      void loadGPS();
+      setGPSPolling(true);
+    } else {
+      setGPSPolling(false);
+    }
   });
 });
 
@@ -1089,22 +1229,48 @@ $("#clear-module-sms").addEventListener("click", async () => {
 $("#refresh-esim").addEventListener("click", loadESIM);
 $("#probe-esim-phonebook").addEventListener("click", probeESIMPhonebook);
 $("#refresh-network").addEventListener("click", loadNetwork);
-$("#workmode-sms").addEventListener("click", () =>
-  switchWorkMode(0, "短信模式", $("#workmode-sms")));
-$("#workmode-network").addEventListener("click", () =>
-  switchWorkMode(1, "上网模式", $("#workmode-network")));
+$("#gps-toggle").addEventListener("click", toggleGPS);
+$("#gps-header-toggle").addEventListener("click", toggleGPS);
+$("#gps-refresh").addEventListener("click", async () => {
+  const button = $("#gps-refresh");
+  button.disabled = true;
+  try {
+    const fix = await api("/api/gps/refresh", { method: "POST" });
+    renderGPS({ enabled: true, last_fix: fix, poll_interval_s: 15 });
+    notice("定位已刷新");
+  } catch (error) {
+    notice(error.message);
+    await loadGPS();
+  } finally {
+    button.disabled = false;
+  }
+});
 $("#check-4g-route").addEventListener("click", () =>
   runNetworkCheck("4G 出口", "/api/network/check-4g", $("#check-4g-route")));
 $("#check-proxy-route").addEventListener("click", () =>
   runNetworkCheck("代理", "/api/network/check-proxy", $("#check-proxy-route")));
-$("#usbnet-mode-0").addEventListener("click", () => setUSBNetMode(0));
-$("#usbnet-mode-1").addEventListener("click", () => setUSBNetMode(1));
-$("#usbnet-mode-2").addEventListener("click", () => setUSBNetMode(2));
-$("#usbnet-mode-3").addEventListener("click", () => setUSBNetMode(3));
-$("#reboot-module").addEventListener("click", rebootModule);
+$("#reject-call").addEventListener("click", async () => {
+  const button = $("#reject-call");
+  button.disabled = true;
+  try {
+    await api("/api/calls/reject", { method: "POST" });
+    notice("已发送拒接指令");
+    await loadCalls();
+  } catch (error) {
+    notice(`拒接失败：${error.message}`);
+  } finally {
+    button.disabled = false;
+  }
+});
 
 loadStatus();
 loadSMS();
+loadCalls();
+loadCellularPolicy();
+loadGPS();
 setNetworkTrafficPolling(true);
 setInterval(loadStatus, 10000);
 setInterval(loadSMS, 5000);
+setInterval(loadCalls, 2000);
+setInterval(loadCellularPolicy, 10000);
+setInterval(loadGPS, 10000);

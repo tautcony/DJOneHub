@@ -15,12 +15,22 @@ en9 1500 192.168.225 192.168.225.20 120 - 4096 80 - 2048 -`
 
 func TestSelectUSBTrafficInterfacePrefersDefaultRoute(t *testing.T) {
 	interfaces := []macNetInterface{
-		{Name: "en0", Kind: "ethernet", Status: "active"},
-		{Name: "en8", Kind: "ethernet", Status: "active"},
-		{Name: "en9", Kind: "ethernet", Status: "active"},
+		{Name: "en0", Kind: "ethernet", Status: "active", IPv4: "192.168.3.118"},
+		{Name: "en8", Kind: "ethernet", Status: "active", IPv4: "192.168.225.24"},
+		{Name: "en9", Kind: "ethernet", Status: "active", IPv4: "192.168.225.25"},
 	}
 	if got := selectUSBTrafficInterface(interfaces, macDefaultRoute{Interface: "en9"}); got != "en9" {
 		t.Fatalf("selected interface = %q, want en9", got)
+	}
+}
+
+func TestSelectUSBTrafficInterfaceSkipsLinkLocalDuplicate(t *testing.T) {
+	interfaces := []macNetInterface{
+		{Name: "en10", Kind: "ethernet", Status: "active", IPv4: "169.254.182.253"},
+		{Name: "en8", Kind: "ethernet", Status: "active", IPv4: "192.168.225.24"},
+	}
+	if got := selectUSBTrafficInterface(interfaces, macDefaultRoute{}); got != "en8" {
+		t.Fatalf("selected interface = %q, want en8", got)
 	}
 }
 
