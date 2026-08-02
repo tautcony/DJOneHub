@@ -3,11 +3,13 @@ package backend
 import (
 	"context"
 	"testing"
+
+	"github.com/iniwex5/vohive/internal/testfixtures"
 )
 
 func TestQMIBackendGetMSISDNPassThrough(t *testing.T) {
 	src := &qmiBackendSendSourceStub{}
-	srcMSISDN := "+8613800138000"
+	srcMSISDN := testfixtures.MSISDN
 	src.getMSISDN = func(ctx context.Context) (string, error) {
 		return srcMSISDN, nil
 	}
@@ -29,7 +31,7 @@ func TestQMIBackendGetMSISDNPassThrough(t *testing.T) {
 func TestQMIBackendGetMSISDNAddsPlusPrefixForBareDigits(t *testing.T) {
 	src := &qmiBackendSendSourceStub{}
 	src.getMSISDN = func(ctx context.Context) (string, error) {
-		return "8613800138000", nil
+		return "15551234567", nil
 	}
 
 	backend, err := NewQMIBackend("/dev/null", src)
@@ -41,7 +43,7 @@ func TestQMIBackendGetMSISDNAddsPlusPrefixForBareDigits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetMSISDN failed: %v", err)
 	}
-	if got != "+8613800138000" {
-		t.Fatalf("GetMSISDN()=%q want=%q", got, "+8613800138000")
+	if got != testfixtures.MSISDN {
+		t.Fatalf("GetMSISDN()=%q want=%q", got, testfixtures.MSISDN)
 	}
 }

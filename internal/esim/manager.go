@@ -237,7 +237,7 @@ type ProfileItem struct {
 	Name                string `json:"name"`
 	ServiceProviderName string `json:"service_provider_name"`
 	State               int    `json:"state"` // 0=disabled, 1=enabled
-	StateText           string `json:"state_text"`
+	StateKnown          bool   `json:"state_known"`
 	ClassText           string `json:"class_text,omitempty"`
 }
 
@@ -268,6 +268,7 @@ type Manager struct {
 	transport     string
 	controlDevice string
 	imeiProvider  func(ctx context.Context) (string, error)
+	iccidProvider func(ctx context.Context) (string, error)
 
 	// channelFactory 是通道工厂函数，不同模式下注入不同实现
 	// Modem 模式：基于 AT 命令
@@ -323,6 +324,7 @@ type ManagerOptions struct {
 	QMITransport            QMIAPDUTransport
 	SmartCardChannelFactory func() (driver.SmartCardChannel, error)
 	IMEIProvider            func(ctx context.Context) (string, error)
+	ICCIDProvider           func(ctx context.Context) (string, error)
 	OnBeforeSwitch          func(SwitchOperation, string) uint64
 	OnAfterSwitch           func(SwitchOperation, uint64)
 	OnSwitchFailed          func(SwitchOperation, uint64, error)
@@ -462,6 +464,7 @@ func NewManager(opts ManagerOptions) (*Manager, error) {
 		transport:            transport,
 		sf:                   &singleflight.Group{},
 		imeiProvider:         opts.IMEIProvider,
+		iccidProvider:        opts.ICCIDProvider,
 		onBeforeSwitch:       opts.OnBeforeSwitch,
 		onAfterSwitch:        opts.OnAfterSwitch,
 		onSwitchFailed:       opts.OnSwitchFailed,
@@ -537,6 +540,17 @@ func NewManager(opts ManagerOptions) (*Manager, error) {
 	mgr.overviewLoader = mgr.loadOverviewFresh
 	mgr.profilesLoader = mgr.loadProfilesFresh
 	return mgr, nil
+}
+
+// CurrentICCID returns the live modem ICCID when the platform exposes it.
+// Some modems report stale or incomplete Profile State TLVs after a switch;
+// the active SIM ICCID is the authoritative tie-breaker for the UI and for
+// avoiding a duplicate EnableProfile command.
+func (m *Manager) CurrentICCID(ctx context.Context) (string, error) {
+	if m == nil || m.iccidProvider == nil {
+		return "", fmt.Errorf("live ICCID provider is unavailable")
+	}
+	return m.iccidProvider(ctx)
 }
 
 func (m *Manager) newSmartCardChannel() (driver.SmartCardChannel, error) {
@@ -1474,11 +1488,11 @@ func (m *Manager) patchCachedActiveProfile(targetICCID string, aidHex string) bo
 			isTarget := isTargetICCIDActive(target, group.Profiles[pi].ICCID)
 			if isTarget {
 				group.Profiles[pi].State = int(sgp22.ProfileEnabled)
-				group.Profiles[pi].StateText = "已启用"
+				group.Profiles[pi].StateKnown = true
 				patched = true
 			} else {
 				group.Profiles[pi].State = int(sgp22.ProfileDisabled)
-				group.Profiles[pi].StateText = "已禁用"
+				group.Profiles[pi].StateKnown = true
 			}
 		}
 	}
@@ -1561,16 +1575,13 @@ func buildProfileGroup(eidStr string, aid []byte, profiles []*sgp22.ProfileInfo)
 		if name == "" {
 			name = p.ProfileName
 		}
-		stateText := "已禁用"
-		if p.ProfileState == sgp22.ProfileEnabled {
-			stateText = "已启用"
-		}
+		stateKnown := p.ProfileStatePresent
 		group.Profiles = append(group.Profiles, ProfileItem{
 			ICCID:               p.ICCID.String(),
 			Name:                name,
 			ServiceProviderName: p.ServiceProviderName,
 			State:               int(p.ProfileState),
-			StateText:           stateText,
+			StateKnown:          stateKnown,
 			ClassText:           p.ProfileClass.String(),
 		})
 	}
@@ -2069,6 +2080,15 @@ func (m *Manager) SwitchProfileWithResult(ctx context.Context, targetICCID strin
 	iccid, err := sgp22.NewICCID(targetICCID)
 	if err != nil {
 		return result, fmt.Errorf("无效的 ICCID %q: %w", targetICCID, err)
+	}
+	if active, liveErr := m.CurrentICCID(ctx); liveErr == nil && strings.EqualFold(strings.TrimSpace(active), strings.TrimSpace(targetICCID)) {
+		result.Phase = SwitchPhaseDone
+		result.SwitchAccepted = true
+		result.CachePatched = m.patchCachedActiveProfile(targetICCID, "")
+		logger.Info("目标 eSIM profile 已经是当前激活 profile，跳过重复切换",
+			"device", m.deviceID, "target", targetICCID)
+		switchSucceeded = true
+		return result, nil
 	}
 	m.drainSwitchSignals()
 

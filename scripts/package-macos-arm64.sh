@@ -33,6 +33,10 @@ if ! command -v pkg-config >/dev/null 2>&1; then
   echo "pkg-config is required on the build Mac." >&2
   exit 1
 fi
+if ! command -v npm >/dev/null 2>&1; then
+  echo "npm is required to build the Vue management page." >&2
+  exit 1
+fi
 
 rm -rf "${STAGE_DIR}"
 mkdir -p "${STAGE_DIR}/bin" "${STAGE_DIR}/lib" "${STAGE_DIR}/licenses"
@@ -89,6 +93,7 @@ ln -s libusb-1.0.0.dylib "${LIBUSB_PREFIX}/lib/libusb-1.0.dylib"
 cp "${LIBUSB_SOURCE}/libusb/libusb.h" "${LIBUSB_PREFIX}/include/libusb-1.0/libusb.h"
 
 cd "${ROOT_DIR}"
+npm --prefix web run build
 GOCACHE="${BUILD_ROOT}/go-cache"
 rm -rf "${GOCACHE}"
 mkdir -p "${GOCACHE}"
@@ -97,10 +102,12 @@ PKG_CONFIG_PATH="${LIBUSB_SOURCE}" \
 MACOSX_DEPLOYMENT_TARGET=13.0 CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 go build \
   -p 2 \
   -trimpath -buildvcs=false -ldflags="-s -w" \
-  -o "${STAGE_DIR}/bin/djonehub-macos" ./cmd/djonehub-macos
+  -o "${STAGE_DIR}/bin/djonehub-macos" ./cmd/djonehub
 
 cp "${LIBUSB_PREFIX}/lib/libusb-1.0.0.dylib" "${STAGE_DIR}/lib/libusb-1.0.0.dylib"
 cp "${ROOT_DIR}/packaging/djonehub" "${STAGE_DIR}/djonehub"
+mkdir -p "${STAGE_DIR}/web/dist"
+cp -R "${ROOT_DIR}/web/dist/." "${STAGE_DIR}/web/dist/"
 cp "${ROOT_DIR}/packaging/install" "${STAGE_DIR}/install"
 cp "${ROOT_DIR}/packaging/README.md" "${STAGE_DIR}/README.md"
 cp "${ROOT_DIR}/LICENSE" "${STAGE_DIR}/LICENSE"

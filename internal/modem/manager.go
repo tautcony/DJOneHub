@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"unicode/utf16"
 
@@ -248,7 +249,7 @@ func (m *Manager) forceReleasePort(portPath string) {
 			skipped = append(skipped, pid)
 			continue
 		}
-		if err := killProcess(pid); err == nil {
+		if err := syscall.Kill(pid, syscall.SIGTERM); err == nil {
 			released = append(released, pid)
 		}
 	}

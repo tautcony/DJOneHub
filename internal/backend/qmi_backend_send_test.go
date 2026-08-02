@@ -13,6 +13,7 @@ import (
 	qmimanager "github.com/iniwex5/quectel-qmi-go/pkg/manager"
 	"github.com/iniwex5/quectel-qmi-go/pkg/qmi"
 	"github.com/iniwex5/vohive/internal/modem"
+	"github.com/iniwex5/vohive/internal/testfixtures"
 	"github.com/iniwex5/vohive/pkg/smscodec"
 	"github.com/warthog618/sms/encoding/tpdu"
 )
@@ -1121,7 +1122,7 @@ func TestQMIBackendGetUIMReadinessPassesThroughSource(t *testing.T) {
 			ActiveSlot:     2,
 			SlotKnown:      true,
 			Reason:         qmimanager.UIMReadinessReady,
-			ICCID:          "8985203103011907194",
+			ICCID:          testfixtures.ICCID19,
 		},
 	}
 	backend, err := NewQMIBackend("/dev/cdc-wdm1", src)
@@ -1133,7 +1134,7 @@ func TestQMIBackendGetUIMReadinessPassesThroughSource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetUIMReadiness() error=%v", err)
 	}
-	if got.ActiveSlot != 2 || got.Reason != qmimanager.UIMReadinessReady || got.ICCID != "8985203103011907194" {
+	if got.ActiveSlot != 2 || got.Reason != qmimanager.UIMReadinessReady || got.ICCID != testfixtures.ICCID19 {
 		t.Fatalf("readiness=%+v", got)
 	}
 }

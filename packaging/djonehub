@@ -13,6 +13,7 @@ done
 ROOT_DIR=$(CDPATH= cd -P -- "$(dirname -- "${SOURCE}")" && pwd)
 BINARY="${ROOT_DIR}/bin/djonehub-macos"
 URL="http://127.0.0.1:7575"
+WEB_DIR="${ROOT_DIR}/web/dist"
 DATA_DIR="${HOME}/Library/Application Support/DJOneHub"
 LOG_DIR="${HOME}/Library/Logs/DJOneHub"
 PID_FILE="${DATA_DIR}/djonehub.pid"
@@ -70,13 +71,10 @@ start_service() {
     printf '启动失败：缺少可执行文件 %s\n' "${BINARY}" >&2
     exit 1
   fi
-  case "$(uname -m)" in
-    arm64|x86_64) ;;
-    *)
-      printf '当前发行包仅支持 Apple Silicon（M 系列）或 Intel（x86_64）Mac。\n' >&2
-      exit 1
-      ;;
-  esac
+  if [ "$(uname -m)" != "arm64" ]; then
+    printf '当前发行包仅支持 Apple Silicon（M 系列芯片）。\n' >&2
+    exit 1
+  fi
 
   mkdir -p "${DATA_DIR}" "${LOG_DIR}"
   if [ -f "${LOG_FILE}" ] && [ "$(wc -c <"${LOG_FILE}")" -gt 5242880 ]; then
@@ -95,9 +93,9 @@ start_service() {
   fi
 
   if [ "${mode}" = "--demo" ]; then
-    "${BINARY}" -listen 127.0.0.1:7575 -demo >>"${LOG_FILE}" 2>&1 &
+    "${BINARY}" -listen 127.0.0.1:7575 -web-dir "${WEB_DIR}" -demo >>"${LOG_FILE}" 2>&1 &
   else
-    "${BINARY}" -listen 127.0.0.1:7575 >>"${LOG_FILE}" 2>&1 &
+    "${BINARY}" -listen 127.0.0.1:7575 -web-dir "${WEB_DIR}" >>"${LOG_FILE}" 2>&1 &
   fi
   child=$!
   printf '%s\n' "${child}" >"${PID_FILE}"

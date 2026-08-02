@@ -52,3 +52,9 @@ type MBIMSource interface {
 
 	CalculateAKA(ctx context.Context, rand, autn []byte) (res, ik, ck, auts []byte, err error)
 }
+
+// MBIMIndicationSource is optional because a source used only for synchronous
+// protocol tests does not need to own the device indication stream.
+type MBIMIndicationSource interface {
+	Indications() <-chan mbim.Indication
+}

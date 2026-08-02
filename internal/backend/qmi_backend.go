@@ -99,6 +99,10 @@ type QMIBackend struct {
 	ussdErr          chan error
 	ussdRelease      chan struct{}
 	ussdAwaitRelease bool
+	eventsOnce       sync.Once
+	eventsCh         chan BackendEvent
+	eventsDone       chan struct{}
+	eventsClose      sync.Once
 }
 
 type NASRegisterRequest struct {
@@ -170,7 +174,41 @@ func (q *QMIBackend) Mode() string { return "qmi" }
 // Close QMIBackend 现在不再持有独立的 Client，因此 Close 无需主动关闭资源
 // 资源生命周期由 qmicore.Manager 统一控制
 func (q *QMIBackend) Close() error {
+	q.eventsClose.Do(func() {
+		if q.eventsDone != nil {
+			close(q.eventsDone)
+		}
+	})
 	return nil
+}
+
+func (q *QMIBackend) Events(ctx context.Context) (<-chan BackendEvent, error) {
+	if q == nil || q.source == nil {
+		return nil, fmt.Errorf("QMI backend is not initialized")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	source, ok := q.source.(interface{ OnEvent(manager.EventHandler) })
+	if !ok {
+		return closedBackendEvents(), nil
+	}
+	q.eventsOnce.Do(func() {
+		q.eventsCh = make(chan BackendEvent, 16)
+		q.eventsDone = make(chan struct{})
+		source.OnEvent(func(event manager.Event) {
+			payload := map[string]any{"type": event.Type.String(), "reason": event.Reason}
+			if event.Error != nil {
+				payload["error"] = event.Error.Error()
+			}
+			select {
+			case q.eventsCh <- BackendEvent{Type: "qmi." + event.Type.String(), Data: payload}:
+			case <-q.eventsDone:
+			case <-ctx.Done():
+			}
+		})
+	})
+	return q.eventsCh, nil
 }
 
 // ============================================================================

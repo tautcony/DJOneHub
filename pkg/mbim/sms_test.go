@@ -3,6 +3,8 @@ package mbim
 import (
 	"context"
 	"testing"
+
+	"github.com/iniwex5/vohive/internal/testfixtures"
 )
 
 func TestEncodeSMSSendPDU(t *testing.T) {
@@ -54,7 +56,7 @@ func TestSendSMS(t *testing.T) {
 }
 
 func TestEncodeSetSMSConfig(t *testing.T) {
-	info := encodeSetSMSConfig("+8613800100500")
+	info := encodeSetSMSConfig(testfixtures.SMSC)
 	if le.Uint32(info[0:]) != SMSFormatPDU {
 		t.Fatalf("Format = %d, want PDU", le.Uint32(info[0:]))
 	}
@@ -63,7 +65,7 @@ func TestEncodeSetSMSConfig(t *testing.T) {
 	if off != 12 {
 		t.Fatalf("ScAddressOffset = %d, want 12", off)
 	}
-	want := encodeUTF16("+8613800100500")
+	want := encodeUTF16(testfixtures.SMSC)
 	if size != uint32(len(want)) {
 		t.Fatalf("ScAddressSize = %d, want %d", size, len(want))
 	}
@@ -94,7 +96,7 @@ func TestSetSMSC(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer d.Close()
-	if err := SetSMSC(context.Background(), d, "+8613800100500"); err != nil {
+	if err := SetSMSC(context.Background(), d, testfixtures.SMSC); err != nil {
 		t.Fatalf("SetSMSC failed: %v", err)
 	}
 	off := le.Uint32(captured[4:])
@@ -103,7 +105,7 @@ func TestSetSMSC(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode SC: %v", err)
 	}
-	if got != "+8613800100500" {
+	if got != testfixtures.SMSC {
 		t.Fatalf("SC = %q", got)
 	}
 }
@@ -255,7 +257,7 @@ func TestParseSignalStateV1NoRsrp(t *testing.T) {
 
 func TestGetSMSC(t *testing.T) {
 	const fixed = 16
-	smsc := encodeUTF16("+8613800100500")
+	smsc := encodeUTF16(testfixtures.SMSC)
 	info := make([]byte, fixed+8+len(smsc))
 	le.PutUint32(info[16:], fixed+8)
 	le.PutUint32(info[20:], uint32(len(smsc)))
@@ -281,7 +283,7 @@ func TestGetSMSC(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetSMSC failed: %v", err)
 	}
-	if smscStr != "+8613800100500" {
+	if smscStr != testfixtures.SMSC {
 		t.Fatalf("SMSC = %q", smscStr)
 	}
 }

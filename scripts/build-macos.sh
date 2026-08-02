@@ -15,7 +15,7 @@ export PKG_CONFIG_PATH
 CGO_ENABLED=1 GOOS=darwin GOARCH="${ARCH}" go build \
   -p 2 \
   -trimpath -ldflags="-s -w" \
-  -o "${DIST_DIR}/djonehub-macos-${ARCH}" ./cmd/djonehub-macos
+  -o "${DIST_DIR}/djonehub-macos-${ARCH}" ./cmd/djonehub
 
 cp "${DIST_DIR}/djonehub-macos-${ARCH}" "${DIST_DIR}/djonehub-macos"
 

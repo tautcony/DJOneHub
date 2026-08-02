@@ -4,6 +4,9 @@ package backend
 var (
 	_ DeviceBackend = (*ATBackend)(nil)
 	_ DeviceBackend = (*QMIBackend)(nil)
+	_ DeviceBackend = (*MBIMBackend)(nil)
+	_ ModemBackend  = (*BusinessAdapter)(nil)
+	_ SMSPort       = (*BusinessAdapter)(nil)
 	_ USSDProvider  = (*ATBackend)(nil)
 	_ USSDProvider  = (*QMIBackend)(nil)
 )

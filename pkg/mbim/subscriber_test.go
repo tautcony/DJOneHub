@@ -3,13 +3,15 @@ package mbim
 import (
 	"context"
 	"testing"
+
+	"github.com/iniwex5/vohive/internal/testfixtures"
 )
 
 func TestParseSubscriberReady(t *testing.T) {
 	const fixed = 36
-	imsi := encodeUTF16("460001234567890")
-	iccid := encodeUTF16("89860012345678901234")
-	msisdn := encodeUTF16("13800138000")
+	imsi := encodeUTF16(testfixtures.IMSI)
+	iccid := encodeUTF16(testfixtures.ICCID20)
+	msisdn := encodeUTF16(testfixtures.MSISDN)
 	buf := make([]byte, fixed+len(imsi)+len(iccid)+len(msisdn))
 	le.PutUint32(buf[0:], 1)
 	off := fixed
@@ -31,7 +33,7 @@ func TestParseSubscriberReady(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse failed: %v", err)
 	}
-	if s.IMSI != "460001234567890" || s.ICCID != "89860012345678901234" || s.MSISDN != "13800138000" {
+	if s.IMSI != testfixtures.IMSI || s.ICCID != testfixtures.ICCID20 || s.MSISDN != testfixtures.MSISDN {
 		t.Fatalf("subscriber = %+v", s)
 	}
 	if s.ReadyState != 1 {
@@ -41,7 +43,7 @@ func TestParseSubscriberReady(t *testing.T) {
 
 func TestQuerySubscriberReady(t *testing.T) {
 	ft := newFakeTransport()
-	info := buildSubscriberBuf("460009999999999", "8986001111", "")
+	info := buildSubscriberBuf(testfixtures.IMSIAlt, "8901000000", "")
 	ft.reply = func(w []byte) ([]byte, bool) {
 		h, _ := decodeHeader(w)
 		switch h.Type {
@@ -61,7 +63,7 @@ func TestQuerySubscriberReady(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Query failed: %v", err)
 	}
-	if s.IMSI != "460009999999999" {
+	if s.IMSI != testfixtures.IMSIAlt {
 		t.Fatalf("IMSI = %q", s.IMSI)
 	}
 }

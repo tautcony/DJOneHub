@@ -19,3 +19,10 @@ type OperatingModeController interface {
 	// QMI 实现：DMS.SetOperatingMode(ModeReset)
 	Reboot(ctx context.Context) error
 }
+
+// Rebooter is the narrow contract used by the device-control API. Keeping it
+// separate lets protocol backends expose reset without coupling the API to
+// every operating-mode query.
+type Rebooter interface {
+	Reboot(context.Context) error
+}

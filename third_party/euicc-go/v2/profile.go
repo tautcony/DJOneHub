@@ -10,9 +10,12 @@ import (
 )
 
 type ProfileInfo struct {
-	ICCID                         ICCID
-	ISDPAID                       ISDPAID
-	ProfileState                  ProfileState
+	ICCID        ICCID
+	ISDPAID      ISDPAID
+	ProfileState ProfileState
+	// ProfileStatePresent distinguishes an explicit SGP.22 state from the
+	// decoder default. A missing state must not be reported as disabled.
+	ProfileStatePresent           bool
 	ProfileNickname               string
 	ServiceProviderName           string
 	ProfileName                   string
@@ -39,6 +42,7 @@ func (p *ProfileInfo) UnmarshalBERTLV(tlv *bertlv.TLV) error {
 	if err := optional(tlv, TagISDPAID, &p.ISDPAID, ISDPAID(nil)); err != nil {
 		return err
 	}
+	p.ProfileStatePresent = tlv.First(TagProfileState) != nil
 	if err := optional(tlv, TagProfileState, &p.ProfileState, ProfileDisabled); err != nil {
 		return err
 	}

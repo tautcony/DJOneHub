@@ -1,14 +1,13 @@
 # DJOneHub 精简源码结构
 
-这份目录是从开发工作区中按 `cmd/djonehub-macos` 的真实 Go 依赖图整理出的最小可构建源码副本。原项目中的旧 Vue 前端、`node_modules`、Linux 服务端、机器人、未使用的管理后台和历史构建产物均未包含。
+这份目录描述 DJOneHub 的当前源码结构。Vue 前端位于 `web/`，由新的 Go 服务提供 API 和静态页面。
 
 ## 目录树
 
 ```text
 DJOneHub-source-minimal/
 ├── cmd/
-│   └── djonehub-macos/       # macOS 主程序、USB AT、短信、网络与内嵌网页
-│       └── web/              # 当前实际显示的原生管理页面
+│   └── djonehub/             # 唯一跨平台服务入口和 Vue 页面托管
 ├── internal/
 │   ├── apduarbiter/          # SIM/eUICC APDU 通道并发协调
 │   ├── backend/              # AT、MBIM、QMI 后端的统一能力接口
@@ -39,20 +38,20 @@ DJOneHub-source-minimal/
 
 ## 关键入口
 
-- `cmd/djonehub-macos/main.go`：HTTP 服务、设备状态、短信、eSIM、网络和流量 API。
-- `cmd/djonehub-macos/usbat_darwin.go`：macOS 上通过 libusb 接管大疆模块 USB AT 接口。
-- `cmd/djonehub-macos/usbat_esim_channel.go`：经 AT/APDU 访问实体 eUICC 卡片。
-- `cmd/djonehub-macos/web/`：由 `go:embed` 编译进二进制的网页界面。
+- `cmd/djonehub/main.go`：唯一 HTTP 服务入口，托管 API 和 Vue 页面。
+- `internal/platform/darwin/`：macOS 上通过 libusb 接管大疆模块 USB AT 接口，并提供平台适配。
+- `internal/application/` 与 `internal/backend/`：承载设备状态、短信、eSIM、网络和 AT 能力。
+- `web/`：Vue/Vite 管理前端；macOS 管理入口不再嵌入独立的原生页面。
 
 ## 为什么仍有 internal、pkg 和 third_party
 
-Go 以“包”为编译边界。macOS 主程序虽然集中在 `cmd/djonehub-macos`，但短信 PDU、eUICC、SIM APDU、MBIM/QMI 和日志能力依赖共享包，因此这些目录不能直接删除。
+Go 以“包”为编译边界。所有平台都从 `cmd/djonehub` 启动，macOS 差异只位于 `internal/platform/darwin`，业务能力依赖共享的 application、backend、modem 和协议包。
 
 `third_party` 中只保留当前依赖图实际使用的本地替换模块。保留本地副本可以确保当前修改版协议实现与已验证发行包一致，同时保留各上游组件的许可证和来源信息。
 
 ## 已排除内容
 
-- `web/` 旧 Vue/Vite 管理前端及约 601 MB 的 `node_modules`
+- `node_modules/` 依赖缓存
 - 原 Linux 服务端入口、容器配置和网络命名空间工具
 - Telegram、飞书、QQ 等机器人与转发功能
 - 原项目未被 macOS 入口引用的 API、任务、数据库和后台页面

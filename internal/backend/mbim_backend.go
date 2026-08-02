@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/iniwex5/quectel-qmi-go/pkg/manager"
 	"github.com/iniwex5/vohive/internal/modem"
@@ -15,6 +16,10 @@ import (
 type MBIMBackend struct {
 	source      MBIMSource
 	controlPath string
+	eventsOnce  sync.Once
+	eventsCh    chan BackendEvent
+	eventsDone  chan struct{}
+	eventsClose sync.Once
 }
 
 var _ DeviceBackend = (*MBIMBackend)(nil)
@@ -24,7 +29,59 @@ func NewMBIMBackend(controlPath string, source MBIMSource) *MBIMBackend {
 }
 
 func (b *MBIMBackend) Mode() string { return BackendMBIM }
-func (b *MBIMBackend) Close() error { return nil }
+func (b *MBIMBackend) Close() error {
+	b.eventsClose.Do(func() {
+		if b.eventsDone != nil {
+			close(b.eventsDone)
+		}
+	})
+	return nil
+}
+
+func (b *MBIMBackend) Events(ctx context.Context) (<-chan BackendEvent, error) {
+	if b == nil || b.source == nil {
+		return nil, fmt.Errorf("MBIM backend is not initialized")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	source, ok := b.source.(MBIMIndicationSource)
+	if !ok {
+		return closedBackendEvents(), nil
+	}
+	b.eventsOnce.Do(func() {
+		b.eventsCh = make(chan BackendEvent, 16)
+		b.eventsDone = make(chan struct{})
+		go func() {
+			defer close(b.eventsCh)
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-b.eventsDone:
+					return
+				case indication, ok := <-source.Indications():
+					if !ok {
+						return
+					}
+					event := BackendEvent{Type: "mbim.indication", Data: map[string]any{
+						"service": indication.Service.String(),
+						"cid":     indication.CID,
+						"data":    indication.InfoBuffer,
+					}}
+					select {
+					case b.eventsCh <- event:
+					case <-ctx.Done():
+						return
+					case <-b.eventsDone:
+						return
+					}
+				}
+			}
+		}()
+	})
+	return b.eventsCh, nil
+}
 
 func (b *MBIMBackend) GetIMEI(ctx context.Context) (string, error) {
 	caps, err := b.source.DeviceCaps(ctx)

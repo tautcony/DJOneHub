@@ -3,6 +3,7 @@ package backend
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/iniwex5/vohive/internal/modem"
@@ -12,7 +13,11 @@ import (
 // ATBackend AT 后端适配器 — 纯包装层，委托给现有 modem.Manager
 // 不修改 modem.Manager 的任何一行代码
 type ATBackend struct {
-	modem *modem.Manager
+	modem       *modem.Manager
+	eventsOnce  sync.Once
+	eventsCh    chan BackendEvent
+	eventsDone  chan struct{}
+	eventsClose sync.Once
 }
 
 // NewATBackend 创建 AT 后端适配器
@@ -23,11 +28,78 @@ func NewATBackend(m *modem.Manager) *ATBackend {
 // Mode 返回后端模式标识
 func (a *ATBackend) Mode() string { return "at" }
 
-// Close AT 后端无需额外清理（modem.Manager 由 Worker 管理生命周期）
-func (a *ATBackend) Close() error { return nil }
+// Close releases the manager owned by this backend connection.
+func (a *ATBackend) Close() error {
+	if a == nil || a.modem == nil {
+		return nil
+	}
+	a.eventsClose.Do(func() {
+		if a.eventsDone != nil {
+			close(a.eventsDone)
+		}
+	})
+	return a.modem.Close()
+}
 
 // Modem 返回底层 modem.Manager（供需要直接访问 AT 通道的调用方使用，如 AT+QCFG）
 func (a *ATBackend) Modem() *modem.Manager { return a.modem }
+
+func (a *ATBackend) RawAT(ctx context.Context, command string) (string, error) {
+	if a == nil || a.modem == nil {
+		return "", fmt.Errorf("AT backend is not initialized")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	timeout := 30 * time.Second
+	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < timeout {
+		timeout = time.Until(deadline)
+	}
+	if timeout <= 0 {
+		return "", ctx.Err()
+	}
+	return a.modem.ExecuteAT(command, timeout)
+}
+
+// Events adapts the manager's modem-reset signal to the runtime backend event
+// contract. The AT manager remains responsible for command serialization and
+// transport ownership; this adapter only publishes lifecycle signals.
+func (a *ATBackend) Events(ctx context.Context) (<-chan BackendEvent, error) {
+	if a == nil || a.modem == nil {
+		return nil, fmt.Errorf("AT backend is not initialized")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	a.eventsOnce.Do(func() {
+		a.eventsCh = make(chan BackendEvent, 8)
+		a.eventsDone = make(chan struct{})
+		ready := a.modem.SubscribeRDY()
+		go func() {
+			defer close(a.eventsCh)
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-a.eventsDone:
+					return
+				case <-ready:
+					select {
+					case a.eventsCh <- BackendEvent{Type: "modem.reset"}:
+					case <-ctx.Done():
+						return
+					case <-a.eventsDone:
+						return
+					}
+				}
+			}
+		}()
+	})
+	return a.eventsCh, nil
+}
 
 // ============================================================================
 // DeviceInfoProvider 实现

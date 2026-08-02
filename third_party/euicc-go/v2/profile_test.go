@@ -17,6 +17,7 @@ func TestProfileInfoUnmarshalAllowsMissingOptionalFields(t *testing.T) {
 	assert.Nil(t, profile.ICCID)
 	assert.Nil(t, profile.ISDPAID)
 	assert.Equal(t, ProfileDisabled, profile.ProfileState)
+	assert.False(t, profile.ProfileStatePresent)
 	assert.Empty(t, profile.ProfileNickname)
 	assert.Empty(t, profile.ServiceProviderName)
 	assert.Empty(t, profile.ProfileName)
@@ -25,6 +26,19 @@ func TestProfileInfoUnmarshalAllowsMissingOptionalFields(t *testing.T) {
 	assert.Nil(t, profile.ProfileOwner.PLMN)
 	assert.Nil(t, profile.NotificationConfigurationInfo)
 	assert.Equal(t, ProfilePolicyRules{}, profile.ProfilePolicyRules)
+}
+
+func TestProfileInfoUnmarshalTracksExplicitProfileState(t *testing.T) {
+	tlv := bertlv.NewChildren(
+		bertlv.Private.Constructed(3),
+		bertlv.NewValue(TagProfileState, []byte{byte(ProfileEnabled)}),
+	)
+	profile := new(ProfileInfo)
+
+	require.NoError(t, profile.UnmarshalBERTLV(tlv))
+
+	assert.Equal(t, ProfileEnabled, profile.ProfileState)
+	assert.True(t, profile.ProfileStatePresent)
 }
 
 func TestProfileInfoUnmarshalAuthenticateClientProfileMetadata(t *testing.T) {
