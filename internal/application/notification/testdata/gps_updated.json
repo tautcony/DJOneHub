@@ -1,0 +1,17 @@
+{
+  "id": 47,
+  "type": "gps.updated",
+  "version": 1,
+  "occurred_at": "2026-08-02T10:00:00Z",
+  "data": {
+    "enabled": true,
+    "fix": {
+      "utc": "100000.000",
+      "latitude": "31.2304",
+      "longitude": "121.4737",
+      "hdop": "1.1",
+      "satellites": "12"
+    },
+    "last_checked": "2026-08-02T10:00:00Z"
+  }
+}

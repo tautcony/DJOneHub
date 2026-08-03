@@ -1,79 +1,214 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, h, onBeforeUnmount, onMounted, provide, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRoute, useRouter } from 'vue-router'
+import { notification } from 'ant-design-vue'
+import { EditOutlined, ReloadOutlined } from '@ant-design/icons-vue'
 import { api } from './services/api'
 import { APIError } from './services/api'
 import { persistLocale } from './i18n'
 import { AT_PRESETS, parseATResponse } from './services/at'
 import { useDeviceStore } from './stores/device'
-import type { EsimOverview, NetworkStatus, OperationStatus, SMSMessage, VowifiStatus } from './types'
+import type {
+  CallStatus,
+  CellularPolicy,
+  EsimOverview,
+  GPSStatus,
+  NotificationDebugEvent,
+  NotificationDebugInfo,
+  NotificationDebugRequest,
+  NotificationPermissionStatus,
+  NotificationPreferences,
+  OperationStatus,
+  NetworkStatus,
+  SMSMessage,
+  VowifiStatus,
+} from './types'
+import AppShell, { type ShellNavGroup } from './components/AppShell.vue'
+import PageHeader from './components/PageHeader.vue'
+import { viewContextKey } from './views/context'
+import { viewFromRoute, viewPaths, type ViewID } from './router'
 
-type ViewID = 'overview' | 'sms' | 'esim' | 'network' | 'raw-at' | 'vowifi' | 'settings'
+type NavGroupID = 'main' | 'voice' | 'tools'
+
+const VIEW_REFRESH_MIN_INTERVAL_MS = 500
+const OVERVIEW_REFRESH_MIN_INTERVAL_MS = 2000
+const ACTIVE_VIEW_FALLBACK_INTERVALS: Partial<Record<ViewID, number>> = {
+  calls: 15000,
+  sms: 30000,
+  esim: 60000,
+  network: 15000,
+  gps: 30000,
+  vowifi: 30000,
+}
 
 const device = useDeviceStore()
 const { t, te, locale } = useI18n()
-const active = ref<ViewID>('overview')
+const route = useRoute()
+const router = useRouter()
+const active = computed<ViewID>(() => viewFromRoute(route.path))
 const viewError = ref('')
 const smsTo = ref('')
 const smsBody = ref('')
-const smsMessage = ref('')
 const smsOperationID = ref('')
-const smsOperation = computed(() => smsOperationID.value ? device.operations[smsOperationID.value] : undefined)
+const smsOperation = computed(() =>
+  smsOperationID.value ? device.operations[smsOperationID.value] : undefined,
+)
 const smsItems = ref<SMSMessage[]>([])
+const smsSentItems = ref<SMSMessage[]>([])
+const loadedViews = ref<Partial<Record<ViewID, boolean>>>({})
+const smsQuery = ref('')
+const selectedSmsPeer = ref('')
+const smsComposeNew = ref(false)
 const esim = ref<EsimOverview | null>(null)
-const esimMessage = ref('')
 const esimDownloadOpen = ref(false)
-const esimRenameOpen = ref(false)
-const esimRenameICCID = ref('')
+const esimSettingsOpen = ref(false)
+const esimSettingsICCID = ref('')
 const esimActivationCode = ref('')
 const esimConfirmationCode = ref('')
 const esimMatchingID = ref('')
 const esimLabels = ref<Record<string, string>>({})
 const esimOperationID = ref('')
-const esimOperation = computed(() => esimOperationID.value ? device.operations[esimOperationID.value] : undefined)
+const esimOperation = computed(() =>
+  esimOperationID.value ? device.operations[esimOperationID.value] : undefined,
+)
 const esimReloadedOperationID = ref('')
+const calls = ref<CallStatus | null>(null)
+const gps = ref<GPSStatus | null>(null)
+let lastGPSRemoteError = ''
+const networkChecks = ref<Array<{ label: string; ok: boolean; summary: string; detail?: string }>>([])
+const cellularPolicy = ref<CellularPolicy | null>(null)
+const esimNotes = ref<Record<string, { label: string; phone: string; tags: string }>>({})
+const esimHealth = ref<Record<string, unknown> | null>(null)
+const noteICCID = ref('')
+const noteLabel = ref('')
+const notePhone = ref('')
+const noteTags = ref('')
+const pageVisible = ref(document.visibilityState === 'visible')
 const pendingViewRefreshes = new Map<ViewID, { timer: number; dueAt: number }>()
+const viewLoadInFlight = new Map<ViewID, Promise<void>>()
+const queuedViewRefreshes = new Set<ViewID>()
+const lastViewRefreshAt = new Map<ViewID, number>()
+let activeFallbackTimer: number | undefined
 const network = ref<NetworkStatus | null>(null)
-const networkMessage = ref('')
+const overviewNetwork = ref<NetworkStatus | null>(null)
 const networkMode = ref('')
-const networkRebootMessage = ref('')
 const networkTraffic = ref({ rxRate: 0, txRate: 0, rxBytes: 0, txBytes: 0 })
 let networkTrafficTimer: number | undefined
+let networkTrafficInFlight = false
 let previousTrafficSample: { rx: number; tx: number; at: number } | undefined
 const vowifi = ref<VowifiStatus | null>(null)
-const vowifiMessage = ref('')
 const vowifiOperationID = ref('')
-const vowifiOperation = computed(() => vowifiOperationID.value ? device.operations[vowifiOperationID.value] : undefined)
+const vowifiOperation = computed(() =>
+  vowifiOperationID.value ? device.operations[vowifiOperationID.value] : undefined,
+)
 const rawATCommand = ref('')
 const rawATExecutedCommand = ref('')
 const rawATResponse = ref('')
-const rawATMessage = ref('')
 const rawATPreset = ref('')
-const parsedATResponse = computed(() => rawATResponse.value ? parseATResponse(rawATExecutedCommand.value || rawATCommand.value, rawATResponse.value) : null)
+const parsedATResponse = computed(() =>
+  rawATResponse.value
+    ? parseATResponse(rawATExecutedCommand.value || rawATCommand.value, rawATResponse.value)
+    : null,
+)
+const notifierInfo = ref<NotificationDebugInfo | null>(null)
+const notifierEvents = ref<NotificationDebugEvent[]>([])
+const notifierCallID = ref(`debug-call-${Date.now()}`)
+const notifierNumber = ref('13800138000')
+const notifierSender = ref('10086')
+const notifierRecipient = ref('')
+const notifierBody = ref('DJOneHubNotifier debug message')
+const notifierCode = ref('482913')
+const notificationPermissions = ref<NotificationPermissionStatus | null>(null)
+const notificationPermissionBusy = ref(false)
+const notificationPreferences = ref<NotificationPreferences | null>(null)
+const notificationPreferencesBusy = ref(false)
+const sensitiveStorageKey = 'djonehub.show-sensitive'
+const showSensitive = ref(localStorage.getItem(sensitiveStorageKey) === '1')
+const mobileNavOpen = ref(false)
+const mobileNavExpanded = ref<Record<NavGroupID, boolean>>({ main: true, voice: true, tools: true })
 
-const nav = computed<Array<{ id: ViewID; label: string; capability?: string }>>(() => [
-  { id: 'overview', label: t('nav.overview') },
-  { id: 'sms', label: t('nav.sms'), capability: 'sms_read' },
-  { id: 'esim', label: t('nav.esim'), capability: 'esim' },
-  { id: 'network', label: t('nav.network'), capability: 'network_status' },
-  { id: 'raw-at', label: t('nav.rawAt'), capability: 'raw_at' },
-  { id: 'vowifi', label: t('nav.vowifi'), capability: 'vowifi_inspect' },
-  { id: 'settings', label: t('nav.settings') },
+const navGroups = computed<ShellNavGroup[]>(() => [
+  {
+    id: 'main',
+    label: t('nav.groups.main'),
+    items: [
+      { id: 'overview', label: t('nav.overview') },
+      { id: 'sms', label: t('nav.sms'), capability: 'sms_read' },
+      { id: 'esim', label: t('nav.esim'), capability: 'esim' },
+      { id: 'network', label: t('nav.network'), capability: 'network_status' },
+      { id: 'gps', label: t('nav.gps'), capability: 'gps' },
+    ],
+  },
+  {
+    id: 'voice',
+    label: t('nav.groups.voice'),
+    items: [
+      { id: 'calls', label: t('nav.calls'), capability: 'call_monitor' },
+      { id: 'vowifi', label: t('nav.vowifi'), capability: 'vowifi_inspect' },
+    ],
+  },
+  {
+    id: 'tools',
+    label: t('nav.groups.tools'),
+    items: [
+      { id: 'raw-at', label: t('nav.rawAt'), capability: 'raw_at' },
+      { id: 'notifications', label: t('nav.notifications') },
+      { id: 'settings', label: t('nav.settings') },
+    ],
+  },
 ])
+const nav = computed(() => navGroups.value.flatMap((group) => group.items))
 const stateValue = computed(() => device.snapshot?.state || 'offline')
-const stateLabel = computed(() => te(`states.${stateValue.value}`) ? t(`states.${stateValue.value}`) : t('status.offline'))
-const activeLabel = computed(() => nav.value.find(item => item.id === active.value)?.label || t('nav.overview'))
+const effectiveStateValue = computed(() => (device.error ? 'offline' : stateValue.value))
+const stateLabel = computed(() =>
+  te(`states.${effectiveStateValue.value}`) ? t(`states.${effectiveStateValue.value}`) : t('status.offline'),
+)
+const sidebarDeviceLabel = computed(() =>
+  te(`status.deviceStates.${effectiveStateValue.value}`)
+    ? t(`status.deviceStates.${effectiveStateValue.value}`)
+    : t('status.deviceStates.offline'),
+)
+const activeLabel = computed(
+  () => nav.value.find((item) => item.id === active.value)?.label || t('nav.overview'),
+)
+const activeDescription = computed(() => t(`header.descriptions.${active.value}`))
+const deviceCapabilities = computed(() => (effectiveStateValue.value === 'ready' ? device.capabilities : {}))
+const stateTone = computed<'success' | 'warning' | 'danger' | 'info' | 'neutral'>(() => {
+  if (effectiveStateValue.value === 'ready') return 'success'
+  if (effectiveStateValue.value === 'degraded') return 'warning'
+  if (
+    effectiveStateValue.value === 'connecting' ||
+    effectiveStateValue.value === 'initializing' ||
+    effectiveStateValue.value === 'discovered'
+  )
+    return 'info'
+  return 'neutral'
+})
 const usbNetworkModeOptions = computed(() => [
   { value: '0', label: t('network.modes.rmnet') },
   { value: '1', label: t('network.modes.ecm') },
   { value: '2', label: t('network.modes.mbim') },
   { value: '3', label: t('network.modes.rndis') },
 ])
+watch(locale, (value) => {
+  persistLocale(value)
+  notifySuccess(t('settings.saved'))
+})
+watch(showSensitive, (value) => {
+  localStorage.setItem(sensitiveStorageKey, value ? '1' : '0')
+  notifySuccess(t('settings.saved'))
+})
 
-watch(locale, value => persistLocale(value))
+function maskSensitive(value?: string) {
+  if (!value) return t('common.empty')
+  if (showSensitive.value) return value
+  if (value.length <= 4) return '*'.repeat(value.length)
+  return `${'*'.repeat(value.length - 4)}${value.slice(-4)}`
+}
 
 function usbNetworkModeLabel(mode?: string) {
-  const option = usbNetworkModeOptions.value.find(item => item.value === mode)
+  const option = usbNetworkModeOptions.value.find((item) => item.value === mode)
   return option ? `${option.label} (${option.value})` : mode || t('common.empty')
 }
 
@@ -85,36 +220,114 @@ function errorText(cause: unknown, fallback: string) {
   return cause instanceof Error ? cause.message : t(fallback)
 }
 
+let lastErrorNotification: { message: string; at: number } | undefined
+
+function notifyError(scope: 'device' | 'view', message: string) {
+  if (!message) return
+  const now = Date.now()
+  if (lastErrorNotification?.message === message && now - lastErrorNotification.at < 10000) return
+  lastErrorNotification = { message, at: now }
+  const key = 'djonehub-error'
+  const retryButton =
+    scope === 'device'
+      ? h(
+          'button',
+          {
+            type: 'button',
+            class: 'ant-btn ant-btn-link ant-btn-sm',
+            onClick: () => {
+              notification.close(key)
+              void device.refresh()
+            },
+          },
+          t('common.retry'),
+        )
+      : undefined
+  notification.error({
+    key,
+    message: t('common.error'),
+    description: message,
+    btn: retryButton,
+    placement: 'topRight',
+    duration: 3.5,
+  })
+}
+
+function notifySuccess(message: string) {
+  if (!message) return
+  notification.success({
+    message,
+    placement: 'topRight',
+    duration: 3.5,
+  })
+}
+
+function notifyInfo(message: string) {
+  if (!message) return
+  notification.info({
+    message,
+    placement: 'topRight',
+    duration: 3.5,
+  })
+}
+
+watch(
+  () => device.error,
+  (message) => {
+    if (message) notifyError('device', message)
+  },
+)
+watch(viewError, (message) => {
+  if (message) notifyError('view', message)
+})
+
+function markViewLoaded(view: ViewID) {
+  loadedViews.value[view] = true
+}
+
+function toggleMobileGroup(group: string) {
+  if (!(group in mobileNavExpanded.value)) return
+  const key = group as NavGroupID
+  mobileNavExpanded.value[key] = !mobileNavExpanded.value[key]
+}
+
 function applyATPreset() {
-  const preset = AT_PRESETS.find(item => item.id === rawATPreset.value)
+  const preset = AT_PRESETS.find((item) => item.id === rawATPreset.value)
   if (preset) rawATCommand.value = preset.command
 }
 
 async function loadSMS() {
   try {
-    smsItems.value = (await api.sms()).items
+    const result = await api.smsRefresh()
+    smsItems.value = Array.isArray(result.items) ? result.items : []
+    syncSmsSelection()
     viewError.value = ''
   } catch (error) {
     viewError.value = errorText(error, 'sms.unableLoad')
+  } finally {
+    markViewLoaded('sms')
   }
 }
 
 async function refreshSMS() {
   try {
-    smsItems.value = (await api.smsRefresh()).items
-    smsMessage.value = t('sms.refreshed')
+    const result = await api.smsRefresh()
+    smsItems.value = Array.isArray(result.items) ? result.items : []
+    syncSmsSelection()
+    notifySuccess(t('sms.refreshed'))
     viewError.value = ''
   } catch (error) {
-    smsMessage.value = errorText(error, 'sms.unableRefresh')
+    notifyError('view', errorText(error, 'sms.unableRefresh'))
+    markViewLoaded('sms')
   }
 }
 
 async function clearModuleSMS() {
   try {
     await api.smsClear()
-    smsMessage.value = t('sms.cleared')
+    notifySuccess(t('sms.cleared'))
   } catch (error) {
-    smsMessage.value = errorText(error, 'sms.unableClear')
+    notifyError('view', errorText(error, 'sms.unableClear'))
   }
 }
 
@@ -122,59 +335,271 @@ function formatSMSDate(value?: string) {
   return value ? new Date(value).toLocaleString() : ''
 }
 
-function formatBytes(value: number) {
-  const units = ['B', 'KB', 'MB', 'GB', 'TB']
-  let amount = Math.max(0, value)
-  let unit = 0
-  while (amount >= 1024 && unit < units.length - 1) {
-    amount /= 1024
-    unit++
+function smsPeer(item: SMSMessage) {
+  return item.sender || item.recipient || t('sms.unknownSender')
+}
+
+function smsThreadKey(item: SMSMessage) {
+  return item.sender || item.recipient || 'unknown'
+}
+
+const smsThreads = computed(() => {
+  const groups = new Map<string, { key: string; peer: string; items: SMSMessage[]; latest?: SMSMessage }>()
+  for (const item of [...smsItems.value, ...smsSentItems.value]) {
+    const key = smsThreadKey(item)
+    const group = groups.get(key) || { key, peer: smsPeer(item), items: [] }
+    group.items.push(item)
+    if (!group.latest || (item.received_at || '') > (group.latest.received_at || '')) group.latest = item
+    groups.set(key, group)
   }
-  return `${amount.toFixed(unit === 0 ? 0 : amount >= 100 ? 0 : 1)} ${units[unit]}`
+  return [...groups.values()].sort((a, b) =>
+    (b.latest?.received_at || '').localeCompare(a.latest?.received_at || ''),
+  )
+})
+
+const filteredSmsThreads = computed(() => {
+  const query = smsQuery.value.trim().toLowerCase()
+  if (!query) return smsThreads.value
+  return smsThreads.value.filter(
+    (thread) =>
+      thread.peer.toLowerCase().includes(query) ||
+      thread.items.some((item) => item.body.toLowerCase().includes(query)),
+  )
+})
+
+const selectedSmsThread = computed(
+  () =>
+    smsComposeNew.value
+      ? undefined
+      : smsThreads.value.find((thread) => thread.key === selectedSmsPeer.value) || smsThreads.value[0],
+)
+
+function syncSmsSelection() {
+  if (smsComposeNew.value) return
+  if (!selectedSmsThread.value) selectedSmsPeer.value = ''
+  else if (!smsThreads.value.some((thread) => thread.key === selectedSmsPeer.value))
+    selectedSmsPeer.value = smsThreads.value[0].key
+}
+
+function startNewSMS() {
+  smsComposeNew.value = true
+  selectedSmsPeer.value = ''
+  smsTo.value = ''
+  smsBody.value = ''
 }
 
 async function copySMSCode(code?: string) {
   if (!code) return
   try {
     await navigator.clipboard.writeText(code)
-    smsMessage.value = t('sms.codeCopied')
+    notifySuccess(t('sms.codeCopied'))
   } catch {
-    smsMessage.value = t('sms.codeCopyFailed')
+    notifyError('view', t('sms.codeCopyFailed'))
   }
 }
 
 async function loadEsim() {
   try {
-    esim.value = await api.esim()
+    const result = await api.esim()
+    esim.value = { ...result, profiles: Array.isArray(result.profiles) ? result.profiles : [] }
+    const [notes, health] = await Promise.all([
+      api.esimNotes().catch(() => ({ notes: {} })),
+      api.esimHealth().catch(() => null),
+    ])
+    esimNotes.value = notes.notes
+    esimHealth.value = health
+    if (!noteICCID.value) noteICCID.value = esim.value.profiles[0]?.iccid || ''
+    syncSelectedNote()
     for (const profile of esim.value.profiles) {
       if (profile.iccid && esimLabels.value[profile.iccid] === undefined) {
         esimLabels.value[profile.iccid] = profile.label || ''
       }
     }
-    esimMessage.value = ''
     viewError.value = ''
   } catch (error) {
     viewError.value = errorText(error, 'esim.unableLoad')
+  } finally {
+    markViewLoaded('esim')
   }
 }
 
-function refreshView(view: ViewID) {
-  if (view === 'sms') return loadSMS()
-  if (view === 'esim') return loadEsim()
-  if (view === 'network') return loadNetwork()
-  if (view === 'vowifi') return loadVowifi()
-  return Promise.resolve()
+async function loadCalls() {
+  try {
+    const result = await api.calls()
+    calls.value = { ...result, history: Array.isArray(result.history) ? result.history : [] }
+    viewError.value = ''
+  } catch (error) {
+    viewError.value = errorText(error, 'calls.unableLoad')
+  } finally {
+    markViewLoaded('calls')
+  }
+}
+async function rejectCall() {
+  try {
+    await api.rejectCall()
+    await loadView('calls')
+  } catch (error) {
+    viewError.value = errorText(error, 'calls.unableReject')
+  }
+}
+async function loadGPS() {
+  try {
+    const result = await api.gps()
+    gps.value = result
+    if (result.last_error && result.last_error !== lastGPSRemoteError) {
+      lastGPSRemoteError = result.last_error
+      notifyError('view', result.last_error)
+    } else if (!result.last_error) lastGPSRemoteError = ''
+    viewError.value = ''
+  } catch (error) {
+    notifyError('view', errorText(error, 'gps.unableLoad'))
+  } finally {
+    markViewLoaded('gps')
+  }
+}
+async function toggleGPS() {
+  try {
+    gps.value?.enabled ? (gps.value = await api.gpsStop()) : (gps.value = await api.gpsStart())
+  } catch (error) {
+    notifyError('view', errorText(error, 'gps.unableUpdate'))
+  }
+}
+async function refreshGPS() {
+  try {
+    gps.value = await api.gpsRefresh()
+  } catch (error) {
+    notifyError('view', errorText(error, 'gps.unableRefresh'))
+  }
+}
+async function runNetworkCheck(kind: '4g' | 'proxy') {
+  try {
+    const result = kind === '4g' ? await api.networkCheck4G() : await api.networkCheckProxy()
+    networkChecks.value = [
+      ...networkChecks.value.filter((item) => item.label !== kind),
+      { label: kind, ...result },
+    ]
+    notifySuccess(result.detail ? `${result.summary}: ${result.detail}` : result.summary)
+  } catch (error) {
+    notifyError('view', errorText(error, 'network.unableCheck'))
+  }
+}
+async function loadCellularPolicy() {
+  try {
+    cellularPolicy.value = await api.networkPolicy()
+  } catch (error) {
+    notifyError('view', errorText(error, 'network.unablePolicy'))
+  }
+}
+async function toggleCellularPolicy() {
+  try {
+    cellularPolicy.value = await api.setNetworkPolicy(!cellularPolicy.value?.force_off)
+  } catch (error) {
+    notifyError('view', errorText(error, 'network.unablePolicy'))
+  }
+}
+function localProfileNote(iccid?: string) {
+  return iccid ? esimNotes.value[iccid] : undefined
+}
+function noteSummary(note?: { label?: string; phone?: string; tags?: string; profile_class?: string }) {
+  return note ? [note.label, note.phone, note.tags || note.profile_class].filter(Boolean).join(' · ') : ''
+}
+function syncSelectedNote() {
+  const note = localProfileNote(noteICCID.value)
+  noteLabel.value = note?.label || ''
+  notePhone.value = note?.phone || ''
+  noteTags.value = note?.tags || ''
+}
+function openEsimSettings(iccid?: string) {
+  if (!iccid) return
+  esimSettingsICCID.value = iccid
+  noteICCID.value = iccid
+  syncSelectedNote()
+  esimSettingsOpen.value = true
+}
+function closeEsimSettings() {
+  esimSettingsOpen.value = false
+  esimSettingsICCID.value = ''
+}
+async function saveProfileNote() {
+  if (!noteICCID.value) return
+  try {
+    const profile = esim.value?.profiles.find((item) => item.iccid === noteICCID.value)
+    const label = (esimLabels.value[noteICCID.value] || '').trim()
+    if (label && label !== profile?.label) await api.esimRename(noteICCID.value, label)
+    await api.saveEsimNote(noteICCID.value, {
+      label: noteLabel.value,
+      phone: notePhone.value,
+      tags: noteTags.value,
+    })
+    esimNotes.value[noteICCID.value] = {
+      label: noteLabel.value,
+      phone: notePhone.value,
+      tags: noteTags.value,
+    }
+    notifySuccess(t('esim.noteSaved'))
+    closeEsimSettings()
+  } catch (error) {
+    notifyError('view', errorText(error, 'esim.unableNote'))
+  }
+}
+function isActiveView(view: ViewID) {
+  return pageVisible.value && active.value === view
+}
+
+function isNetworkOverviewActive() {
+  return isActiveView('network') || isActiveView('overview')
+}
+
+function stopActiveFallbackPolling() {
+  if (activeFallbackTimer !== undefined) window.clearInterval(activeFallbackTimer)
+  activeFallbackTimer = undefined
+}
+
+function startActiveFallbackPolling() {
+  stopActiveFallbackPolling()
+  const view = active.value
+  const interval = ACTIVE_VIEW_FALLBACK_INTERVALS[view]
+  if (pageVisible.value && !device.connected && interval) {
+    activeFallbackTimer = window.setInterval(() => {
+      if (!isActiveView(view) || device.connected) {
+        syncActiveRefreshers()
+        return
+      }
+      void loadView(view)
+    }, interval)
+  }
+}
+
+function clearPendingViewRefreshes() {
+  for (const pending of pendingViewRefreshes.values()) window.clearTimeout(pending.timer)
+  pendingViewRefreshes.clear()
+  queuedViewRefreshes.clear()
+}
+
+function syncActiveRefreshers() {
+  stopNetworkTrafficPolling()
+  stopActiveFallbackPolling()
+  if (!pageVisible.value) return
+  if (isNetworkOverviewActive()) startNetworkTrafficPolling()
+  if (!device.connected) startActiveFallbackPolling()
 }
 
 function scheduleViewRefresh(view: ViewID, delay = 0) {
-  const dueAt = Date.now() + delay
+  if (!isActiveView(view)) return
+  const now = Date.now()
+  const minInterval = view === 'overview' ? OVERVIEW_REFRESH_MIN_INTERVAL_MS : VIEW_REFRESH_MIN_INTERVAL_MS
+  const earliestAt = (lastViewRefreshAt.get(view) || 0) + minInterval
+  const dueAt = Math.max(now + delay, earliestAt)
   const pending = pendingViewRefreshes.get(view)
   if (pending && pending.dueAt <= dueAt) return
   if (pending) window.clearTimeout(pending.timer)
-  const timer = window.setTimeout(() => {
-    pendingViewRefreshes.delete(view)
-    if (active.value === view) void refreshView(view)
-  }, delay)
+  const timer = window.setTimeout(
+    () => {
+      pendingViewRefreshes.delete(view)
+      if (isActiveView(view)) void loadView(view)
+    },
+    Math.max(0, dueAt - now),
+  )
   pendingViewRefreshes.set(view, { timer, dueAt })
 }
 
@@ -186,58 +611,76 @@ function operationView(operation: OperationStatus): ViewID | undefined {
   return undefined
 }
 
+function eventViews(eventType: string): ViewID[] {
+  if (eventType.startsWith('call.')) return ['calls']
+  switch (eventType) {
+    case 'sms.received':
+    case 'sms.updated':
+      return ['sms']
+    case 'esim.updated':
+      return ['esim']
+    case 'gps.updated':
+      return ['gps']
+    case 'network.updated':
+      return ['network', 'overview']
+    case 'vowifi.updated':
+      return ['vowifi']
+    case 'sim.updated':
+    case 'device.offline':
+      return ['overview']
+    default:
+      return []
+  }
+}
+
 watch(esimOperation, (operation) => {
   if (!operation || esimReloadedOperationID.value === operation.operation_id) return
-  if (operation.state !== 'succeeded' && operation.state !== 'failed' && operation.state !== 'cancelled') return
+  if (operation.state !== 'succeeded' && operation.state !== 'failed' && operation.state !== 'cancelled')
+    return
 
   esimReloadedOperationID.value = operation.operation_id
   const delay = operation.state === 'succeeded' ? 1200 : 0
   scheduleViewRefresh('esim', delay)
 })
 
-watch(() => device.eventRevision, () => {
-  const eventType = device.lastEventType
-  if (eventType === 'snapshot' || eventType === 'resync.required') {
-    if (active.value !== 'overview') scheduleViewRefresh(active.value)
-    return
-  }
-  if (eventType === 'device.status.changed' || eventType.startsWith('backend.')) {
-    void device.refresh()
-    return
-  }
-  if (eventType === 'sms.updated') { scheduleViewRefresh('sms'); return }
-  if (eventType === 'esim.updated') { scheduleViewRefresh('esim', 1200); return }
-  if (eventType === 'network.updated') { scheduleViewRefresh('network'); return }
-  if (eventType === 'vowifi.updated') { scheduleViewRefresh('vowifi'); return }
-  if (eventType !== 'operation.completed') return
-  const operation = device.lastEventData as OperationStatus
-  if (!operation || typeof operation.type !== 'string') return
-  const view = operationView(operation)
-  if (!view) return
-  scheduleViewRefresh(view, view === 'esim' && operation.state === 'succeeded' ? 1200 : 0)
-})
+watch(
+  () => device.eventRevision,
+  () => {
+    const eventType = device.lastEventType
+    if (eventType === 'snapshot' || eventType === 'resync.required') {
+      if (active.value !== 'overview') scheduleViewRefresh(active.value)
+      return
+    }
+    if (eventType === 'device.status.changed') {
+      scheduleViewRefresh('overview')
+      return
+    }
+    if (eventType.startsWith('backend.')) {
+      scheduleViewRefresh('overview', 250)
+      return
+    }
+    const views = eventViews(eventType)
+    if (views.length) {
+      for (const view of views) scheduleViewRefresh(view, view === 'esim' ? 1200 : 0)
+      return
+    }
+    if (eventType !== 'operation.completed') return
+    const operation = device.lastEventData as OperationStatus
+    if (!operation || typeof operation.type !== 'string') return
+    const view = operationView(operation)
+    if (!view) return
+    scheduleViewRefresh(view, view === 'esim' && operation.state === 'succeeded' ? 1200 : 0)
+  },
+)
 
 async function enableEsim(iccid?: string) {
   if (!iccid) return
   try {
     const result = await api.esimEnable(iccid)
     esimOperationID.value = result.operation_id
-    esimMessage.value = t('esim.operationAccepted', { id: result.operation_id })
+    notifySuccess(t('esim.operationAccepted', { id: result.operation_id }))
   } catch (error) {
-    esimMessage.value = errorText(error, 'esim.unableEnable')
-  }
-}
-
-async function renameEsim(iccid?: string) {
-  if (!iccid) return
-  const label = (esimLabels.value[iccid] || '').trim()
-  if (!label) return
-  try {
-    await api.esimRename(iccid, label)
-    esimMessage.value = t('esim.nameUpdated')
-    await loadEsim()
-  } catch (error) {
-    esimMessage.value = errorText(error, 'esim.unableRename')
+    notifyError('view', errorText(error, 'esim.unableEnable'))
   }
 }
 
@@ -246,9 +689,9 @@ async function deleteEsim(iccid?: string) {
   try {
     const result = await api.esimDelete(iccid)
     esimOperationID.value = result.operation_id
-    esimMessage.value = t('esim.operationAccepted', { id: result.operation_id })
+    notifySuccess(t('esim.operationAccepted', { id: result.operation_id }))
   } catch (error) {
-    esimMessage.value = errorText(error, 'esim.unableDelete')
+    notifyError('view', errorText(error, 'esim.unableDelete'))
   }
 }
 
@@ -260,30 +703,18 @@ function closeEsimDownload() {
   esimDownloadOpen.value = false
 }
 
-function openEsimRename(iccid?: string) {
-  if (!iccid) return
-  esimRenameICCID.value = iccid
-  esimRenameOpen.value = true
-}
-
-function closeEsimRename() {
-  esimRenameOpen.value = false
-  esimRenameICCID.value = ''
-}
-
-async function submitEsimRename() {
-  await renameEsim(esimRenameICCID.value)
-  if (esimMessage.value === t('esim.nameUpdated')) closeEsimRename()
-}
-
 async function downloadEsim() {
   try {
-    const result = await api.esimDownload(esimActivationCode.value, esimConfirmationCode.value, esimMatchingID.value)
+    const result = await api.esimDownload(
+      esimActivationCode.value,
+      esimConfirmationCode.value,
+      esimMatchingID.value,
+    )
     esimOperationID.value = result.operation_id
-    esimMessage.value = t('esim.operationAccepted', { id: result.operation_id })
+    notifySuccess(t('esim.operationAccepted', { id: result.operation_id }))
     closeEsimDownload()
   } catch (error) {
-    esimMessage.value = errorText(error, 'esim.unableDownload')
+    notifyError('view', errorText(error, 'esim.unableDownload'))
   }
 }
 
@@ -291,16 +722,28 @@ async function loadNetwork() {
   try {
     network.value = await api.network()
     networkMode.value = network.value.mode || ''
-    await loadNetworkTraffic()
     viewError.value = ''
   } catch (error) {
     viewError.value = errorText(error, 'network.unableLoad')
+  } finally {
+    markViewLoaded('network')
+  }
+}
+
+async function loadOverviewNetwork() {
+  try {
+    overviewNetwork.value = await api.network()
+  } catch {
+    overviewNetwork.value = null
   }
 }
 
 async function loadNetworkTraffic() {
+  if (!isNetworkOverviewActive() || networkTrafficInFlight) return
+  networkTrafficInFlight = true
   try {
     const sample = await api.networkTraffic()
+    if (!isNetworkOverviewActive()) return
     const at = Date.now()
     const previous = previousTrafficSample
     const seconds = previous ? Math.max((at - previous.at) / 1000, 0.1) : 0
@@ -312,7 +755,9 @@ async function loadNetworkTraffic() {
     }
     previousTrafficSample = { rx: sample.rx_bytes, tx: sample.tx_bytes, at }
   } catch (error) {
-    networkMessage.value = errorText(error, 'network.unableLoad')
+    notifyError('view', errorText(error, 'network.unableLoad'))
+  } finally {
+    networkTrafficInFlight = false
   }
 }
 
@@ -324,6 +769,7 @@ function stopNetworkTrafficPolling() {
 
 function startNetworkTrafficPolling() {
   stopNetworkTrafficPolling()
+  if (!isNetworkOverviewActive()) return
   void loadNetworkTraffic()
   networkTrafficTimer = window.setInterval(() => void loadNetworkTraffic(), 1000)
 }
@@ -334,39 +780,263 @@ async function loadVowifi() {
     viewError.value = ''
   } catch (error) {
     viewError.value = errorText(error, 'vowifi.unableLoad')
+  } finally {
+    markViewLoaded('vowifi')
   }
 }
 
-async function selectView(view: ViewID) {
-  if (active.value === 'network' && view !== 'network') stopNetworkTrafficPolling()
-  active.value = view
+function newNotifierCall() {
+  notifierCallID.value = `debug-call-${Date.now()}`
+}
+
+function debugEventData(event: NotificationDebugEvent) {
+  return JSON.stringify(event.data, null, 2) || '{}'
+}
+
+async function loadNotifierDebug() {
+  try {
+    const result = await api.notificationDebugInfo()
+    notifierInfo.value = { ...result, actions: Array.isArray(result.actions) ? result.actions : [] }
+    viewError.value = ''
+  } catch (error) {
+    viewError.value = errorText(error, 'notifications.unableLoad')
+  } finally {
+    markViewLoaded('notifications')
+  }
+}
+
+async function loadNotificationPermissions() {
+  try {
+    notificationPermissions.value = await api.notificationPermissions()
+    viewError.value = ''
+  } catch (error) {
+    viewError.value = errorText(error, 'settings.unableLoadNotifications')
+  } finally {
+    markViewLoaded('settings')
+  }
+}
+
+async function loadSettings() {
+  try {
+    const [permissions, preferences] = await Promise.all([
+      api.notificationPermissions(),
+      api.notificationPreferences(),
+    ])
+    notificationPermissions.value = permissions
+    notificationPreferences.value = preferences.preferences
+    viewError.value = ''
+  } catch (error) {
+    viewError.value = errorText(error, 'settings.unableLoadNotifications')
+  } finally {
+    markViewLoaded('settings')
+  }
+}
+
+function notificationPermissionLabel(state?: NotificationPermissionStatus['state']) {
+  return state && te(`settings.notificationStates.${state}`)
+    ? t(`settings.notificationStates.${state}`)
+    : t('common.unknown')
+}
+
+async function requestNotificationPermission() {
+  notificationPermissionBusy.value = true
+  try {
+    const result = await api.requestNotificationPermission()
+    notificationPermissions.value = result
+    if (result.accepted) {
+      notifyInfo(t('settings.notificationPrompt'))
+      window.setTimeout(() => {
+        if (isActiveView('settings')) void loadNotificationPermissions()
+      }, 1000)
+    } else {
+      notifyError('view', t('settings.notificationsUnavailable'))
+    }
+  } catch (error) {
+    notifyError('view', errorText(error, 'settings.unableUpdateNotifications'))
+  } finally {
+    notificationPermissionBusy.value = false
+  }
+}
+
+async function openNotificationSettings() {
+  notificationPermissionBusy.value = true
+  try {
+    const result = await api.openNotificationSettings()
+    notificationPermissions.value = result
+    if (result.accepted) {
+      notifyInfo(t('settings.notificationSettingsOpened'))
+    } else {
+      notifyError('view', t('settings.notificationsUnavailable'))
+    }
+  } catch (error) {
+    notifyError('view', errorText(error, 'settings.unableUpdateNotifications'))
+  } finally {
+    notificationPermissionBusy.value = false
+  }
+}
+
+async function saveNotificationPreferences() {
+  if (!notificationPreferences.value) return
+  notificationPreferencesBusy.value = true
+  try {
+    const result = await api.updateNotificationPreferences({ ...notificationPreferences.value })
+    notificationPreferences.value = result.preferences
+    notifySuccess(t('settings.presentationSaved'))
+  } catch (error) {
+    notifyError('view', errorText(error, 'settings.unableUpdateNotifications'))
+    if (isActiveView('settings')) await loadSettings()
+  } finally {
+    notificationPreferencesBusy.value = false
+  }
+}
+
+async function triggerNotifierDebug(action: string) {
+  const payload: NotificationDebugRequest = { action }
+  if (action.startsWith('call_')) {
+    payload.call_id = notifierCallID.value.trim()
+    payload.number = notifierNumber.value.trim()
+  }
+  if (action === 'sms_received') {
+    payload.sender = notifierSender.value.trim()
+    payload.recipient = notifierRecipient.value.trim()
+    payload.body = notifierBody.value
+    payload.code = notifierCode.value.trim()
+  }
+  try {
+    const result = await api.notificationDebug(payload)
+    notifierInfo.value = notifierInfo.value
+      ? { ...notifierInfo.value, native_ui: result.native_ui }
+      : notifierInfo.value
+    notifierEvents.value = [...result.events.slice().reverse(), ...notifierEvents.value].slice(0, 40)
+    notifySuccess(t('notifications.published', { count: result.events.length }))
+    const firstData = result.events[0]?.data
+    if (action === 'call_incoming' && firstData && typeof firstData === 'object' && 'id' in firstData) {
+      notifierCallID.value = String((firstData as { id: unknown }).id)
+    }
+  } catch (error) {
+    notifyError('view', errorText(error, 'notifications.unablePublish'))
+  }
+}
+
+const viewLoaders: Partial<Record<ViewID, () => Promise<void>>> = {
+  overview: async () => {
+    await Promise.all([device.refresh(), loadOverviewNetwork(), loadEsim()])
+  },
+  calls: loadCalls,
+  sms: loadSMS,
+  esim: loadEsim,
+  network: async () => {
+    await Promise.all([loadNetwork(), loadCellularPolicy()])
+  },
+  gps: loadGPS,
+  vowifi: loadVowifi,
+  notifications: loadNotifierDebug,
+  settings: loadSettings,
+}
+
+function handleViewLoadError(view: ViewID, error: unknown) {
+  if (isActiveView(view)) viewError.value = errorText(error, 'errors.generic')
+}
+
+async function loadView(view: ViewID) {
+  if (!isActiveView(view)) return
+  const existing = viewLoadInFlight.get(view)
+  if (existing) {
+    queuedViewRefreshes.add(view)
+    try {
+      await existing
+    } catch {
+      // The first caller reports the error; this waiter must still resolve.
+    }
+    return
+  }
+  const loader = viewLoaders[view]
+  if (!loader) return
+  lastViewRefreshAt.set(view, Date.now())
+  let request: Promise<void>
+  try {
+    request = loader()
+  } catch (error) {
+    handleViewLoadError(view, error)
+    return
+  }
+  viewLoadInFlight.set(view, request)
+  try {
+    await request
+  } catch (error) {
+    handleViewLoadError(view, error)
+  } finally {
+    if (viewLoadInFlight.get(view) === request) viewLoadInFlight.delete(view)
+    if (queuedViewRefreshes.delete(view) && isActiveView(view)) scheduleViewRefresh(view)
+  }
+}
+
+function selectView(view: string) {
+  if (!nav.value.some((item) => item.id === view)) return
+  const group = navGroups.value.find((item) => item.items.some((item) => item.id === view))
+  if (group) mobileNavExpanded.value[group.id as NavGroupID] = true
+  mobileNavOpen.value = false
+  const nextView = view as ViewID
+  if (active.value === nextView) {
+    void loadView(nextView)
+    return
+  }
+  void router.push(viewPaths[nextView])
   viewError.value = ''
-  if (view === 'sms') await loadSMS()
-  if (view === 'esim') await loadEsim()
-  if (view === 'network') { await loadNetwork(); startNetworkTrafficPolling() }
-  if (view === 'vowifi') await loadVowifi()
+}
+
+watch(active, (view, previous) => {
+  if (previous === 'network') stopNetworkTrafficPolling()
+  syncActiveRefreshers()
+  void loadView(view)
+})
+
+watch(
+  () => device.connected,
+  () => {
+    syncActiveRefreshers()
+  },
+)
+
+function handleVisibilityChange() {
+  pageVisible.value = document.visibilityState === 'visible'
+  if (!pageVisible.value) clearPendingViewRefreshes()
+  syncActiveRefreshers()
+  if (pageVisible.value) void loadView(active.value)
 }
 
 async function sendSMS() {
+  const recipient = smsTo.value.trim()
+  const body = smsBody.value.trim()
+  if (!recipient || !body) return
   try {
-    const result = await api.sendSMS(smsTo.value, smsBody.value)
+    const result = await api.sendSMS(recipient, body)
     smsOperationID.value = result.operation_id
-    smsMessage.value = t('sms.accepted', { id: result.operation_id })
-    smsTo.value = ''
+    smsSentItems.value = [
+      ...smsSentItems.value,
+      { index: -Date.now(), recipient, body, received_at: new Date().toISOString() },
+    ]
+    selectedSmsPeer.value = recipient
+    smsComposeNew.value = false
+    notifySuccess(t('sms.accepted', { id: result.operation_id }))
     smsBody.value = ''
   } catch (error) {
-    smsMessage.value = errorText(error, 'sms.unableSend')
+    notifyError('view', errorText(error, 'sms.unableSend'))
   }
 }
 
 async function runVowifi(action: 'enable' | 'disable' | 'reconnect') {
-  vowifiMessage.value = ''
   try {
-    const result = action === 'enable' ? await api.vowifiEnable() : action === 'disable' ? await api.vowifiDisable() : await api.vowifiReconnect()
+    const result =
+      action === 'enable'
+        ? await api.vowifiEnable()
+        : action === 'disable'
+          ? await api.vowifiDisable()
+          : await api.vowifiReconnect()
     vowifiOperationID.value = result.operation_id
-    vowifiMessage.value = t('esim.operationAccepted', { id: result.operation_id })
+    notifySuccess(t('esim.operationAccepted', { id: result.operation_id }))
   } catch (error) {
-    vowifiMessage.value = errorText(error, 'vowifi.unableUpdate')
+    notifyError('view', errorText(error, 'vowifi.unableUpdate'))
   }
 }
 
@@ -382,42 +1052,40 @@ async function rescan() {
 async function rebootModule() {
   if (!device.has('device_control')) return
   if (!window.confirm(t('network.rebootConfirm'))) return
-  networkRebootMessage.value = t('network.rebooting')
+  notifyInfo(t('network.rebooting'))
   try {
     await api.reboot()
-    networkRebootMessage.value = t('network.rebootAccepted')
+    notifySuccess(t('network.rebootAccepted'))
     window.setTimeout(() => void device.refresh(), 8000)
-    window.setTimeout(() => void loadNetwork(), 12000)
+    scheduleViewRefresh('network', 12000)
   } catch (error) {
-    networkRebootMessage.value = errorText(error, 'network.unableReboot')
+    notifyError('view', errorText(error, 'network.unableReboot'))
   }
 }
 
 async function checkNetwork() {
   try {
     const result = await api.networkCheck()
-    networkMessage.value = result.detail ? `${result.summary}: ${result.detail}` : result.summary
+    notifySuccess(result.detail ? `${result.summary}: ${result.detail}` : result.summary)
   } catch (error) {
-    networkMessage.value = errorText(error, 'network.unableCheck')
+    notifyError('view', errorText(error, 'network.unableCheck'))
   }
 }
 
 async function setNetworkMode() {
-  networkMessage.value = ''
   try {
     const result = await api.networkMode(networkMode.value)
-    networkMessage.value = t('network.accepted', { id: result.operation_id })
+    notifySuccess(t('network.accepted', { id: result.operation_id }))
   } catch (error) {
-    networkMessage.value = errorText(error, 'network.unableChange')
+    notifyError('view', errorText(error, 'network.unableChange'))
   }
 }
 
 async function executeRawAT() {
-  rawATMessage.value = ''
   rawATResponse.value = ''
   rawATExecutedCommand.value = ''
   if (!device.has('raw_at')) {
-    rawATMessage.value = t('rawAt.unavailableDetail')
+    notifyError('view', t('rawAt.unavailableDetail'))
     return
   }
   try {
@@ -425,99 +1093,150 @@ async function executeRawAT() {
     rawATResponse.value = (await api.rawAT(command)).response
     rawATExecutedCommand.value = command
   } catch (error) {
-    rawATMessage.value = errorText(error, 'rawAt.unableExecute')
+    notifyError('view', errorText(error, 'rawAt.unableExecute'))
   }
 }
 
-onMounted(async () => { await device.refresh(); device.connect() })
-onBeforeUnmount(stopNetworkTrafficPolling)
+provide(viewContextKey, {
+  device,
+  deviceCapabilities,
+  loadView,
+  loadedViews,
+  networkTraffic,
+  overviewNetwork,
+  showSensitive,
+  stateLabel,
+  stateTone,
+  calls,
+  rejectCall,
+  formatSMSDate,
+  maskSensitive,
+  clearModuleSMS,
+  copySMSCode,
+  filteredSmsThreads,
+  refreshSMS,
+  selectedSmsPeer,
+  selectedSmsThread,
+  smsComposeNew,
+  sendSMS,
+  smsBody,
+  smsOperation,
+  smsQuery,
+  smsTo,
+  startNewSMS,
+  closeEsimDownload,
+  closeEsimSettings,
+  deleteEsim,
+  downloadEsim,
+  enableEsim,
+  esim,
+  esimActivationCode,
+  esimConfirmationCode,
+  esimDownloadOpen,
+  esimLabels,
+  esimMatchingID,
+  esimOperation,
+  esimSettingsOpen,
+  esimSettingsICCID,
+  localProfileNote,
+  noteLabel,
+  notePhone,
+  noteTags,
+  noteSummary,
+  openEsimDownload,
+  openEsimSettings,
+  saveProfileNote,
+  cellularPolicy,
+  checkNetwork,
+  loadNetwork,
+  network,
+  networkChecks,
+  networkMode,
+  rebootModule,
+  runNetworkCheck,
+  setNetworkMode,
+  toggleCellularPolicy,
+  usbNetworkModeLabel,
+  usbNetworkModeOptions,
+  gps,
+  refreshGPS,
+  toggleGPS,
+  AT_PRESETS,
+  applyATPreset,
+  executeRawAT,
+  parsedATResponse,
+  rawATCommand,
+  rawATPreset,
+  rawATResponse,
+  loadVowifi,
+  runVowifi,
+  vowifi,
+  vowifiOperation,
+  debugEventData,
+  loadNotificationPermissions,
+  newNotifierCall,
+  notifierBody,
+  notifierCallID,
+  notifierCode,
+  notifierEvents,
+  notifierInfo,
+  notifierNumber,
+  notifierRecipient,
+  notifierSender,
+  triggerNotifierDebug,
+  locale,
+  notificationPermissionBusy,
+  notificationPermissionLabel,
+  notificationPermissions,
+  notificationPreferences,
+  notificationPreferencesBusy,
+  openNotificationSettings,
+  requestNotificationPermission,
+  saveNotificationPreferences,
+})
+
+onMounted(async () => {
+  document.addEventListener('visibilitychange', handleVisibilityChange)
+  await device.refresh()
+  device.connect()
+  syncActiveRefreshers()
+})
+onBeforeUnmount(() => {
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
+  clearPendingViewRefreshes()
+  stopNetworkTrafficPolling()
+  stopActiveFallbackPolling()
+})
 </script>
 
 <template>
-  <div class="app-shell">
-    <aside class="sidebar">
-      <div class="brand"><span class="brand-mark">D</span><div><strong>DJOneHub</strong><small>{{ t('brand.subtitle') }}</small></div></div>
-      <nav :aria-label="t('nav.primary')">
-        <button
-          v-for="item in nav"
-          :key="item.id"
-          :class="['nav-item', { active: active === item.id, muted: item.capability && !device.has(item.capability) }]"
-          :aria-current="active === item.id ? 'page' : undefined"
-          @click="selectView(item.id)"
-        >{{ item.label }}</button>
-      </nav>
-      <div class="sidebar-footer"><span :class="['dot', { live: device.connected }]" />{{ device.connected ? t('status.live') : t('status.reconnecting') }}</div>
-    </aside>
-    <main class="main-content">
-      <header class="topbar"><div><p class="eyebrow">{{ t('header.controlPlane') }}</p><h1>{{ activeLabel }}</h1></div><button class="button secondary" @click="rescan">{{ t('common.rescan') }}</button></header>
-      <div v-if="device.error" class="alert">{{ device.error }} <button class="link-button" @click="device.refresh">{{ t('common.retry') }}</button></div>
-      <div v-if="viewError" class="alert">{{ viewError }}</div>
-
-      <section v-if="active === 'overview'" class="view-grid">
-        <div class="status-banner"><div><span class="eyebrow">{{ t('overview.deviceStatus') }}</span><h2>{{ stateLabel }}</h2><p>{{ device.snapshot?.identity.product || t('overview.noModem') }}</p></div><span :class="['status-pill', stateValue]">{{ stateLabel }}</span></div>
-        <div class="metric-grid"><article><span>{{ t('overview.imei') }}</span><strong>{{ device.status?.identity.imei || t('common.empty') }}</strong></article><article><span>{{ t('overview.sim') }}</span><strong>{{ device.status?.sim.inserted ? t('status.inserted') : t('common.notAvailable') }}</strong></article><article><span>{{ t('overview.registration') }}</span><strong>{{ device.status?.radio.registered ? t('status.registered') : t('status.offline') }}</strong></article><article><span>{{ t('overview.backend') }}</span><strong>{{ device.snapshot?.backend || t('common.empty') }}</strong></article></div>
-        <div class="panel"><div class="panel-heading"><h2>{{ t('overview.radioNetwork') }}</h2><span>{{ device.status?.radio.network_mode || t('common.unknown') }}</span></div><div class="detail-list"><div><span>{{ t('overview.operator') }}</span><strong>{{ device.status?.radio.operator || t('common.empty') }}</strong></div><div><span>{{ t('overview.signal') }}</span><strong>{{ device.status?.radio.signal_dbm ? `${device.status.radio.signal_dbm} dBm` : t('common.empty') }}</strong></div><div><span>{{ t('overview.iccid') }}</span><strong>{{ device.status?.sim.iccid || t('common.empty') }}</strong></div><div><span>{{ t('overview.capabilities') }}</span><strong>{{ Object.keys(device.capabilities).length }}</strong></div></div></div>
-        <div class="panel"><div class="panel-heading"><h2>{{ t('overview.availableCapabilities') }}</h2><span>{{ t('overview.serverReported') }}</span></div><div class="capability-list"><span v-for="(_, name) in device.capabilities" :key="name" class="capability">{{ name }}</span><span v-if="!Object.keys(device.capabilities).length" class="empty">{{ t('overview.capabilityReady') }}</span></div></div>
-      </section>
-
-      <section v-else-if="active === 'sms'" class="view-grid"><div class="panel"><div class="panel-heading"><h2>{{ t('sms.title') }}</h2><div class="panel-actions"><button class="button secondary" @click="refreshSMS">{{ t('common.refresh') }}</button><button class="button secondary" :disabled="!device.has('sms_read')" @click="clearModuleSMS">{{ t('common.clear') }}</button></div></div><div class="message-list"><div v-for="item in smsItems" :key="item.sender + ':' + item.received_at + ':' + item.index" class="message-row"><strong>{{ item.sender || t('sms.unknownSender') }}</strong><span>{{ item.body || t('sms.backendContent') }}</span><small v-if="item.received_at">{{ formatSMSDate(item.received_at) }}<span v-if="item.code"> · {{ t('sms.code', { code: item.code }) }} <button class="link-button" type="button" @click="copySMSCode(item.code)">{{ t('sms.copyCode') }}</button></span><span v-if="item.total_parts && item.total_parts > 1"> · {{ t('sms.part', { current: item.part_number, total: item.total_parts }) }}</span></small></div><p v-if="!smsItems.length" class="empty">{{ t('sms.noMessages') }}</p></div><p v-if="smsMessage" class="form-message">{{ smsMessage }}</p></div><div class="panel"><div class="panel-heading"><h2>{{ t('sms.sendTitle') }}</h2></div><form class="form" @submit.prevent="sendSMS"><label>{{ t('sms.recipient') }}<input v-model="smsTo" name="recipient" placeholder="+1 555 0100" required /></label><label>{{ t('sms.message') }}<textarea v-model="smsBody" name="message" rows="5" required /></label><button class="button primary" :disabled="!device.has('sms_send')">{{ t('common.send') }}</button><p v-if="smsMessage" class="form-message">{{ smsMessage }}</p><div v-if="smsOperation" class="operation-status"><span>{{ t('sms.sendStatus') }}</span><strong>{{ smsOperation.state }} · {{ smsOperation.progress }}%</strong><small>{{ smsOperation.message || smsOperation.operation_id }}</small></div></form></div></section>
-
-      <section v-else-if="active === 'esim'" class="view-grid">
-        <div class="panel esim-panel">
-          <div class="panel-heading"><div><span class="eyebrow">{{ t('esim.eyebrow') }}</span><div class="section-title"><h2>{{ t('esim.profiles') }}</h2><button class="icon-button" type="button" :title="t('common.download')" :aria-label="t('common.download')" :disabled="!device.has('esim')" @click="openEsimDownload">+</button></div></div><button class="button secondary" @click="loadEsim">{{ t('common.refresh') }}</button></div>
-          <div class="detail-list"><div><span>{{ t('esim.eid') }}</span><strong>{{ esim?.eid || t('common.empty') }}</strong></div><div><span>{{ t('esim.profiles') }}</span><strong>{{ esim?.profiles.length || 0 }}</strong></div></div>
-          <div v-if="esim?.card_type === 'physical_sim'" class="unavailable"><h2>{{ t('esim.physical') }}</h2><p>{{ t('esim.physicalDetail') }}</p></div><div v-else-if="esim?.card_type === 'unknown'" class="unavailable"><h2>{{ t('esim.unavailable') }}</h2><p>{{ esim?.message || t('esim.unavailableDetail') }}</p></div>
-          <div v-else class="message-list">
-            <div v-for="profile in esim?.profiles" :key="profile.aid + ':' + profile.iccid" class="message-row profile-row">
-              <div class="profile-summary"><strong>{{ profile.label || profile.iccid || t('esim.unnamed') }}</strong><span>{{ profile.state === 'enabled' ? t('esim.enabled') : profile.state === 'disabled' ? t('esim.disabled') : t('esim.stateUnavailable') }}</span><small>{{ profile.service_provider_name || t('esim.unknownProvider') }} · {{ profile.profile_class || t('esim.unknownClass') }}</small></div>
-              <div class="profile-actions"><button class="button secondary" type="button" @click="openEsimRename(profile.iccid)">{{ t('common.rename') }}</button><button v-if="profile.state === 'disabled'" class="button primary" type="button" @click="enableEsim(profile.iccid)">{{ t('common.enable') }}</button><button v-if="profile.state !== 'enabled'" class="button secondary" type="button" @click="deleteEsim(profile.iccid)">{{ t('common.delete') }}</button></div>
-            </div>
-            <p v-if="!esim?.profiles.length" class="empty">{{ t('esim.noProfiles') }}</p>
-          </div>
-          <p v-if="esimMessage" class="form-message">{{ esimMessage }}</p>
-          <div v-if="esimOperation" class="operation-status"><span>{{ t('common.operation') }}</span><strong>{{ esimOperation.state }} · {{ esimOperation.progress }}%</strong><small>{{ esimOperation.message || esimOperation.operation_id }}</small></div>
-        </div>
-        <div v-if="esimDownloadOpen" class="modal-backdrop" role="presentation" @click.self="closeEsimDownload">
-          <section class="modal" role="dialog" aria-modal="true" aria-labelledby="download-profile-title">
-            <div class="modal-heading"><div><span class="eyebrow">{{ t('esim.eyebrow') }}</span><h2 id="download-profile-title">{{ t('esim.downloadTitle') }}</h2></div><button class="icon-button modal-close" type="button" :title="t('common.close')" :aria-label="t('common.close')" @click="closeEsimDownload">x</button></div>
-            <form class="form" @submit.prevent="downloadEsim"><label>{{ t('esim.activationCode') }}<input v-model="esimActivationCode" required placeholder="LPA:1$..." /></label><label>{{ t('esim.confirmationCode') }}<input v-model="esimConfirmationCode" /></label><label>{{ t('esim.matchingId') }}<input v-model="esimMatchingID" /></label><div class="modal-actions"><button class="button secondary" type="button" @click="closeEsimDownload">{{ t('common.cancel') }}</button><button class="button primary" type="submit" :disabled="!device.has('esim') || !esimActivationCode.trim()">{{ t('common.download') }}</button></div></form>
-          </section>
-        </div>
-        <div v-if="esimRenameOpen" class="modal-backdrop" role="presentation" @click.self="closeEsimRename">
-          <section class="modal" role="dialog" aria-modal="true" aria-labelledby="rename-profile-title">
-            <div class="modal-heading"><div><span class="eyebrow">PROFILE</span><h2 id="rename-profile-title">{{ t('esim.renameTitle') }}</h2></div><button class="icon-button modal-close" type="button" :title="t('common.close')" :aria-label="t('common.close')" @click="closeEsimRename">x</button></div>
-            <form class="form" @submit.prevent="submitEsimRename"><label>{{ t('esim.profileName') }}<input v-model="esimLabels[esimRenameICCID]" required maxlength="64" /></label><div class="modal-actions"><button class="button secondary" type="button" @click="closeEsimRename">{{ t('common.cancel') }}</button><button class="button primary" type="submit">{{ t('common.save') }}</button></div></form>
-          </section>
-        </div>
-      </section>
-
-      <section v-else-if="active === 'network'" class="view-grid"><div class="panel"><div class="panel-heading"><h2>{{ t('network.title') }}</h2><button class="button secondary" @click="loadNetwork">{{ t('common.refresh') }}</button></div><div class="detail-list"><div><span>{{ t('network.usbMode') }}</span><strong>{{ usbNetworkModeLabel(network?.mode) }}</strong></div><div><span>{{ t('network.radioMode') }}</span><strong>{{ network?.network_mode || t('common.empty') }}</strong></div><div><span>{{ t('network.interface') }}</span><strong>{{ network?.interface || t('common.empty') }}</strong></div><div><span>{{ t('network.defaultRoute') }}</span><strong>{{ network?.default_route || t('common.empty') }}</strong></div><div><span>{{ t('network.addresses') }}</span><strong>{{ network?.addresses?.join(', ') || t('common.empty') }}</strong></div><div><span>{{ t('network.traffic') }}</span><strong>{{ network ? `${formatBytes(networkTraffic.rxBytes)} ${t('network.received')} · ${formatBytes(networkTraffic.txBytes)} ${t('network.sent')}` : t('common.empty') }}</strong></div><div><span>{{ t('network.currentDownload') }}</span><strong>{{ formatBytes(networkTraffic.rxRate) }}/s</strong></div><div><span>{{ t('network.currentUpload') }}</span><strong>{{ formatBytes(networkTraffic.txRate) }}/s</strong></div></div><div class="panel-actions network-actions"><button class="button secondary" :disabled="!device.has('network_status')" @click="checkNetwork">{{ t('common.check') }}</button><button class="button secondary danger-button" :disabled="!device.has('device_control')" @click="rebootModule">{{ t('network.reboot') }}</button></div><p v-if="networkMessage" class="form-message">{{ networkMessage }}</p><p v-if="networkRebootMessage" class="form-message">{{ networkRebootMessage }}</p></div><div class="panel"><div class="panel-heading"><h2>{{ t('network.usbNetworkMode') }}</h2><span>{{ usbNetworkModeLabel(networkMode) }}</span></div><form class="form" @submit.prevent="setNetworkMode"><label>{{ t('network.mode') }}<select v-model="networkMode" required><option v-for="option in usbNetworkModeOptions" :key="option.value" :value="option.value">{{ option.label }} ({{ option.value }})</option></select></label><button class="button primary" type="submit" :disabled="!device.has('network_control')">{{ t('common.apply') }}</button><p v-if="!device.has('network_control')" class="form-message">{{ t('network.unavailableControl') }}</p></form></div></section>
-
-      <section v-else-if="active === 'raw-at'" class="panel">
-        <div v-if="device.has('raw_at')">
-          <div class="panel-heading"><div><span class="eyebrow">{{ t('rawAt.ready') }}</span><h2>{{ t('rawAt.title') }}</h2></div></div>
-          <form class="form" @submit.prevent="executeRawAT">
-            <label>{{ t('rawAt.preset') }}<select v-model="rawATPreset" @change="applyATPreset"><option value="">{{ t('rawAt.selectPreset') }}</option><option v-for="preset in AT_PRESETS" :key="preset.id" :value="preset.id">{{ t(preset.labelKey) }} · {{ preset.command }}</option></select></label>
-            <label>{{ t('rawAt.command') }}<input v-model="rawATCommand" name="at-command" placeholder="AT+CSQ" required @input="rawATPreset = ''" /></label>
-            <button class="button primary" type="submit" :disabled="!rawATCommand.trim()">{{ t('common.execute') }}</button>
-          </form>
-          <p v-if="rawATMessage" class="form-message">{{ rawATMessage }}</p>
-          <div v-if="parsedATResponse" class="at-result">
-            <div class="at-result-heading"><h3>{{ t('rawAt.parsedTitle') }}</h3><span :class="['at-status', parsedATResponse.statusKey.endsWith('error') ? 'error' : parsedATResponse.statusKey.endsWith('ok') ? 'ok' : 'unknown']">{{ t(parsedATResponse.statusKey) }}</span></div>
-            <dl v-if="parsedATResponse.fields.length" class="at-fields"><template v-for="(field, index) in parsedATResponse.fields" :key="`${field.labelKey}-${index}`"><dt>{{ t(field.labelKey) }}</dt><dd>{{ field.valueKey ? t(field.valueKey) : field.value }}</dd></template></dl>
-            <p v-else class="empty">{{ t('rawAt.noParsedFields') }}</p>
-          </div>
-          <div v-if="rawATResponse" class="at-raw"><h3>{{ t('rawAt.rawTitle') }}</h3><pre class="at-response">{{ rawATResponse }}</pre></div>
-        </div>
-        <div v-else class="unavailable"><span class="eyebrow">{{ t('rawAt.unavailable') }}</span><h2>{{ t('rawAt.title') }}</h2><p>{{ t('rawAt.unavailableDetail') }}</p></div>
-      </section>
-
-      <section v-else-if="active === 'vowifi'" class="panel"><div class="panel-heading"><h2>{{ t('vowifi.title') }}</h2><button class="button secondary" @click="loadVowifi">{{ t('common.refresh') }}</button></div><div class="detail-list"><div><span>{{ t('vowifi.availability') }}</span><strong>{{ vowifi?.available === false ? t('vowifi.unavailable') : vowifi?.available ? t('vowifi.available') : t('common.empty') }}</strong></div><div><span>{{ t('vowifi.state') }}</span><strong>{{ vowifi?.state || t('common.empty') }}</strong></div><div><span>{{ t('vowifi.reason') }}</span><strong>{{ vowifi?.reason || t('common.empty') }}</strong></div></div><div class="panel-actions vowifi-actions"><button class="button primary" :disabled="!device.has('vowifi_control')" @click="runVowifi('enable')">{{ t('common.enable') }}</button><button class="button secondary" :disabled="!device.has('vowifi_control')" @click="runVowifi('disable')">{{ t('common.disable') }}</button><button class="button secondary" :disabled="!device.has('vowifi_control')" @click="runVowifi('reconnect')">{{ t('common.reconnect') }}</button></div><p v-if="!device.has('vowifi_control')" class="form-message">{{ t('vowifi.unavailableControl') }}</p><p v-if="vowifiMessage" class="form-message">{{ vowifiMessage }}</p><div v-if="vowifiOperation" class="operation-status"><span>{{ t('vowifi.operationStatus') }}</span><strong>{{ vowifiOperation.state }} · {{ vowifiOperation.progress }}%</strong><small>{{ vowifiOperation.message || vowifiOperation.operation_id }}</small></div></section>
-
-      <section v-else-if="active === 'settings'" class="panel settings-panel">
-        <div class="panel-heading"><div><span class="eyebrow">{{ t('settings.appearance') }}</span><h2>{{ t('settings.title') }}</h2></div></div>
-        <form class="form settings-form"><label for="language-select">{{ t('language.title') }}<select id="language-select" v-model="locale"><option value="en-US">{{ t('language.english') }}</option><option value="zh-CN">{{ t('language.chinese') }}</option></select></label><p class="settings-detail">{{ t('settings.languageDetail') }}</p><p class="form-message">{{ t('settings.saved') }}</p></form>
-      </section>
-    </main>
-  </div>
+  <AppShell
+    :brand-subtitle="t('brand.subtitle')"
+    :nav-groups="navGroups"
+    :active="active"
+    :connected="device.connected"
+    :connection-label="device.connected ? t('status.linkReady') : t('status.linkReconnecting')"
+    :device-ready="effectiveStateValue === 'ready'"
+    :device-label="sidebarDeviceLabel"
+    :rescan-label="t('common.rescan')"
+    :primary-label="t('nav.primary')"
+    :menu-label="t('nav.menu')"
+    :close-label="t('nav.close')"
+    :mobile-open="mobileNavOpen"
+    :mobile-expanded="mobileNavExpanded"
+    @select-view="selectView"
+    @toggle-mobile="mobileNavOpen = !mobileNavOpen"
+    @toggle-group="toggleMobileGroup"
+    @rescan="rescan"
+  >
+    <PageHeader :eyebrow="t('header.controlPlane')" :title="activeLabel" :subtitle="activeDescription">
+      <template v-if="active === 'sms'" #actions>
+        <a-button @click="refreshSMS"><ReloadOutlined />{{ t('common.refresh') }}</a-button>
+        <a-button type="primary" :disabled="!device.has('sms_send')" @click="startNewSMS">
+          <EditOutlined />{{ t('sms.newMessage') }}
+        </a-button>
+      </template>
+    </PageHeader>
+    <RouterView />
+  </AppShell>
 </template>

@@ -21,6 +21,15 @@ type NetworkController interface {
 	CheckConnectivity(context.Context, device.Candidate) (Connectivity, error)
 }
 
+// NetworkDiagnostics exposes platform-specific inspection without leaking
+// operating-system commands into application services.
+type NetworkDiagnostics interface {
+	Diagnostics(context.Context, device.Candidate) (map[string]any, error)
+	CheckRoute(context.Context, device.Candidate, string) (Connectivity, error)
+	CellularPolicy(context.Context, device.Candidate) (CellularPolicy, error)
+	SetCellularPolicy(context.Context, device.Candidate, bool) (CellularPolicy, error)
+}
+
 type PacketTunnel interface {
 	Open(context.Context, device.Candidate) (Tunnel, error)
 }
@@ -49,4 +58,9 @@ type Connectivity struct {
 	OK      bool   `json:"ok"`
 	Summary string `json:"summary"`
 	Detail  string `json:"detail,omitempty"`
+}
+
+type CellularPolicy struct {
+	ForceOff bool     `json:"force_off"`
+	Services []string `json:"services,omitempty"`
 }

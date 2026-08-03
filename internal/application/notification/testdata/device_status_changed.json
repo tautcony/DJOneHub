@@ -1,0 +1,25 @@
+{
+  "id": 1,
+  "type": "device.status.changed",
+  "version": 1,
+  "occurred_at": "2026-08-02T10:00:00Z",
+  "data": {
+    "state": "ready",
+    "identity": {
+      "stable_id": "usb-1-2",
+      "serial_number": "ABCDEF",
+      "imei": "860000000000000",
+      "iccid": "8986000000000000000",
+      "vendor_id": "2c7c",
+      "product_id": "0125"
+    },
+    "backend": "at",
+    "backend_reason": "usb",
+    "capabilities": {
+      "call_monitor": "at+clcc",
+      "gps": "at+qgps",
+      "sms_read": "at+cmgl"
+    },
+    "generation": 5
+  }
+}

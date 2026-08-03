@@ -4,6 +4,7 @@ import MapKit
 @MainActor
 final class GPSMapPanel: NSObject {
     private let panel: NSPanel
+    private let surfaceView = RoundedPanelSurfaceView(frame: .zero)
     private let mapView = MKMapView()
     private let mapOverlay = NSVisualEffectView()
     private let stateLabel = NSTextField(labelWithString: "正在搜索卫星")
@@ -37,6 +38,7 @@ final class GPSMapPanel: NSObject {
     func show() {
         positionAtTopRight()
         panel.orderFrontRegardless()
+        panel.invalidateShadow()
     }
 
     func hide() {
@@ -47,7 +49,7 @@ final class GPSMapPanel: NSObject {
         panel.isVisible ? hide() : show()
     }
 
-    func update(with fix: GPSFixSummary?) {
+    func update(with fix: GPSFixEvent?) {
         guard let fix,
               let latitude = Self.coordinate(fix.latitude, valid: -90...90),
               let longitude = Self.coordinate(fix.longitude, valid: -180...180)
@@ -75,19 +77,11 @@ final class GPSMapPanel: NSObject {
             MKCoordinateRegion(center: coordinate, latitudinalMeters: 500, longitudinalMeters: 500),
             animated: true
         )
+        panel.invalidateShadow()
     }
 
     private func buildContent() {
-        let root = NSVisualEffectView()
-        root.material = .underWindowBackground
-        root.blendingMode = .behindWindow
-        root.state = .active
-        root.wantsLayer = true
-        root.layer?.cornerRadius = 22
-        root.layer?.masksToBounds = true
-        root.layer?.borderWidth = 1
-        root.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.75).cgColor
-        panel.contentView = root
+        panel.contentView = surfaceView
 
         mapView.translatesAutoresizingMaskIntoConstraints = false
         mapView.showsCompass = false
@@ -158,12 +152,12 @@ final class GPSMapPanel: NSObject {
         textStack.spacing = 5
         textStack.translatesAutoresizingMaskIntoConstraints = false
 
-        root.addSubview(mapView)
-        root.addSubview(mapOverlay)
-        root.addSubview(textStack)
+        surfaceView.addSubview(mapView)
+        surfaceView.addSubview(mapOverlay)
+        surfaceView.addSubview(textStack)
         NSLayoutConstraint.activate([
-            mapView.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 12),
-            mapView.centerYAnchor.constraint(equalTo: root.centerYAnchor),
+            mapView.leadingAnchor.constraint(equalTo: surfaceView.leadingAnchor, constant: 12),
+            mapView.centerYAnchor.constraint(equalTo: surfaceView.centerYAnchor),
             mapView.widthAnchor.constraint(equalToConstant: 138),
             mapView.heightAnchor.constraint(equalToConstant: 132),
             mapOverlay.leadingAnchor.constraint(equalTo: mapView.leadingAnchor),
@@ -173,8 +167,8 @@ final class GPSMapPanel: NSObject {
             overlayStack.centerXAnchor.constraint(equalTo: mapOverlay.centerXAnchor),
             overlayStack.centerYAnchor.constraint(equalTo: mapOverlay.centerYAnchor),
             textStack.leadingAnchor.constraint(equalTo: mapView.trailingAnchor, constant: 14),
-            textStack.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -15),
-            textStack.centerYAnchor.constraint(equalTo: root.centerYAnchor),
+            textStack.trailingAnchor.constraint(equalTo: surfaceView.trailingAnchor, constant: -15),
+            textStack.centerYAnchor.constraint(equalTo: surfaceView.centerYAnchor),
         ])
         setSignalBars(active: 1)
     }
@@ -199,6 +193,7 @@ final class GPSMapPanel: NSObject {
         satelliteValue.stringValue = "正在查找"
         accuracyValue.stringValue = "等待定位"
         setSignalBars(active: 1)
+        panel.invalidateShadow()
     }
 
     private func setSignalBars(active: Int) {
@@ -217,7 +212,7 @@ final class GPSMapPanel: NSObject {
         )
     }
 
-    private func signalStrength(for fix: GPSFixSummary) -> Int {
+    private func signalStrength(for fix: GPSFixEvent) -> Int {
         guard let satellites = Int(fix.satellites), let hdop = Double(fix.hdop) else { return 1 }
         if satellites >= 10 && hdop <= 1.2 { return 4 }
         if satellites >= 8 && hdop <= 2 { return 3 }
@@ -230,5 +225,12 @@ final class GPSMapPanel: NSObject {
             return nil
         }
         return value
+    }
+
+    var usesSharedSurfaceStyle: Bool {
+        panel.hasShadow &&
+            surfaceView.layer?.cornerRadius == RoundedPanelSurfaceView.cornerRadius &&
+            surfaceView.layer?.masksToBounds == true &&
+            surfaceView.layer?.shadowOpacity == 0
     }
 }

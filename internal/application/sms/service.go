@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/iniwex5/vohive/internal/application/device"
+	"github.com/iniwex5/vohive/internal/application/notification"
 	"github.com/iniwex5/vohive/internal/application/operation"
 	"github.com/iniwex5/vohive/internal/backend"
 	domain "github.com/iniwex5/vohive/internal/domain/device"
@@ -27,6 +28,32 @@ type Service struct {
 
 func NewService(devices *device.Service, ops *operation.Manager, runtime *runtime.Runtime) *Service {
 	return &Service{devices: devices, ops: ops, runtime: runtime}
+}
+
+// Start runs the periodic refresh that drives sms.received events, replacing
+// the legacy notifier's 3-second polling.
+func (s *Service) Start(ctx context.Context) {
+	go s.poller(ctx)
+}
+
+func (s *Service) poller(ctx context.Context) {
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(2 * time.Second):
+	}
+	for {
+		if _, err := s.Refresh(ctx); err != nil {
+			// Polling errors are silent; the next tick retries.
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
 }
 
 func (s *Service) List(ctx context.Context) ([]backend.SMSMessage, error) {
@@ -70,18 +97,35 @@ func (s *Service) Refresh(ctx context.Context) ([]backend.SMSMessage, error) {
 	for index := range items {
 		items[index].Code = VerificationCode(items[index].Body)
 	}
-	merged := s.merge(items)
-	s.ops.Publish("sms.updated", map[string]any{"count": len(merged)})
+	s.mu.RLock()
+	prevCount, loaded := len(s.cache), s.loaded
+	s.mu.RUnlock()
+	merged, fresh := s.merge(items)
+	// The first load only establishes the baseline; subsequent refreshes
+	// publish the incremental messages that were not in the cache before.
+	if loaded {
+		for _, message := range fresh {
+			s.ops.Publish(notification.EventSMSReceived, toSMSMessageEvent(message))
+		}
+	}
+	if len(merged) != prevCount || !loaded {
+		s.ops.Publish("sms.updated", map[string]any{"count": len(merged)})
+	}
 	return merged, nil
 }
 
-func (s *Service) merge(items []backend.SMSMessage) []backend.SMSMessage {
+func toSMSMessageEvent(message backend.SMSMessage) notification.SMSMessageEvent {
+	return notification.SMSMessageEvent{Index: message.Index, Sender: message.Sender, Recipient: message.Recipient, Body: message.Body, Code: message.Code, ReceivedAt: message.ReceivedAt}
+}
+
+func (s *Service) merge(items []backend.SMSMessage) ([]backend.SMSMessage, []backend.SMSMessage) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	seen := make(map[string]struct{}, len(s.cache)+len(items))
 	for _, item := range s.cache {
 		seen[smsCacheKey(item)] = struct{}{}
 	}
+	var fresh []backend.SMSMessage
 	for _, item := range items {
 		if item.Code == "" {
 			item.Code = VerificationCode(item.Body)
@@ -92,6 +136,7 @@ func (s *Service) merge(items []backend.SMSMessage) []backend.SMSMessage {
 		}
 		seen[key] = struct{}{}
 		s.cache = append(s.cache, item)
+		fresh = append(fresh, item)
 	}
 	sort.SliceStable(s.cache, func(i, j int) bool {
 		return s.cache[i].ReceivedAt.After(s.cache[j].ReceivedAt)
@@ -100,7 +145,7 @@ func (s *Service) merge(items []backend.SMSMessage) []backend.SMSMessage {
 		s.cache = s.cache[:500]
 	}
 	s.loaded = true
-	return clone(s.cache)
+	return clone(s.cache), fresh
 }
 
 func clone(items []backend.SMSMessage) []backend.SMSMessage {

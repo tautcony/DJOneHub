@@ -33,9 +33,9 @@ export const AT_PRESETS: ATPreset[] = [
 function linesOf(response: string): string[] {
   return response
     .split(/\r?\n/)
-    .map(line => line.trim())
+    .map((line) => line.trim())
     .filter(Boolean)
-    .filter(line => !/^AT(?:\+|$)/i.test(line))
+    .filter((line) => !/^AT(?:\+|$)/i.test(line))
 }
 
 function quotedCSV(value: string): string[] {
@@ -47,19 +47,30 @@ function quotedCSV(value: string): string[] {
 }
 
 function responseValue(lines: string[], prefix: RegExp): string | undefined {
-  const line = lines.find(item => prefix.test(item))
+  const line = lines.find((item) => prefix.test(item))
   return line?.replace(prefix, '').trim()
 }
 
 function statusValue(value: string): string {
-  return value === '1' || value === '5' ? 'rawAt.values.registered' : value === '2' ? 'rawAt.values.searching' : value === '3' ? 'rawAt.values.rejected' : value === '0' || value === '4' ? 'rawAt.values.notRegistered' : value
+  return value === '1' || value === '5'
+    ? 'rawAt.values.registered'
+    : value === '2'
+      ? 'rawAt.values.searching'
+      : value === '3'
+        ? 'rawAt.values.rejected'
+        : value === '0' || value === '4'
+          ? 'rawAt.values.notRegistered'
+          : value
 }
 
 function parseCSQ(lines: string[]): ATField[] {
   const value = responseValue(lines, /^\+CSQ:\s*/)
   if (!value) return []
-  const [rssi, ber] = value.split(',').map(item => item.trim())
-  const fields: ATField[] = [{ labelKey: 'rawAt.fields.rssi', value: rssi || '—' }, { labelKey: 'rawAt.fields.ber', value: ber || '—' }]
+  const [rssi, ber] = value.split(',').map((item) => item.trim())
+  const fields: ATField[] = [
+    { labelKey: 'rawAt.fields.rssi', value: rssi || '—' },
+    { labelKey: 'rawAt.fields.ber', value: ber || '—' },
+  ]
   const numericRSSI = Number(rssi)
   if (Number.isInteger(numericRSSI) && numericRSSI >= 0 && numericRSSI <= 31) {
     fields.push({ labelKey: 'rawAt.fields.signalDbm', value: String(-113 + numericRSSI * 2) + ' dBm' })
@@ -70,10 +81,14 @@ function parseCSQ(lines: string[]): ATField[] {
 function parseCREG(lines: string[]): ATField[] {
   const value = responseValue(lines, /^\+(?:C|CG)REG:\s*/)
   if (!value) return []
-  const [mode, registration, lac, cellID] = value.split(',').map(item => item.trim().replace(/^"|"$/g, ''))
+  const [mode, registration, lac, cellID] = value.split(',').map((item) => item.trim().replace(/^"|"$/g, ''))
   return [
     { labelKey: 'rawAt.fields.reportMode', value: mode || '—' },
-    { labelKey: 'rawAt.fields.registration', value: registration || '—', valueKey: statusValue(registration || '') },
+    {
+      labelKey: 'rawAt.fields.registration',
+      value: registration || '—',
+      valueKey: statusValue(registration || ''),
+    },
     { labelKey: 'rawAt.fields.lac', value: lac || '—' },
     { labelKey: 'rawAt.fields.cellId', value: cellID || '—' },
   ]
@@ -116,28 +131,44 @@ function parseCNUM(lines: string[]): ATField[] {
 function parseNamedValue(lines: string[], prefix: RegExp, labelKey: string): ATField[] {
   const value = responseValue(lines, prefix)
   if (value) return [{ labelKey, value: value.replace(/^"|"$/g, '') }]
-  const scalar = lines.find(line => line !== 'OK' && line !== 'ERROR' && !/^\+C(?:ME|MS) ERROR/i.test(line))
+  const scalar = lines.find((line) => line !== 'OK' && line !== 'ERROR' && !/^\+C(?:ME|MS) ERROR/i.test(line))
   return scalar ? [{ labelKey, value: scalar }] : []
 }
 
 function parsePacketAttach(lines: string[]): ATField[] {
   const fields = parseNamedValue(lines, /^\+CGATT:\s*/, 'rawAt.fields.packetAttach')
   const field = fields[0]
-  if (field) field.valueKey = field.value === '1' ? 'rawAt.values.attached' : field.value === '0' ? 'rawAt.values.detached' : undefined
+  if (field)
+    field.valueKey =
+      field.value === '1'
+        ? 'rawAt.values.attached'
+        : field.value === '0'
+          ? 'rawAt.values.detached'
+          : undefined
   return fields
 }
 
 function parseGeneric(lines: string[]): ATField[] {
   return lines
-    .filter(line => line !== 'OK' && line !== 'ERROR' && !/^\+CME ERROR/i.test(line) && !/^\+CMS ERROR/i.test(line))
-    .map((value, index) => ({ labelKey: index === 0 ? 'rawAt.fields.response' : 'rawAt.fields.responseLine', value }))
+    .filter(
+      (line) =>
+        line !== 'OK' && line !== 'ERROR' && !/^\+CME ERROR/i.test(line) && !/^\+CMS ERROR/i.test(line),
+    )
+    .map((value, index) => ({
+      labelKey: index === 0 ? 'rawAt.fields.response' : 'rawAt.fields.responseLine',
+      value,
+    }))
 }
 
 export function parseATResponse(command: string, response: string): ParsedATResponse {
   const lines = linesOf(response)
   const normalized = command.trim().toUpperCase()
-  const hasError = lines.some(line => line === 'ERROR' || /^\+C(?:ME|MS) ERROR/i.test(line))
-  const statusKey = hasError ? 'rawAt.status.error' : lines.includes('OK') ? 'rawAt.status.ok' : 'rawAt.status.unknown'
+  const hasError = lines.some((line) => line === 'ERROR' || /^\+C(?:ME|MS) ERROR/i.test(line))
+  const statusKey = hasError
+    ? 'rawAt.status.error'
+    : lines.includes('OK')
+      ? 'rawAt.status.ok'
+      : 'rawAt.status.unknown'
   let fields: ATField[] = []
 
   if (normalized === 'AT+CSQ') fields = parseCSQ(lines)
@@ -150,7 +181,8 @@ export function parseATResponse(command: string, response: string): ParsedATResp
   else if (normalized === 'AT+QCCID') fields = parseNamedValue(lines, /^\+QCCID:\s*/, 'rawAt.fields.iccid')
   else if (normalized === 'AT+CGSN') fields = parseNamedValue(lines, /^\+CGSN:\s*/, 'rawAt.fields.imei')
   else if (normalized === 'AT+CGMR') fields = parseNamedValue(lines, /^\+CGMR:\s*/, 'rawAt.fields.firmware')
-  else if (normalized.startsWith('AT+QENG=')) fields = parseNamedValue(lines, /^\+QENG:\s*/, 'rawAt.fields.servingCell')
+  else if (normalized.startsWith('AT+QENG='))
+    fields = parseNamedValue(lines, /^\+QENG:\s*/, 'rawAt.fields.servingCell')
   if (!fields.length) fields = parseGeneric(lines)
 
   return { statusKey, fields }

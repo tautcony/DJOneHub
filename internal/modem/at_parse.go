@@ -219,6 +219,12 @@ type ServingCellLTEInfo struct {
 	Channel uint32
 }
 
+// ParseServingCellLTEInfo parses a Quectel serving-cell response for callers
+// that use an AT transport without owning a modem.Manager.
+func ParseServingCellLTEInfo(resp string) (ServingCellLTEInfo, bool) {
+	return parseServingCellLTEInfo(resp)
+}
+
 func parseServingCellLTE(resp string) (int, int, bool) {
 	info, ok := parseServingCellLTEInfo(resp)
 	return info.RSRP, info.RSRQ, ok

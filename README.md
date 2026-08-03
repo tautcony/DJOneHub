@@ -249,6 +249,33 @@ djonehub logs           查看实时日志（Control+C 退出日志）
 djonehub open           打开管理网页
 ```
 
+## 本地开发启动
+
+先安装前端依赖：
+
+```sh
+npm --prefix web install
+```
+
+分别启动后端和前端：
+
+```sh
+./scripts/dev-backend.sh -demo
+./scripts/dev-web.sh
+```
+
+后端默认监听 `127.0.0.1:7576`，前端开发页面为
+`http://127.0.0.1:5176`，前端会将 `/api` 和 WebSocket 请求代理到后端。
+没有硬件时使用 `-demo`；连接真实模块时去掉该参数。
+
+也可以一键启动两者：
+
+```sh
+./scripts/dev.sh -demo
+```
+
+开发脚本使用统一入口 `cmd/djonehub`，不会启动或依赖单独的 macOS 服务。
+
 最直接的停止方式，是回到启动 DJOneHub 的终端并按 `Control+C`。也可以在另一个终端中执行：
 
 ```sh

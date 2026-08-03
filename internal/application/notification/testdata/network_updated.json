@@ -1,0 +1,13 @@
+{
+  "id": 49,
+  "type": "network.updated",
+  "version": 1,
+  "occurred_at": "2026-08-02T10:00:10Z",
+  "data": {
+    "mode": "usbnet",
+    "network_mode": "LTE",
+    "registered": true,
+    "operator": "CHN-UNICOM",
+    "signal_dbm": -83
+  }
+}

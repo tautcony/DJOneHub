@@ -1,0 +1,15 @@
+{
+  "id": 44,
+  "type": "call.ended",
+  "version": 1,
+  "occurred_at": "2026-08-02T10:01:30Z",
+  "data": {
+    "id": "1783069200000-1",
+    "direction": "incoming",
+    "state": "active",
+    "number": "18900007376",
+    "started_at": "2026-08-02T10:00:00Z",
+    "ended_at": "2026-08-02T10:01:30Z",
+    "missed": false
+  }
+}

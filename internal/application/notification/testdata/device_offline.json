@@ -1,0 +1,11 @@
+{
+  "id": 2,
+  "type": "device.offline",
+  "version": 1,
+  "occurred_at": "2026-08-02T11:00:00Z",
+  "data": {
+    "state": "disconnected",
+    "reason": "no managed device was discovered",
+    "last_error": "no managed device was discovered"
+  }
+}

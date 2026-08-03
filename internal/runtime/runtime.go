@@ -252,8 +252,19 @@ func (r *Runtime) transition(next device.State, identity device.Identity, lastEr
 	r.mu.Unlock()
 	if previous != next {
 		r.bus.Publish("device.status.changed", snapshot)
+		if isOfflineState(state) {
+			r.bus.Publish("device.offline", device.OfflineEvent{State: state, LastError: lastError, Reason: lastError})
+		}
 	}
 	return nil
+}
+
+func isOfflineState(state device.State) bool {
+	switch state {
+	case device.StateDegraded, device.StateDisconnected, device.StateAbsent:
+		return true
+	}
+	return false
 }
 
 func (r *Runtime) disconnect(reason error) {

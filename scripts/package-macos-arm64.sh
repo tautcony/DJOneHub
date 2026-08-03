@@ -94,6 +94,8 @@ cp "${LIBUSB_SOURCE}/libusb/libusb.h" "${LIBUSB_PREFIX}/include/libusb-1.0/libus
 
 cd "${ROOT_DIR}"
 npm --prefix web run build
+# Build the native UI static library; the Go build links it via cgo.
+"${ROOT_DIR}/macos/DJOneHubNotifier/build-app.sh" >/dev/null
 GOCACHE="${BUILD_ROOT}/go-cache"
 rm -rf "${GOCACHE}"
 mkdir -p "${GOCACHE}"

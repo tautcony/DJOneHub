@@ -38,6 +38,8 @@ func Adapt(legacy DeviceBackend) *BusinessAdapter {
 	}
 	if _, ok := legacy.(RawATBackend); ok {
 		a.caps[device.CapabilityRawAT] = ""
+		a.caps[device.CapabilityCallMonitor] = "AT voice call commands"
+		a.caps[device.CapabilityGPS] = "Quectel GPS commands"
 	}
 	if _, ok := legacy.(Rebooter); ok {
 		a.caps[device.CapabilityDeviceControl] = "backend device control"
@@ -106,6 +108,9 @@ func (a *BusinessAdapter) SIM(ctx context.Context) (SIMState, error) {
 	out := SIMState{Inserted: inserted}
 	out.IMSI, _ = provider.GetIMSI(ctx)
 	out.ICCID, _ = provider.GetICCID(ctx)
+	if esim, ok := a.legacy.(ESIMPort); ok {
+		out.EID, _ = esim.EID(ctx)
+	}
 	return out, nil
 }
 

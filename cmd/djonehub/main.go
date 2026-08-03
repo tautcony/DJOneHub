@@ -2,10 +2,15 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"os/signal"
+	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"syscall"
 
@@ -13,6 +18,11 @@ import (
 )
 
 func main() {
+	// The macOS native UI (AppKit/SwiftUI) must run on the process main
+	// thread. Pin it before any goroutine scheduling so bridge.Start can
+	// block here safely while the HTTP server runs on worker goroutines.
+	goruntime.LockOSThread()
+
 	listen := flag.String("listen", "127.0.0.1:7576", "HTTP listen address")
 	webDir := flag.String("web-dir", "web/dist", "Vue static asset directory")
 	demo := flag.Bool("demo", false, "run without hardware")
@@ -31,13 +41,35 @@ func main() {
 	defer stop()
 	instance.Start(ctx)
 	server := &http.Server{Addr: *listen, Handler: withVueAssets(instance.HTTP.Handler(), *webDir)}
-	go func() {
-		<-ctx.Done()
+	shutdown := func() {
 		_ = server.Shutdown(context.Background())
 		instance.Stop()
+	}
+	if instance.NativeUI.HasUI() {
+		// One process, one UI: serve HTTP on goroutines and run the native UI
+		// on the main thread. Exiting the UI (menu bar quit) exits the app.
+		go func() {
+			<-ctx.Done()
+			instance.NativeUI.Stop()
+			shutdown()
+		}()
+		log.Printf("DJOneHub listening on http://%s", *listen)
+		go func() {
+			if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Fatal(err)
+			}
+		}()
+		_ = instance.NativeUI.Start(ctx, fmt.Sprintf("http://%s/", *listen))
+		stop()
+		shutdown()
+		return
+	}
+	go func() {
+		<-ctx.Done()
+		shutdown()
 	}()
 	log.Printf("DJOneHub listening on http://%s", *listen)
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
 }
@@ -47,6 +79,11 @@ func withVueAssets(apiHandler http.Handler, webDir string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			apiHandler.ServeHTTP(w, r)
+			return
+		}
+		assetPath := filepath.Join(webDir, filepath.Clean("/"+r.URL.Path))
+		if _, err := os.Stat(assetPath); os.IsNotExist(err) {
+			http.ServeFile(w, r, filepath.Join(webDir, "index.html"))
 			return
 		}
 		assets.ServeHTTP(w, r)

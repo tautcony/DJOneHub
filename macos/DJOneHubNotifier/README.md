@@ -1,11 +1,10 @@
-# DJOneHubNotifier
+# DJOneHubNotifier（原生 UI 模块）
 
-DJOneHub 的 macOS 原生通知助手。网页关闭后仍可显示来电和短信：
+DJOneHub 的 macOS 原生 UI 层，作为**静态库**链接进 Go 主进程（`internal/platform/darwin/native` 通过 cgo 调用），不再作为独立进程运行：
 
-- 每秒读取来电状态，显示 iOS 风格悬浮卡片。
-- “拒接”调用 DJOneHub 挂断接口；“详情”打开管理页面。
-- 每三秒读取短信列表，只提醒启动后新收到的短信。
-- 不直接访问 USB，不改变短信模式、上网模式或网络切换规则。
+- UserNotifications 系统通知、可选的 AppKit 自绘提示面板、菜单栏 GPS/4G 图标、MapKit GPS 面板和通知动作。
+- 不访问 USB、不访问 HTTP、不轮询、不维护去重状态 —— 事件与命令全部通过原生桥接（`docs/native-bridge-contract.md`）与 Go 主进程交换。
+- 非 macOS 平台不参与编译。
 
 ## 构建
 
@@ -13,30 +12,22 @@ DJOneHub 的 macOS 原生通知助手。网页关闭后仍可显示来电和短�
 ./build-app.sh
 ```
 
-构建脚本会使用项目内缓存、执行内置自检、生成临时签名的 App，并验证签名和 `Info.plist`。
+产出静态库 `libDJOneHubNotifier.a`（Go 构建链接用）并执行 CLI 自检。Go 侧完整构建入口见 `scripts/build-macos.sh`，它会把最新静态库链接到带 `Info.plist` 的 `DJOneHub.app`，避免裸可执行文件无法获得 macOS 通知 bundle 身份。
 
-输出位置：
+通知显示方式在 Web 设置中按来电、未接来电、短信和设备离线分别选择“系统通知”或“自绘面板”。macOS 不向普通 App 提供 FaceTime/电话式 CallKit 通话界面，自绘面板只是可选的 AppKit 视觉方案。
 
-```text
-dist/DJOneHubNotifier.app
-```
+## 开发工具（CLI）
 
-## 验证
+`DJOneHubNotifierCLI` 仅供桥接契约自检，不进入发行包：
 
 ```bash
-dist/DJOneHubNotifier.app/Contents/MacOS/DJOneHubNotifier --health-check
-dist/DJOneHubNotifier.app/Contents/MacOS/DJOneHubNotifier --preview call
-dist/DJOneHubNotifier.app/Contents/MacOS/DJOneHubNotifier --preview sms
+swift run -c release DJOneHubNotifierCLI --self-test
 ```
 
-`--health-check` 只输出接口解析状态和条数，不输出号码或短信内容。
+## 测试
 
-## 常驻运行
-
-默认安装位置：
-
-```text
-~/Library/Application Support/DJOneHub/notifier/DJOneHubNotifier.app
+```bash
+swift test
 ```
 
-将 `com.jamie.djonehub-notifier.plist` 复制到 `~/Library/LaunchAgents/` 后，通过 `launchctl bootstrap` 注册。助手要求 DJOneHub 继续监听 `http://127.0.0.1:7575/`。
+覆盖事件 DTO 解码（含小数秒时间戳）、文本格式化与命令编码。

@@ -1,7 +1,8 @@
 # DJOneHub for macOS
 
-This branch adds a native macOS service for the DJI Cellular Dongle / Quectel
-EG25-G. It does not require UTM for AT-mode management.
+DJOneHub uses the shared application/runtime entry for macOS and the other
+supported platforms. It provides local management for the DJI Cellular Dongle
+/ Quectel EG25-G without a separate macOS business implementation.
 
 ## Current scope
 
@@ -62,11 +63,8 @@ Connect the modem and run:
 ./dist/djonehub-macos
 ```
 
-If automatic discovery picks no AT port, inspect `/dev/cu.*` and pass it:
-
-```sh
-./dist/djonehub-macos -port /dev/cu.usbmodemXXXX
-```
+The shared runtime discovers supported devices and selects the available
+backend automatically.
 
 The server only listens on localhost by default. Open:
 
@@ -79,7 +77,7 @@ http://127.0.0.1:7575
 To explore the management page before buying the module, run:
 
 ```sh
-./dist/djonehub-macos -demo
+./dist/djonehub-macos -demo -listen 127.0.0.1:7575 -web-dir ./web/dist
 ```
 
 Then open `http://127.0.0.1:7575`. Demo mode provides simulated modem status,

@@ -14,6 +14,7 @@ import (
 
 	"github.com/iniwex5/vohive/internal/domain/device"
 	derrors "github.com/iniwex5/vohive/internal/domain/errors"
+	"github.com/iniwex5/vohive/internal/modem"
 	"github.com/iniwex5/vohive/pkg/smscodec"
 )
 
@@ -99,6 +100,13 @@ func (b *CommandBackend) Radio(ctx context.Context) (RadioState, error) {
 			if rssi, parseErr := strconv.Atoi(match[1]); parseErr == nil && rssi <= 31 {
 				out.SignalDBM = -113 + 2*rssi
 			}
+		}
+	}
+	if value, err := b.command(ctx, `AT+QENG="servingcell"`, 3*time.Second); err == nil {
+		if cell, ok := modem.ParseServingCellLTEInfo(value); ok {
+			out.SignalRSRP = cell.RSRP
+			out.SignalRSRQ = cell.RSRQ
+			out.SignalSINR = cell.SINR
 		}
 	}
 	return out, nil
@@ -276,6 +284,8 @@ func (b *CommandBackend) Capabilities(context.Context) device.CapabilitySet {
 		device.CapabilitySMSRead:        "AT PDU SMS storage read",
 		device.CapabilityNetworkStatus:  "AT usbnet and radio status queries",
 		device.CapabilityNetworkControl: "AT usbnet mode control",
+		device.CapabilityCallMonitor:    "AT+CLCC voice call monitor",
+		device.CapabilityGPS:            "Quectel QGPS location commands",
 	}
 	if _, ok := b.transport.(ATInteractiveTransport); ok {
 		caps[device.CapabilitySMSSend] = "AT+CMGS interactive PDU submission"

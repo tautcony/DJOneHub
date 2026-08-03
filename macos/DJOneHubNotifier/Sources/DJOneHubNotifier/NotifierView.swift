@@ -7,14 +7,9 @@ struct NotifierView: View {
 
     var body: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .fill(.ultraThinMaterial)
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .strokeBorder(.white.opacity(0.24), lineWidth: 0.8)
-
             switch content {
-            case let .incoming(number, startedAt):
-                incomingView(number: number, startedAt: startedAt)
+            case let .incoming(number, startedAt, state, rejecting):
+                incomingView(number: number, startedAt: startedAt, state: state, rejecting: rejecting)
             case let .sms(sender, preview, code):
                 smsView(sender: sender, preview: preview, code: code)
             case let .missed(number, startedAt):
@@ -25,32 +20,33 @@ struct NotifierView: View {
                 EmptyView()
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-        .shadow(color: .black.opacity(0.22), radius: 20, y: 8)
     }
 
-    private func incomingView(number: String, startedAt: Date) -> some View {
+    private func incomingView(number: String, startedAt: Date, state: String, rejecting: Bool) -> some View {
         VStack(spacing: 8) {
             VStack(spacing: 2) {
-                Text("DJOneHub 来电")
+                Text(callTitle(for: state))
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.secondary)
                 Text(number)
                     .font(.system(size: 20, weight: .semibold, design: .rounded))
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
-                Text(startedAt, style: .time)
+                Text(startedAt, style: state == "active" || state == "held" ? .timer : .time)
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(.secondary)
             }
 
-            HStack(spacing: 38) {
-                callAction(
-                    title: "拒接",
-                    symbol: "phone.down.fill",
-                    color: .red,
-                    action: onReject
-                )
+            HStack(spacing: state == "incoming" || state == "waiting" ? 38 : 0) {
+                if state == "incoming" || state == "waiting" {
+                    callAction(
+                        title: rejecting ? "拒接中" : "拒接",
+                        symbol: "phone.down.fill",
+                        color: .red,
+                        action: onReject
+                    )
+                    .disabled(rejecting)
+                }
                 callAction(
                     title: "详情",
                     symbol: "arrow.up.forward.app.fill",
@@ -61,6 +57,19 @@ struct NotifierView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 9)
+    }
+
+    private func callTitle(for state: String) -> String {
+        switch state {
+        case "active":
+            return "DJOneHub 通话中"
+        case "held":
+            return "DJOneHub 通话保持"
+        case "waiting":
+            return "DJOneHub 等待接听"
+        default:
+            return "DJOneHub 来电"
+        }
     }
 
     private func callAction(

@@ -14,11 +14,14 @@ import (
 
 	"github.com/iniwex5/vohive/internal/application/device"
 	"github.com/iniwex5/vohive/internal/application/esim"
+	"github.com/iniwex5/vohive/internal/application/extras"
 	"github.com/iniwex5/vohive/internal/application/network"
+	"github.com/iniwex5/vohive/internal/application/notification"
 	"github.com/iniwex5/vohive/internal/application/operation"
 	"github.com/iniwex5/vohive/internal/application/rawat"
 	"github.com/iniwex5/vohive/internal/application/sms"
 	"github.com/iniwex5/vohive/internal/application/vowifi"
+	"github.com/iniwex5/vohive/internal/backend"
 	domain "github.com/iniwex5/vohive/internal/domain/device"
 	derrors "github.com/iniwex5/vohive/internal/domain/errors"
 	"github.com/iniwex5/vohive/internal/runtime"
@@ -30,15 +33,23 @@ type AuthenticatorFunc func(*nethttp.Request) bool
 func (f AuthenticatorFunc) Authenticate(r *nethttp.Request) bool { return f(r) }
 
 type Config struct {
-	Device     *device.Service
-	SMS        *sms.Service
-	ESIM       *esim.Service
-	Network    *network.Service
-	RawAT      *rawat.Service
-	VoWiFi     *vowifi.Service
-	Operations *operation.Manager
-	Runtime    *runtime.Runtime
-	Auth       Authenticator
+	Device                        *device.Service
+	SMS                           *sms.Service
+	ESIM                          *esim.Service
+	Network                       *network.Service
+	Notification                  *notification.Service
+	RawAT                         *rawat.Service
+	VoWiFi                        *vowifi.Service
+	Extras                        *extras.Service
+	Operations                    *operation.Manager
+	Runtime                       *runtime.Runtime
+	Auth                          Authenticator
+	NotificationUIAvailable       func() bool
+	NotificationPermissionStatus  func() notification.NotificationPermissionStatus
+	RequestNotificationPermission func() bool
+	OpenNotificationSettings      func() bool
+	NotificationPreferences       func() notification.NotificationPreferences
+	SetNotificationPreferences    func(notification.NotificationPreferences) error
 }
 
 type Server struct{ config Config }
@@ -65,11 +76,29 @@ func (s *Server) Handler() nethttp.Handler {
 	mux.HandleFunc("/api/v1/network/actions/mode", s.networkMode)
 	mux.HandleFunc("/api/v1/network/actions/check", s.networkCheck)
 	mux.HandleFunc("/api/v1/network/actions/traffic", s.networkTraffic)
+	mux.HandleFunc("/api/v1/network/diagnostics", s.networkDiagnostics)
+	mux.HandleFunc("/api/v1/network/actions/check-4g", s.networkCheck4G)
+	mux.HandleFunc("/api/v1/network/actions/check-proxy", s.networkCheckProxy)
+	mux.HandleFunc("/api/v1/network/policy", s.networkPolicy)
+	mux.HandleFunc("/api/v1/network/actions/policy", s.networkPolicySet)
 	mux.HandleFunc("/api/v1/device/actions/raw-at", s.rawAT)
 	mux.HandleFunc("/api/v1/vowifi", s.vowifiStatus)
 	mux.HandleFunc("/api/v1/vowifi/actions/enable", s.vowifiEnable)
 	mux.HandleFunc("/api/v1/vowifi/actions/disable", s.vowifiDisable)
 	mux.HandleFunc("/api/v1/vowifi/actions/reconnect", s.vowifiReconnect)
+	mux.HandleFunc("/api/v1/notifications/debug", s.notificationDebug)
+	mux.HandleFunc("/api/v1/notifications/permissions", s.notificationPermissions)
+	mux.HandleFunc("/api/v1/notifications/permissions/request", s.requestNotificationPermission)
+	mux.HandleFunc("/api/v1/notifications/permissions/open-settings", s.openNotificationSettings)
+	mux.HandleFunc("/api/v1/notifications/preferences", s.notificationPreferences)
+	mux.HandleFunc("/api/v1/calls", s.calls)
+	mux.HandleFunc("/api/v1/calls/actions/reject", s.callReject)
+	mux.HandleFunc("/api/v1/gps", s.gps)
+	mux.HandleFunc("/api/v1/gps/actions/start", s.gpsStart)
+	mux.HandleFunc("/api/v1/gps/actions/stop", s.gpsStop)
+	mux.HandleFunc("/api/v1/gps/actions/refresh", s.gpsRefresh)
+	mux.HandleFunc("/api/v1/esim/health", s.esimHealth)
+	mux.HandleFunc("/api/v1/esim/notes", s.esimNotes)
 	mux.HandleFunc("/api/v1/operations/", s.operationStatus)
 	mux.HandleFunc("/api/v1/openapi.json", s.openapi)
 	mux.HandleFunc("/api/v1/events/ws", s.websocket)
@@ -331,6 +360,216 @@ func (s *Server) networkTraffic(w nethttp.ResponseWriter, r *nethttp.Request) {
 	writeJSON(w, nethttp.StatusOK, value)
 }
 
+func (s *Server) networkDiagnostics(w nethttp.ResponseWriter, r *nethttp.Request) {
+	if !s.requireMethod(w, r, nethttp.MethodGet) || !s.protected(w, r) {
+		return
+	}
+	value, err := s.config.Network.Diagnostics(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, nethttp.StatusOK, value)
+}
+
+func (s *Server) networkCheck4G(w nethttp.ResponseWriter, r *nethttp.Request) {
+	s.networkRouteCheck(w, r, "4g")
+}
+func (s *Server) networkCheckProxy(w nethttp.ResponseWriter, r *nethttp.Request) {
+	s.networkRouteCheck(w, r, "proxy")
+}
+func (s *Server) networkRouteCheck(w nethttp.ResponseWriter, r *nethttp.Request, kind string) {
+	if !s.requireMethod(w, r, nethttp.MethodPost) || !s.protected(w, r) {
+		return
+	}
+	value, err := s.config.Network.CheckRoute(r.Context(), kind)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, nethttp.StatusOK, value)
+}
+
+func (s *Server) networkPolicy(w nethttp.ResponseWriter, r *nethttp.Request) {
+	if !s.requireMethod(w, r, nethttp.MethodGet) || !s.protected(w, r) {
+		return
+	}
+	value, err := s.config.Network.CellularPolicy(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, nethttp.StatusOK, value)
+}
+func (s *Server) networkPolicySet(w nethttp.ResponseWriter, r *nethttp.Request) {
+	if !s.requireMethod(w, r, nethttp.MethodPost) || !s.protected(w, r) {
+		return
+	}
+	var request struct {
+		ForceOff bool `json:"force_off"`
+	}
+	if err := decodeJSON(r, &request); err != nil {
+		writeError(w, derrors.New(derrors.InvalidRequest, "invalid JSON request", false, nil))
+		return
+	}
+	value, err := s.config.Network.SetCellularPolicy(r.Context(), request.ForceOff)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, nethttp.StatusOK, value)
+}
+
+func (s *Server) calls(w nethttp.ResponseWriter, r *nethttp.Request) {
+	if !s.requireMethod(w, r, nethttp.MethodGet) || !s.protected(w, r) {
+		return
+	}
+	if s.config.Extras == nil {
+		writeError(w, fmt.Errorf("call monitoring is unavailable"))
+		return
+	}
+	writeJSON(w, nethttp.StatusOK, s.config.Extras.Calls(r.Context()))
+}
+func (s *Server) callReject(w nethttp.ResponseWriter, r *nethttp.Request) {
+	if !s.commandOnly(w, r) {
+		return
+	}
+	if s.config.Extras == nil {
+		writeError(w, fmt.Errorf("call monitoring is unavailable"))
+		return
+	}
+	if err := s.config.Extras.Reject(r.Context()); err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, nethttp.StatusOK, map[string]bool{"rejected": true})
+}
+func (s *Server) gps(w nethttp.ResponseWriter, r *nethttp.Request) {
+	if !s.requireMethod(w, r, nethttp.MethodGet) || !s.protected(w, r) {
+		return
+	}
+	if s.config.Extras == nil {
+		writeError(w, fmt.Errorf("GPS is unavailable"))
+		return
+	}
+	writeJSON(w, nethttp.StatusOK, s.config.Extras.GPS(r.Context()))
+}
+func (s *Server) gpsStart(w nethttp.ResponseWriter, r *nethttp.Request) {
+	if !s.commandOnly(w, r) {
+		return
+	}
+	if s.config.Extras == nil {
+		writeError(w, fmt.Errorf("GPS is unavailable"))
+		return
+	}
+	value, err := s.config.Extras.StartGPS(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, nethttp.StatusOK, value)
+}
+func (s *Server) gpsStop(w nethttp.ResponseWriter, r *nethttp.Request) {
+	if !s.commandOnly(w, r) {
+		return
+	}
+	if s.config.Extras == nil {
+		writeError(w, fmt.Errorf("GPS is unavailable"))
+		return
+	}
+	value, err := s.config.Extras.StopGPS(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, nethttp.StatusOK, value)
+}
+func (s *Server) gpsRefresh(w nethttp.ResponseWriter, r *nethttp.Request) {
+	if !s.commandOnly(w, r) {
+		return
+	}
+	if s.config.Extras == nil {
+		writeError(w, fmt.Errorf("GPS is unavailable"))
+		return
+	}
+	value, err := s.config.Extras.RefreshGPS(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, nethttp.StatusOK, value)
+}
+
+func (s *Server) esimHealth(w nethttp.ResponseWriter, r *nethttp.Request) {
+	if !s.requireMethod(w, r, nethttp.MethodGet) || !s.protected(w, r) {
+		return
+	}
+	if s.config.Extras == nil {
+		writeError(w, fmt.Errorf("eSIM health is unavailable"))
+		return
+	}
+	status, err := s.config.Device.Status(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	overview, err := s.config.ESIM.Overview(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	result := map[string]any{"ok": false, "module_iccid": status.Identity.ICCID, "imsi": status.Identity.IMSI, "operator": status.Radio.Operator, "registration": status.Radio.Registered, "registered": status.Radio.Registered, "signal_dbm": status.Radio.SignalDBM, "network_mode": status.Radio.NetworkMode}
+	if profiles, ok := overview["profiles"].([]backend.Profile); ok {
+		for _, profile := range profiles {
+			if profile.State == "enabled" {
+				result["active_profile"] = profile
+				result["ok"] = status.Radio.Registered && status.SIM.Inserted
+				break
+			}
+		}
+	}
+	if _, ok := result["active_profile"]; !ok {
+		result["message"] = "eSIM card is recognized but no enabled profile was found"
+	}
+	writeJSON(w, nethttp.StatusOK, result)
+}
+
+func (s *Server) esimNotes(w nethttp.ResponseWriter, r *nethttp.Request) {
+	if !s.protected(w, r) || s.config.Extras == nil {
+		if s.config.Extras == nil {
+			writeError(w, fmt.Errorf("profile notes are unavailable"))
+		}
+		return
+	}
+	switch r.Method {
+	case nethttp.MethodGet:
+		value, err := s.config.Extras.Notes(r.Context())
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		writeJSON(w, nethttp.StatusOK, map[string]any{"notes": value})
+	case nethttp.MethodPut:
+		var request struct {
+			ICCID string `json:"iccid"`
+			Label string `json:"label"`
+			Phone string `json:"phone"`
+			Tags  string `json:"tags"`
+		}
+		if err := decodeJSON(r, &request); err != nil {
+			writeError(w, derrors.New(derrors.InvalidRequest, "invalid JSON request", false, nil))
+			return
+		}
+		if err := s.config.Extras.SaveNote(r.Context(), request.ICCID, extras.ProfileNote{Label: request.Label, Phone: request.Phone, Tags: request.Tags}); err != nil {
+			writeError(w, err)
+			return
+		}
+		writeJSON(w, nethttp.StatusOK, map[string]string{"state": "saved"})
+	default:
+		s.requireMethod(w, r, nethttp.MethodGet)
+	}
+}
+
 type rawATRequest struct {
 	Command string `json:"command"`
 }
@@ -396,6 +635,139 @@ func (s *Server) vowifiReconnect(w nethttp.ResponseWriter, r *nethttp.Request) {
 		return
 	}
 	writeJSON(w, nethttp.StatusAccepted, map[string]string{"operation_id": id})
+}
+
+func (s *Server) notificationDebug(w nethttp.ResponseWriter, r *nethttp.Request) {
+	if !s.protected(w, r) {
+		return
+	}
+	if s.config.Notification == nil {
+		writeError(w, fmt.Errorf("notification debug is unavailable"))
+		return
+	}
+	switch r.Method {
+	case nethttp.MethodGet:
+		writeJSON(w, nethttp.StatusOK, map[string]any{
+			"native_ui": s.notificationUIAvailable(),
+			"actions":   notification.DebugActions(),
+		})
+	case nethttp.MethodPost:
+		var request notification.DebugRequest
+		if err := decodeJSON(r, &request); err != nil {
+			writeError(w, derrors.New(derrors.InvalidRequest, "invalid JSON request", false, nil))
+			return
+		}
+		events, err := s.config.Notification.Debug(request)
+		if err != nil {
+			writeError(w, derrors.New(derrors.InvalidRequest, err.Error(), false, nil))
+			return
+		}
+		writeJSON(w, nethttp.StatusOK, map[string]any{
+			"action":    request.Action,
+			"native_ui": s.notificationUIAvailable(),
+			"events":    events,
+		})
+	default:
+		w.Header().Set("Allow", nethttp.MethodGet+", "+nethttp.MethodPost)
+		writeJSON(w, nethttp.StatusMethodNotAllowed, map[string]any{
+			"error": derrors.New(derrors.InvalidRequest, "method not allowed", false, map[string]any{"method": "GET, POST"}),
+		})
+	}
+}
+
+func (s *Server) notificationUIAvailable() bool {
+	return s.config.NotificationUIAvailable != nil && s.config.NotificationUIAvailable()
+}
+
+func (s *Server) notificationPermissionStatus() notification.NotificationPermissionStatus {
+	if s.config.NotificationPermissionStatus != nil {
+		return s.config.NotificationPermissionStatus()
+	}
+	return notification.NotificationPermissionStatus{State: notification.NotificationPermissionUnsupported}
+}
+
+func (s *Server) notificationPermissionPayload() map[string]any {
+	status := s.notificationPermissionStatus()
+	return map[string]any{
+		"native_ui":         s.notificationUIAvailable(),
+		"state":             status.State,
+		"can_request":       status.State == notification.NotificationPermissionNotDetermined,
+		"can_open_settings": status.State == notification.NotificationPermissionDenied,
+	}
+}
+
+func (s *Server) notificationPermissions(w nethttp.ResponseWriter, r *nethttp.Request) {
+	if !s.requireMethod(w, r, nethttp.MethodGet) || !s.protected(w, r) {
+		return
+	}
+	writeJSON(w, nethttp.StatusOK, s.notificationPermissionPayload())
+}
+
+func (s *Server) requestNotificationPermission(w nethttp.ResponseWriter, r *nethttp.Request) {
+	if !s.commandOnly(w, r) {
+		return
+	}
+	accepted := s.config.RequestNotificationPermission != nil && s.config.RequestNotificationPermission()
+	payload := s.notificationPermissionPayload()
+	payload["accepted"] = accepted
+	writeJSON(w, nethttp.StatusAccepted, payload)
+}
+
+func (s *Server) openNotificationSettings(w nethttp.ResponseWriter, r *nethttp.Request) {
+	if !s.commandOnly(w, r) {
+		return
+	}
+	accepted := s.config.OpenNotificationSettings != nil && s.config.OpenNotificationSettings()
+	payload := s.notificationPermissionPayload()
+	payload["accepted"] = accepted
+	writeJSON(w, nethttp.StatusAccepted, payload)
+}
+
+func (s *Server) currentNotificationPreferences() notification.NotificationPreferences {
+	if s.config.NotificationPreferences != nil {
+		return s.config.NotificationPreferences().Normalize()
+	}
+	return notification.DefaultNotificationPreferences()
+}
+
+func (s *Server) notificationPreferences(w nethttp.ResponseWriter, r *nethttp.Request) {
+	if !s.protected(w, r) {
+		return
+	}
+	switch r.Method {
+	case nethttp.MethodGet:
+		writeJSON(w, nethttp.StatusOK, map[string]any{
+			"native_ui":   s.notificationUIAvailable(),
+			"preferences": s.currentNotificationPreferences(),
+		})
+	case nethttp.MethodPut:
+		var preferences notification.NotificationPreferences
+		if err := decodeJSON(r, &preferences); err != nil {
+			writeError(w, derrors.New(derrors.InvalidRequest, "invalid JSON request", false, nil))
+			return
+		}
+		if err := preferences.Validate(); err != nil {
+			writeError(w, derrors.New(derrors.InvalidRequest, err.Error(), false, nil))
+			return
+		}
+		if s.config.SetNotificationPreferences == nil {
+			writeError(w, fmt.Errorf("notification preferences are unavailable"))
+			return
+		}
+		if err := s.config.SetNotificationPreferences(preferences); err != nil {
+			writeError(w, err)
+			return
+		}
+		writeJSON(w, nethttp.StatusOK, map[string]any{
+			"native_ui":   s.notificationUIAvailable(),
+			"preferences": preferences.Normalize(),
+		})
+	default:
+		w.Header().Set("Allow", nethttp.MethodGet+", "+nethttp.MethodPut)
+		writeJSON(w, nethttp.StatusMethodNotAllowed, map[string]any{
+			"error": derrors.New(derrors.InvalidRequest, "method not allowed", false, map[string]any{"method": "GET, PUT"}),
+		})
+	}
 }
 
 func (s *Server) commandOnly(w nethttp.ResponseWriter, r *nethttp.Request) bool {

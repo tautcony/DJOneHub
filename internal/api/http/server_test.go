@@ -13,6 +13,7 @@ import (
 	"github.com/iniwex5/vohive/internal/application/device"
 	"github.com/iniwex5/vohive/internal/application/esim"
 	"github.com/iniwex5/vohive/internal/application/network"
+	"github.com/iniwex5/vohive/internal/application/notification"
 	"github.com/iniwex5/vohive/internal/application/operation"
 	"github.com/iniwex5/vohive/internal/application/rawat"
 	"github.com/iniwex5/vohive/internal/application/sms"
@@ -49,9 +50,11 @@ func newTestServer(t *testing.T, auth Authenticator) *Server {
 	networkService := network.NewService(devices, ops, r, platformAdapter)
 	rawATService := rawat.NewService(devices, r)
 	vowifiService := vowifi.NewService(devices, ops, r)
+	notificationService := notification.New(notification.Config{Events: r.Events()})
 	return NewServer(Config{
 		Device: devices, SMS: smsService, ESIM: esimService, Network: networkService,
-		RawAT: rawATService, VoWiFi: vowifiService, Operations: ops, Runtime: r, Auth: auth,
+		Notification: notificationService, RawAT: rawATService, VoWiFi: vowifiService,
+		Operations: ops, Runtime: r, Auth: auth,
 	})
 }
 
@@ -188,9 +191,11 @@ func newReadyServerWithBackend(t *testing.T, discovery *fakeReadyDiscovery, b ba
 	networkService := network.NewService(devices, ops, r, contractNetwork{})
 	rawATService := rawat.NewService(devices, r)
 	vowifiService := vowifi.NewService(devices, ops, r)
+	notificationService := notification.New(notification.Config{Events: r.Events()})
 	return NewServer(Config{
 		Device: devices, SMS: smsService, ESIM: esimService, Network: networkService,
-		RawAT: rawATService, VoWiFi: vowifiService, Operations: ops, Runtime: r,
+		Notification: notificationService, RawAT: rawATService, VoWiFi: vowifiService,
+		Operations: ops, Runtime: r,
 	}), ops
 }
 
@@ -256,8 +261,85 @@ func TestAPIContractCoversQueriesCommandsAndOperations(t *testing.T) {
 
 	recorder = httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/openapi.json", nil))
-	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "/api/v1/esim/actions/download") {
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "/api/v1/esim/actions/download") || !strings.Contains(recorder.Body.String(), "/api/v1/notifications/debug") {
 		t.Fatalf("OpenAPI response does not describe all commands: %s", recorder.Body.String())
+	}
+}
+
+func TestNotificationDebugAPI(t *testing.T) {
+	server := newTestServer(t, nil)
+	handler := server.Handler()
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/notifications/debug", nil))
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "call_incoming") || !strings.Contains(recorder.Body.String(), "gps_fix") {
+		t.Fatalf("debug capabilities = %d %s", recorder.Code, recorder.Body.String())
+	}
+
+	recorder = httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/notifications/debug", strings.NewReader(`{"action":"call_incoming","call_id":"debug-1","number":"10010"}`))
+	request.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"type":"call.incoming"`) {
+		t.Fatalf("debug publish = %d %s", recorder.Code, recorder.Body.String())
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost, "/api/v1/notifications/debug", strings.NewReader(`{"action":"invalid"}`))
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "unsupported notification debug action") {
+		t.Fatalf("invalid debug action = %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestNotificationPreferencesAndPermissionAPI(t *testing.T) {
+	server := newTestServer(t, nil)
+	preferences := notification.DefaultNotificationPreferences()
+	permissionState := notification.NotificationPermissionDenied
+	requestCalled, settingsCalled := 0, 0
+	server.config.NotificationUIAvailable = func() bool { return true }
+	server.config.NotificationPermissionStatus = func() notification.NotificationPermissionStatus {
+		return notification.NotificationPermissionStatus{State: permissionState}
+	}
+	server.config.RequestNotificationPermission = func() bool { requestCalled++; return true }
+	server.config.OpenNotificationSettings = func() bool { settingsCalled++; return true }
+	server.config.NotificationPreferences = func() notification.NotificationPreferences { return preferences }
+	server.config.SetNotificationPreferences = func(value notification.NotificationPreferences) error {
+		preferences = value
+		return nil
+	}
+	handler := server.Handler()
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/notifications/preferences", nil))
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"incoming_call":"system"`) {
+		t.Fatalf("preferences get = %d %s", recorder.Code, recorder.Body.String())
+	}
+
+	recorder = httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPut, "/api/v1/notifications/preferences", strings.NewReader(`{"incoming_call":"custom","missed_call":"system","sms":"custom","device_offline":"system"}`))
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || preferences.IncomingCall != notification.NotificationPresentationCustom || preferences.SMS != notification.NotificationPresentationCustom {
+		t.Fatalf("preferences put = %d %s, value = %+v", recorder.Code, recorder.Body.String(), preferences)
+	}
+
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/notifications/permissions", nil))
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"can_open_settings":true`) {
+		t.Fatalf("permission get = %d %s", recorder.Code, recorder.Body.String())
+	}
+
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/notifications/permissions/open-settings", nil))
+	if recorder.Code != http.StatusAccepted || settingsCalled != 1 {
+		t.Fatalf("permission settings = %d calls=%d %s", recorder.Code, settingsCalled, recorder.Body.String())
+	}
+
+	permissionState = notification.NotificationPermissionNotDetermined
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/notifications/permissions/request", nil))
+	if recorder.Code != http.StatusAccepted || requestCalled != 1 {
+		t.Fatalf("permission request = %d calls=%d %s", recorder.Code, requestCalled, recorder.Body.String())
 	}
 }
 

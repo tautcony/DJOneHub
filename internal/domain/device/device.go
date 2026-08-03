@@ -78,20 +78,24 @@ func (m BackendMode) Valid() bool {
 type Capability string
 
 const (
-	CapabilityDeviceStatus   Capability = "device_status"
-	CapabilityDeviceControl  Capability = "device_control"
-	CapabilityRawAT          Capability = "raw_at"
-	CapabilitySMSRead        Capability = "sms_read"
-	CapabilitySMSSend        Capability = "sms_send"
-	CapabilitySIM            Capability = "sim"
-	CapabilityAPDU           Capability = "apdu"
-	CapabilityESIM           Capability = "esim"
-	CapabilityUSSD           Capability = "ussd"
-	CapabilityNetworkStatus  Capability = "network_status"
-	CapabilityNetworkControl Capability = "network_control"
-	CapabilityVoWiFiInspect  Capability = "vowifi_inspect"
-	CapabilityVoWiFiControl  Capability = "vowifi_control"
-	CapabilityPacketTunnel   Capability = "packet_tunnel"
+	CapabilityDeviceStatus       Capability = "device_status"
+	CapabilityDeviceControl      Capability = "device_control"
+	CapabilityRawAT              Capability = "raw_at"
+	CapabilitySMSRead            Capability = "sms_read"
+	CapabilitySMSSend            Capability = "sms_send"
+	CapabilitySIM                Capability = "sim"
+	CapabilityAPDU               Capability = "apdu"
+	CapabilityESIM               Capability = "esim"
+	CapabilityUSSD               Capability = "ussd"
+	CapabilityNetworkStatus      Capability = "network_status"
+	CapabilityNetworkControl     Capability = "network_control"
+	CapabilityCallMonitor        Capability = "call_monitor"
+	CapabilityGPS                Capability = "gps"
+	CapabilityNetworkDiagnostics Capability = "network_diagnostics"
+	CapabilityNetworkPolicy      Capability = "network_policy"
+	CapabilityVoWiFiInspect      Capability = "vowifi_inspect"
+	CapabilityVoWiFiControl      Capability = "vowifi_control"
+	CapabilityPacketTunnel       Capability = "packet_tunnel"
 )
 
 type CapabilitySet map[Capability]string
@@ -174,4 +178,12 @@ type Snapshot struct {
 	Capabilities  CapabilitySet `json:"capabilities"`
 	LastError     string        `json:"last_error,omitempty"`
 	Generation    uint64        `json:"generation"`
+}
+
+// OfflineEvent is the payload of the device.offline bus event, published by
+// the runtime when it leaves a usable device state.
+type OfflineEvent struct {
+	State     State  `json:"state"`
+	Reason    string `json:"reason,omitempty"`
+	LastError string `json:"last_error,omitempty"`
 }

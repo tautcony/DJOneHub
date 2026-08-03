@@ -47,3 +47,12 @@ type VoWiFiServicePort interface {
 	ReconnectVoWiFi(context.Context) error
 	VoWiFiStatus(context.Context) (map[string]any, error)
 }
+
+// PhonebookPort is deliberately small. It supports safe capability probing
+// and the module-backed profile notes used by the local management UI.
+type PhonebookPort interface {
+	ProbePhonebook(context.Context) (map[string]any, error)
+	ListProfileNotes(context.Context) (map[string]Profile, int, int, error)
+	SaveProfileNote(context.Context, Profile) (int, error)
+	DeleteProfileNote(context.Context, string) error
+}

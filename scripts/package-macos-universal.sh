@@ -22,6 +22,7 @@ if ! command -v go >/dev/null 2>&1; then echo "Go is required to build the relea
 if ! command -v curl >/dev/null 2>&1; then echo "curl is required to download the official libusb source archive." >&2; exit 1; fi
 if ! command -v pkg-config >/dev/null 2>&1; then echo "pkg-config is required on the build Mac." >&2; exit 1; fi
 if ! command -v lipo >/dev/null 2>&1; then echo "lipo is required to build a universal package." >&2; exit 1; fi
+if ! command -v npm >/dev/null 2>&1; then echo "npm is required to build the Vue management page." >&2; exit 1; fi
 
 rm -rf "${STAGE_DIR}"
 mkdir -p "${STAGE_DIR}/bin" "${STAGE_DIR}/lib" "${STAGE_DIR}/licenses"
@@ -107,6 +108,33 @@ EOF
 chmod 755 "${PC_SHIM}/pkg-config"
 
 cd "${ROOT_DIR}"
+# Build the native UI static library for both architectures and merge it into
+# a universal libDJOneHubNotifier.a so each Go arch links the same fat file.
+# SwiftPM writes single-arch builds to .build/release, so each slice is
+# preserved under BUILD_ROOT before the next build.
+NOTIFIER_SRC="${ROOT_DIR}/macos/DJOneHubNotifier"
+SWIFT_CACHE="${BUILD_ROOT}/local-cache"
+mkdir -p "${SWIFT_CACHE}/clang" "${SWIFT_CACHE}/swiftpm"
+export CLANG_MODULE_CACHE_PATH="${SWIFT_CACHE}/clang"
+export SWIFTPM_MODULECACHE_OVERRIDE="${SWIFT_CACHE}/clang"
+export SWIFTPM_CUSTOM_CACHE_PATH="${SWIFT_CACHE}/swiftpm"
+(
+  cd "${NOTIFIER_SRC}"
+  swift build --disable-sandbox -c release
+  cp .build/release/libDJOneHubNotifier.a "${BUILD_ROOT}/libDJOneHubNotifier-arm64.a"
+  # x86_64 needs the runtime compatibility pack disabled so the Go cc link
+  # can resolve the Swift runtime without the SwiftPM driver.
+  swift build --disable-sandbox -c release --arch x86_64 \
+    -Xswiftc -runtime-compatibility-version -Xswiftc none
+  cp .build/release/libDJOneHubNotifier.a "${BUILD_ROOT}/libDJOneHubNotifier-x86_64.a"
+  # Restore the arm64 slice for any later local builds.
+  cp "${BUILD_ROOT}/libDJOneHubNotifier-arm64.a" .build/release/libDJOneHubNotifier.a
+)
+lipo -create "${BUILD_ROOT}/libDJOneHubNotifier-arm64.a" \
+  "${BUILD_ROOT}/libDJOneHubNotifier-x86_64.a" \
+  -output "${NOTIFIER_SRC}/.build/release/libDJOneHubNotifier.a"
+file "${NOTIFIER_SRC}/.build/release/libDJOneHubNotifier.a" | cut -c1-120
+
 build_go() {
   arch=$1
   cache="${BUILD_ROOT}/go-cache-${arch}"
@@ -116,13 +144,18 @@ build_go() {
     PKG_CONFIG_PATH="" \
     MACOSX_DEPLOYMENT_TARGET=13.0 CGO_ENABLED=1 GOOS=darwin GOARCH="${arch}" \
     go build -p 2 -trimpath -buildvcs=false -ldflags="-s -w" \
-    -o "${BUILD_ROOT}/djonehub-${arch}" ./cmd/djonehub-macos
+    -o "${BUILD_ROOT}/djonehub-${arch}" ./cmd/djonehub
 }
 
 build_go arm64
 build_go amd64
 lipo -create "${BUILD_ROOT}/djonehub-arm64" "${BUILD_ROOT}/djonehub-amd64" \
   -output "${STAGE_DIR}/bin/djonehub-macos"
+
+cd "${ROOT_DIR}"
+npm --prefix web run build
+mkdir -p "${STAGE_DIR}/web/dist"
+cp -R "${ROOT_DIR}/web/dist/." "${STAGE_DIR}/web/dist/"
 
 cp "${ROOT_DIR}/packaging/djonehub" "${STAGE_DIR}/djonehub"
 cp "${ROOT_DIR}/packaging/install" "${STAGE_DIR}/install"

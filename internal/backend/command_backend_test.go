@@ -35,16 +35,17 @@ func (f *fakeATTransport) Close() error { return nil }
 
 func TestCommandBackendReadOnlyStatus(t *testing.T) {
 	transport := &fakeATTransport{responses: map[string]string{
-		"AT+CGSN":    "AT+CGSN\r\n" + testfixtures.IMEI + "\r\nOK\r\n",
-		"AT+CIMI":    "AT+CIMI\r\n" + testfixtures.IMSI + "\r\nOK\r\n",
-		"AT+QCCID":   "AT+QCCID\r\n" + testfixtures.ICCID19 + "\r\nOK\r\n",
-		"AT+CNUM":    "AT+CNUM\r\n+CNUM: \"\",\"" + testfixtures.MSISDN + "\",145\r\nOK\r\n",
-		"AT+CGMR":    "AT+CGMR\r\nsynthetic-firmware-1\r\nOK\r\n",
-		"AT+CREG?":   "AT+CREG?\r\n+CREG: 0,1\r\nOK\r\n",
-		"AT+COPS?":   "AT+COPS?\r\n+COPS: 0,0,\"TestNet\",7\r\nOK\r\n",
-		"AT+QNWINFO": "AT+QNWINFO\r\n+QNWINFO: \"FDD LTE\",\"TestNet\",\"LTE BAND 3\",100\r\nOK\r\n",
-		"AT+CSQ":     "AT+CSQ\r\n+CSQ: 20,99\r\nOK\r\n",
-		"AT+CPIN?":   "AT+CPIN?\r\n+CPIN: READY\r\nOK\r\n",
+		"AT+CGSN":                 "AT+CGSN\r\n" + testfixtures.IMEI + "\r\nOK\r\n",
+		"AT+CIMI":                 "AT+CIMI\r\n" + testfixtures.IMSI + "\r\nOK\r\n",
+		"AT+QCCID":                "AT+QCCID\r\n" + testfixtures.ICCID19 + "\r\nOK\r\n",
+		"AT+CNUM":                 "AT+CNUM\r\n+CNUM: \"\",\"" + testfixtures.MSISDN + "\",145\r\nOK\r\n",
+		"AT+CGMR":                 "AT+CGMR\r\nsynthetic-firmware-1\r\nOK\r\n",
+		"AT+CREG?":                "AT+CREG?\r\n+CREG: 0,1\r\nOK\r\n",
+		"AT+COPS?":                "AT+COPS?\r\n+COPS: 0,0,\"TestNet\",7\r\nOK\r\n",
+		"AT+QNWINFO":              "AT+QNWINFO\r\n+QNWINFO: \"FDD LTE\",\"TestNet\",\"LTE BAND 3\",100\r\nOK\r\n",
+		"AT+CSQ":                  "AT+CSQ\r\n+CSQ: 20,99\r\nOK\r\n",
+		"AT+QENG=\"servingcell\"": "AT+QENG=\"servingcell\"\r\n+QENG: \"servingcell\",\"NOCONN\",\"LTE\",\"FDD\",460,01,8401A29,132,3740,8,3,3,-95,5992,-75,-8,-50,11,44\r\nOK\r\n",
+		"AT+CPIN?":                "AT+CPIN?\r\n+CPIN: READY\r\nOK\r\n",
 	}}
 	backend := NewCommandBackend(transport, device.Identity{StableID: "synthetic-device-1"})
 
@@ -59,7 +60,7 @@ func TestCommandBackendReadOnlyStatus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !radio.Registered || radio.Operator != "TestNet" || radio.SignalDBM != -73 {
+	if !radio.Registered || radio.Operator != "TestNet" || radio.SignalDBM != -73 || radio.SignalRSRP != -75 || radio.SignalRSRQ != -8 || radio.SignalSINR != 11 {
 		t.Fatalf("radio = %+v", radio)
 	}
 	sim, err := backend.SIM(context.Background())

@@ -1,0 +1,9 @@
+{
+  "id": 51,
+  "type": "call.reject.succeeded",
+  "version": 1,
+  "occurred_at": "2026-08-02T10:00:01Z",
+  "data": {
+    "call_id": "1783069200000-1"
+  }
+}

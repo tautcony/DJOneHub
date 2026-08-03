@@ -3,26 +3,40 @@ package darwin
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/iniwex5/vohive/internal/backend"
 	"github.com/iniwex5/vohive/internal/domain/device"
 	"github.com/iniwex5/vohive/internal/modem"
 	"github.com/iniwex5/vohive/internal/platform/unsupported"
+	"github.com/iniwex5/vohive/internal/storage"
 )
 
-type Adapter struct{ *unsupported.Adapter }
+type Adapter struct {
+	*unsupported.Adapter
+	policyMu           sync.Mutex
+	force4GOff         bool
+	disabled4GServices []string
+	policyLoaded       bool
+	policyStore        *storage.JSONStore
+}
 
 func New() *Adapter {
+	configDir, _ := os.UserConfigDir()
+	if configDir == "" {
+		configDir = "."
+	}
 	return &Adapter{Adapter: unsupported.New("darwin", device.CapabilitySet{
 		device.CapabilityDeviceStatus: "DJI/Quectel USB and AT serial discovery",
-	})}
+	}), policyStore: storage.NewJSONStore(filepath.Join(configDir, "DJOneHub", "network-policy.json"))}
 }
 
 type usbIdentity struct {

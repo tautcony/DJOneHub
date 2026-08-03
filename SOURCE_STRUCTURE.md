@@ -25,6 +25,9 @@ DJOneHub-source-minimal/
 │   ├── README.md             # 发行包内的安装说明
 │   └── THIRD_PARTY_NOTICES.md
 ├── scripts/
+│   ├── dev-backend.sh        # 启动统一 Go 后端
+│   ├── dev-web.sh            # 启动 Vue 开发服务器
+│   ├── dev.sh                # 一键启动前后端
 │   ├── build-macos.sh        # 本地开发构建
 │   └── package-macos-arm64.sh# Apple Silicon 发行包构建
 ├── third_party/              # 当前构建实际使用的本地第三方源码
