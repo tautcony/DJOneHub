@@ -44,7 +44,7 @@ macOS 适配器当前识别以下 USB 身份：
 
 普通用户应从项目的 Releases 页面下载发行包。GitHub 自动生成的 `Source code (zip)` 和 `Source code (tar.gz)` 只是源码快照，不能替代已打包的应用。
 
-当前 macOS 只保留 DMG 作为用户发行格式。DMG 内含一个 `DJOneHub.app`、一个安装脚本和一个卸载脚本。
+当前 macOS 只保留 DMG 作为用户发行格式。DMG 内含一个可拖入“应用程序”目录的 `DJOneHub.app`。
 
 下载 Release 提供的 DMG 后，可在终端执行以下命令校验文件：
 
@@ -56,34 +56,24 @@ shasum -a 256 DJOneHub-macOS-*.dmg
 
 ### DMG 安装
 
-DMG 安装包内包含 `安装 DJOneHub.command` 和 `卸载 DJOneHub.command`。安装步骤如下：
+打开 DMG，将 `DJOneHub.app` 拖入“应用程序”目录后启动。管理页面地址为 `http://127.0.0.1:7575`。
 
-1. 打开 DMG，并将其中的发行目录保留在可访问的位置。
-2. 双击 `安装 DJOneHub.command`。
-3. 如果 macOS 阻止执行，请在“系统设置 → 隐私与安全性”中允许打开，然后再次双击。
-
-安装脚本会把 App 复制到：
+登录启动在应用“设置 → 登录时启动”中管理。应用会按当前用户创建或移除：
 
 ```text
-~/Library/Application Support/DJOneHub/DJOneHub.app
+~/Library/LaunchAgents/com.jamie.djonehub.plist
 ```
 
-随后注册唯一的 `~/Library/LaunchAgents/com.jamie.djonehub.plist`，由 macOS 在登录时启动 App 并保持 DJOneHub 运行。管理页面地址为 `http://127.0.0.1:7575`。日志写入：
-
-```text
-~/Library/Logs/DJOneHub/launchd.log
-```
-
-卸载时双击 `卸载 DJOneHub.command`。该脚本会停止 LaunchAgent、删除用户级安装目录和开机启动配置；日志目录不会由卸载脚本删除。
+移除应用前，请先在设置中关闭登录启动；日志和本地数据不会随应用移除。
 
 ### macOS 安全提示
 
-预览发行包可能使用临时签名，未经过 Apple Developer ID 公证。首次运行或双击 `.command` 文件被阻止时，请在“系统设置 → 隐私与安全性”中确认允许打开。
+预览发行包可能使用临时签名，未经过 Apple Developer ID 公证。首次运行被阻止时，请在“系统设置 → 隐私与安全性”中确认允许打开。
 
-如果 DMG 中的 App 或安装脚本仍提示文件已损坏，只对来自可信 Release、且已核对 SHA-256 的发行包执行：
+如果 DMG 中的 App 仍提示文件已损坏，只对来自可信 Release、且已核对 SHA-256 的发行包执行：
 
 ```sh
-xattr -dr com.apple.quarantine ./djonehub/DJOneHub.app ./安装\ DJOneHub.command ./卸载\ DJOneHub.command
+xattr -dr com.apple.quarantine ./DJOneHub.app
 ```
 
 ## 使用边界
@@ -178,19 +168,19 @@ npm --prefix web run build
 构建 macOS 本地测试 App：
 
 ```sh
-./scripts/build-macos.sh
+./scripts/build-macos-dev.sh
 ```
 
 构建 Apple Silicon DMG：
 
 ```sh
-./scripts/build-dmg.sh v0.1.0-preview
+./scripts/build-macos.sh arm64 v0.1.0-preview
 ```
 
 构建 Intel + Apple Silicon 通用 DMG：
 
 ```sh
-./scripts/build-dmg-universal.sh v0.1.0-preview
+./scripts/build-macos.sh universal v0.1.0-preview
 ```
 
 构建跨平台基础二进制：
@@ -235,7 +225,7 @@ macOS 默认路径：
 
 短信缓存、Profile 备注、通知偏好和运行状态属于本地数据。提交 Issue、日志或截图前，应隐藏手机号、EID、ICCID、IMSI、短信正文和验证码等敏感信息。
 
-卸载请使用 DMG 内的 `卸载 DJOneHub.command`。如需手动删除日志，请先确认不再需要：
+如需手动删除日志，请先确认不再需要：
 
 ```sh
 rm -rf "$HOME/Library/Logs/DJOneHub"

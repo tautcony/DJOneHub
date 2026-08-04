@@ -12,7 +12,7 @@ DJOneHub 的 macOS 原生 UI 层，作为**静态库**链接进 Go 主进程（`
 ./build-app.sh
 ```
 
-产出静态库 `libDJOneHubNotifier.a`（Go 构建链接用）并执行 CLI 自检。Go 侧完整构建入口见 `scripts/build-macos.sh`，它会把最新静态库链接到带 `Info.plist` 的 `DJOneHub.app`，避免裸可执行文件无法获得 macOS 通知 bundle 身份。
+产出静态库 `libDJOneHubNotifier.a`（Go 构建链接用）并执行 CLI 自检。Go 侧本地测试入口见 `scripts/build-macos-dev.sh`，发行入口见 `scripts/build-macos.sh`；二者都会把最新静态库链接到带 `Info.plist` 的 `DJOneHub.app`，避免裸可执行文件无法获得 macOS 通知 bundle 身份。
 
 通知显示方式在 Web 设置中按来电、未接来电、短信和设备离线分别选择“系统通知”或“自绘面板”。macOS 不向普通 App 提供 FaceTime/电话式 CallKit 通话界面，自绘面板只是可选的 AppKit 视觉方案。
 

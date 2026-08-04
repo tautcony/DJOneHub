@@ -23,8 +23,8 @@ func main() {
 	// block here safely while the HTTP server runs on worker goroutines.
 	goruntime.LockOSThread()
 
-	listen := flag.String("listen", "127.0.0.1:7576", "HTTP listen address")
-	webDir := flag.String("web-dir", "web/dist", "Vue static asset directory")
+	listen := flag.String("listen", defaultListenAddress(), "HTTP listen address")
+	webDir := flag.String("web-dir", defaultWebDirectory(), "Vue static asset directory")
 	demo := flag.Bool("demo", false, "run without hardware")
 	flag.Parse()
 	var instance *app.App
@@ -72,6 +72,19 @@ func main() {
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
+}
+
+func defaultListenAddress() string { return "127.0.0.1:7575" }
+
+func defaultWebDirectory() string {
+	executable, err := os.Executable()
+	if err == nil {
+		bundleWeb := filepath.Clean(filepath.Join(filepath.Dir(executable), "..", "Resources", "web", "dist"))
+		if _, err := os.Stat(bundleWeb); err == nil {
+			return bundleWeb
+		}
+	}
+	return "web/dist"
 }
 
 func withVueAssets(apiHandler http.Handler, webDir string) http.Handler {

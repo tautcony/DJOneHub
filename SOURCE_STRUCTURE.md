@@ -29,19 +29,16 @@ third_party/           构建实际使用的本地第三方依赖
 macOS 用户发行流程只有一条：
 
 ```text
-package-macos-*.sh
+scripts/build-macos.sh <arm64|universal> <version>
         |
         v
-DJOneHub.app staging
+DJOneHub.app + DMG + SHA-256
         |
         v
-build-dmg*.sh
-        |
-        v
-DMG -> 安装 DJOneHub.command -> 一个 DJOneHub.app + 一个 LaunchAgent
+拖入“应用程序”目录 -> 应用设置管理 LaunchAgent
 ```
 
-`package-macos-arm64.sh` 和 `package-macos-universal.sh` 只构建不同架构的 App。正式发布应使用 `build-dmg.sh` 或 `build-dmg-universal.sh`，不直接发布 staging 目录。
+正式发布使用 `scripts/build-macos.sh`，本地开发测试使用 `scripts/build-macos-dev.sh`。
 
 ## 验证
 

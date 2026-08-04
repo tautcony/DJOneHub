@@ -24,6 +24,7 @@ import (
 	"github.com/iniwex5/vohive/internal/backend"
 	domain "github.com/iniwex5/vohive/internal/domain/device"
 	derrors "github.com/iniwex5/vohive/internal/domain/errors"
+	"github.com/iniwex5/vohive/internal/platform/startup"
 	"github.com/iniwex5/vohive/internal/runtime"
 )
 
@@ -50,6 +51,8 @@ type Config struct {
 	OpenNotificationSettings      func() bool
 	NotificationPreferences       func() notification.NotificationPreferences
 	SetNotificationPreferences    func(notification.NotificationPreferences) error
+	StartupStatus                 func() startup.Status
+	SetStartupEnabled             func(bool) error
 }
 
 type Server struct{ config Config }
@@ -88,6 +91,7 @@ func (s *Server) Handler() nethttp.Handler {
 	mux.HandleFunc("/api/v1/notifications/permissions/request", s.requestNotificationPermission)
 	mux.HandleFunc("/api/v1/notifications/permissions/open-settings", s.openNotificationSettings)
 	mux.HandleFunc("/api/v1/notifications/preferences", s.notificationPreferences)
+	mux.HandleFunc("/api/v1/settings/startup", s.startupSettings)
 	mux.HandleFunc("/api/v1/calls", s.calls)
 	mux.HandleFunc("/api/v1/calls/actions/reject", s.callReject)
 	mux.HandleFunc("/api/v1/esim/health", s.esimHealth)
@@ -680,6 +684,45 @@ func (s *Server) notificationPreferences(w nethttp.ResponseWriter, r *nethttp.Re
 			"native_ui":   s.notificationUIAvailable(),
 			"preferences": preferences.Normalize(),
 		})
+	default:
+		w.Header().Set("Allow", nethttp.MethodGet+", "+nethttp.MethodPut)
+		writeJSON(w, nethttp.StatusMethodNotAllowed, map[string]any{
+			"error": derrors.New(derrors.InvalidRequest, "method not allowed", false, map[string]any{"method": "GET, PUT"}),
+		})
+	}
+}
+
+func (s *Server) currentStartupStatus() startup.Status {
+	if s.config.StartupStatus != nil {
+		return s.config.StartupStatus()
+	}
+	return startup.Status{}
+}
+
+func (s *Server) startupSettings(w nethttp.ResponseWriter, r *nethttp.Request) {
+	if !s.protected(w, r) {
+		return
+	}
+	switch r.Method {
+	case nethttp.MethodGet:
+		writeJSON(w, nethttp.StatusOK, s.currentStartupStatus())
+	case nethttp.MethodPut:
+		var request struct {
+			Enabled bool `json:"enabled"`
+		}
+		if err := decodeJSON(r, &request); err != nil {
+			writeError(w, derrors.New(derrors.InvalidRequest, "invalid JSON request", false, nil))
+			return
+		}
+		if s.config.SetStartupEnabled == nil {
+			writeError(w, fmt.Errorf("login startup is unavailable"))
+			return
+		}
+		if err := s.config.SetStartupEnabled(request.Enabled); err != nil {
+			writeError(w, err)
+			return
+		}
+		writeJSON(w, nethttp.StatusOK, s.currentStartupStatus())
 	default:
 		w.Header().Set("Allow", nethttp.MethodGet+", "+nethttp.MethodPut)
 		writeJSON(w, nethttp.StatusMethodNotAllowed, map[string]any{

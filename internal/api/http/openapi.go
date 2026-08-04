@@ -45,6 +45,10 @@ func openAPIDocument() map[string]any {
 				"get": map[string]any{"responses": responses("notification presentation preferences")},
 				"put": commandPath("notification presentation preferences", false)["post"],
 			},
+			"/api/v1/settings/startup": map[string]any{
+				"get": map[string]any{"responses": responses("login startup status")},
+				"put": commandPath("login startup status", false)["post"],
+			},
 			"/api/v1/operations/{operation_id}": map[string]any{
 				"get": map[string]any{"parameters": []any{map[string]any{
 					"name": "operation_id", "in": "path", "required": true, "schema": map[string]any{"type": "string"},

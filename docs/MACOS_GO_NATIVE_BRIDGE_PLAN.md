@@ -360,10 +360,9 @@ DJOneHub.app/
 
 ### 10.2 脚本调整
 
-- `scripts/build-macos.sh`：在 Go 构建时链接 macOS 原生桥接，并生成带 `Info.plist` 的 `.app` 测试产物。
-- `scripts/build-dmg.sh`、`scripts/build-dmg-universal.sh`：删除单独的 Swift executable、`lipo` 和 `DJOneHubNotifier.app` 组装步骤，改为打包统一 `DJOneHub.app`。
-- `scripts/dmg/安装 DJOneHub.command`：删除 `NOTIFIER_DIR`、通知助手复制和第二个 plist，只安装一个应用和一个 LaunchAgent。
-- `scripts/dmg/卸载 DJOneHub.command`：删除 `com.jamie.djonehub-notifier` 的 bootout 和 plist 清理逻辑。
+- `scripts/build-macos-dev.sh`：在 Go 构建时链接 macOS 原生桥接，并生成带 `Info.plist` 的本地测试 `.app`。
+- `scripts/build-macos.sh`：按 `arm64` 或 `universal` 构建统一 `DJOneHub.app`、DMG 和 SHA-256 校验文件。
+- `internal/platform/startup`：由应用设置直接管理用户级 LaunchAgent，不再把安装或卸载命令放入 DMG。
 - `macos/DJOneHubNotifier/com.jamie.djonehub-notifier.plist`：迁移完成后删除。
 - `Info.plist`：将 `LSUIElement`、最小 macOS 版本、Bundle Identifier 和原生权限配置合并到统一 App。
 - LaunchAgent 必须继续注册在 `gui/$UID`，并使用适合 AppKit 的交互进程类型；不能把需要菜单栏和窗口的进程注册成系统级 daemon。

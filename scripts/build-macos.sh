@@ -1,44 +1,198 @@
 #!/bin/sh
 set -eu
 
-# Builds the unified macOS app: the native UI static library is compiled
-# first, then linked into the Go binary via cgo, then wrapped into a
-# DJOneHub.app test bundle (single process, single LaunchAgent).
-#
-# Distribution DMG builds are handled by build-dmg.sh / build-dmg-universal.sh;
-# this script is for local development.
+# Build one macOS application and its DMG. The universal variant is built on
+# Apple Silicon by compiling both Go and libusb slices, then combining them.
 
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-DIST_DIR="${ROOT_DIR}/dist"
-APP="${DIST_DIR}/DJOneHub.app"
+ARCH=${1:-arm64}
+VERSION=${2:-v0.1.5-preview}
+case "${ARCH}" in
+arm64|universal) ;;
+*) echo "Usage: $0 <arm64|universal> [version]" >&2; exit 2 ;;
+esac
 
-mkdir -p "${DIST_DIR}"
+if [ "${ARCH}" = "arm64" ] && [ "$(uname -m)" != "arm64" ]; then
+	printf '%s\n' "The arm64 package must be built on Apple Silicon." >&2
+	exit 1
+fi
+for command in go curl pkg-config npm swift clang codesign hdiutil; do
+	if ! command -v "${command}" >/dev/null 2>&1; then
+		printf '%s\n' "${command} is required to build the macOS package." >&2
+		exit 1
+	fi
+done
+if [ "${ARCH}" = "universal" ] && ! command -v lipo >/dev/null 2>&1; then
+	printf '%s\n' "lipo is required to build the universal package." >&2
+	exit 1
+fi
+
+DIST_DIR="${ROOT_DIR}/dist"
+PACKAGE_NAME="DJOneHub-macOS-${ARCH}-${VERSION}"
+STAGE_DIR="${DIST_DIR}/release/${PACKAGE_NAME}"
+APP_DIR="${STAGE_DIR}/DJOneHub.app"
+APP_BINARY="${APP_DIR}/Contents/MacOS/djonehub"
+DMG_STAGE="${DIST_DIR}/dmg-stage-${ARCH}"
+DMG="${DIST_DIR}/${PACKAGE_NAME}.dmg"
+CHECKSUM="${DMG}.sha256"
+LIBUSB_VERSION=1.0.30
+LIBUSB_SHA256=fea36f34f9156400209595e300840767ab1a385ede1dc7ee893015aea9c6dbaf
+LIBUSB_URL="https://github.com/libusb/libusb/releases/download/v${LIBUSB_VERSION}/libusb-${LIBUSB_VERSION}.tar.bz2"
+BUILD_ROOT="${TMPDIR:-/tmp}/djonehub-macos-${ARCH}"
+LIBUSB_ARCHIVE="${BUILD_ROOT}/libusb-${LIBUSB_VERSION}.tar.bz2"
+LIBUSB_SOURCE="${BUILD_ROOT}/libusb-source"
+
+rm -rf "${STAGE_DIR}" "${DMG_STAGE}" "${BUILD_ROOT}"
+mkdir -p "${APP_DIR}/Contents/MacOS" "${APP_DIR}/Contents/Resources" "${APP_DIR}/Contents/lib" "${STAGE_DIR}/licenses" "${BUILD_ROOT}"
+
+if [ ! -f "${LIBUSB_ARCHIVE}" ]; then
+	curl -fL "${LIBUSB_URL}" -o "${LIBUSB_ARCHIVE}"
+fi
+ACTUAL_SHA256=$(shasum -a 256 "${LIBUSB_ARCHIVE}" | awk '{print $1}')
+if [ "${ACTUAL_SHA256}" != "${LIBUSB_SHA256}" ]; then
+	printf '%s\n' "libusb source checksum mismatch." >&2
+	exit 1
+fi
+
+mkdir -p "${LIBUSB_SOURCE}"
+tar -xjf "${LIBUSB_ARCHIVE}" -C "${LIBUSB_SOURCE}" --strip-components=1
+(
+	cd "${LIBUSB_SOURCE}"
+	MACOSX_DEPLOYMENT_TARGET=13.0 ./configure \
+		--prefix="${BUILD_ROOT}/libusb-prefix" \
+		--disable-static --enable-shared --disable-dependency-tracking >/dev/null
+	sed -i '' 's/#define HAVE_PIPE2 1/\/\* #undef HAVE_PIPE2 \*\//' config.h
+)
+
+LIBUSB_SOURCES="\
+libusb/core.c \
+libusb/descriptor.c \
+libusb/hotplug.c \
+libusb/io.c \
+libusb/strerror.c \
+libusb/sync.c \
+libusb/os/events_posix.c \
+libusb/os/threads_posix.c \
+libusb/os/darwin_usb.c"
+
+build_libusb() {
+	arch=$1
+	out=$2
+	objects="${BUILD_ROOT}/libusb-${arch}-objects"
+	mkdir -p "${objects}" "${out}/lib"
+	for source in ${LIBUSB_SOURCES}; do
+		object="${objects}/$(basename "${source}" .c).o"
+		clang -arch "${arch}" -mmacosx-version-min=13.0 -DHAVE_CONFIG_H \
+			-I"${LIBUSB_SOURCE}" -I"${LIBUSB_SOURCE}/libusb" -fPIC \
+			-c "${LIBUSB_SOURCE}/${source}" -o "${object}"
+	done
+	clang -arch "${arch}" -mmacosx-version-min=13.0 -dynamiclib \
+		-install_name "@executable_path/../lib/libusb-1.0.0.dylib" \
+		-compatibility_version 7.0.0 -current_version 7.0.0 \
+		-o "${out}/lib/libusb-1.0.0.dylib" "${objects}"/*.o \
+		-framework IOKit -framework CoreFoundation -framework Security -lobjc
+	ln -sfn libusb-1.0.0.dylib "${out}/lib/libusb-1.0.dylib"
+}
 
 cd "${ROOT_DIR}"
+npm --prefix web run build
 
-echo "==> 1/3 构建 macOS 原生 UI 静态库"
-"${ROOT_DIR}/macos/DJOneHubNotifier/build-app.sh" >/dev/null
+if [ "${ARCH}" = "arm64" ]; then
+	LIBUSB_ARM="${BUILD_ROOT}/libusb-arm64"
+	build_libusb arm64 "${LIBUSB_ARM}"
+	NOTIFIER_SRC="${ROOT_DIR}/macos/DJOneHubNotifier"
+	(
+		cd "${NOTIFIER_SRC}"
+		swift build --disable-sandbox -c release
+	)
+	GOCACHE="${BUILD_ROOT}/go-cache"; rm -rf "${GOCACHE}"; mkdir -p "${GOCACHE}"
+	GOCACHE="${GOCACHE}" PKG_CONFIG_PATH="${LIBUSB_SOURCE}" \
+		MACOSX_DEPLOYMENT_TARGET=13.0 CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 \
+		go build -p 2 -trimpath -buildvcs=false -ldflags="-s -w" -o "${APP_BINARY}" ./cmd/djonehub
+	cp "${LIBUSB_ARM}/lib/libusb-1.0.0.dylib" "${APP_DIR}/Contents/lib/libusb-1.0.0.dylib"
+else
+	LIBUSB_ARM="${BUILD_ROOT}/libusb-arm64"
+	LIBUSB_X86="${BUILD_ROOT}/libusb-x86_64"
+	build_libusb arm64 "${LIBUSB_ARM}"
+	build_libusb x86_64 "${LIBUSB_X86}"
+	lipo -create "${LIBUSB_ARM}/lib/libusb-1.0.0.dylib" "${LIBUSB_X86}/lib/libusb-1.0.0.dylib" \
+		-output "${APP_DIR}/Contents/lib/libusb-1.0.0.dylib"
 
-echo "==> 2/3 构建 Go 主程序（链接原生 UI）"
-ARCH=$(go env GOARCH)
-PKG_CONFIG_PATH="${PKG_CONFIG_PATH:-/opt/homebrew/lib/pkgconfig:/usr/local/lib/pkgconfig}"
-export PKG_CONFIG_PATH
+	PC_SHIM="${BUILD_ROOT}/pc-shim"
+	mkdir -p "${PC_SHIM}"
+	cat > "${PC_SHIM}/pkg-config" <<EOF
+#!/bin/sh
+case "\$*" in
+  *libusb-1.0*)
+    out=""
+    if [ "\${PKG_ARCH:-arm64}" = "x86_64" ] || [ "\${PKG_ARCH:-arm64}" = "amd64" ]; then libdir="${LIBUSB_X86}/lib"; else libdir="${LIBUSB_ARM}/lib"; fi
+    case "\$*" in *--cflags*) out="-I${LIBUSB_SOURCE}/libusb \$out" ;; esac
+    case "\$*" in *--libs*) out="-L\${libdir} -lusb-1.0 \$out" ;; esac
+    [ -n "\$out" ] && echo "\$out"
+    exit 0
+    ;;
+esac
+exec /usr/bin/pkg-config "\$@"
+EOF
+	chmod 755 "${PC_SHIM}/pkg-config"
 
-CGO_ENABLED=1 GOOS=darwin GOARCH="${ARCH}" go build \
-	-a \
-	-p 2 \
-  -trimpath -ldflags="-s -w" \
-  -o "${DIST_DIR}/djonehub-macos-${ARCH}" ./cmd/djonehub
+	NOTIFIER_SRC="${ROOT_DIR}/macos/DJOneHubNotifier"
+	SWIFT_CACHE="${BUILD_ROOT}/swift-cache"
+	mkdir -p "${SWIFT_CACHE}/clang" "${SWIFT_CACHE}/swiftpm"
+	export CLANG_MODULE_CACHE_PATH="${SWIFT_CACHE}/clang"
+	export SWIFTPM_MODULECACHE_OVERRIDE="${SWIFT_CACHE}/clang"
+	export SWIFTPM_CUSTOM_CACHE_PATH="${SWIFT_CACHE}/swiftpm"
+	(
+		cd "${NOTIFIER_SRC}"
+		swift build --disable-sandbox -c release
+		cp .build/release/libDJOneHubNotifier.a "${BUILD_ROOT}/libDJOneHubNotifier-arm64.a"
+		swift build --disable-sandbox -c release --arch x86_64 \
+			-Xswiftc -runtime-compatibility-version -Xswiftc none
+		cp .build/release/libDJOneHubNotifier.a "${BUILD_ROOT}/libDJOneHubNotifier-x86_64.a"
+		cp "${BUILD_ROOT}/libDJOneHubNotifier-arm64.a" .build/release/libDJOneHubNotifier.a
+	)
+	lipo -create "${BUILD_ROOT}/libDJOneHubNotifier-arm64.a" "${BUILD_ROOT}/libDJOneHubNotifier-x86_64.a" \
+		-output "${NOTIFIER_SRC}/.build/release/libDJOneHubNotifier.a"
+	build_go() {
+		arch=$1
+		cache="${BUILD_ROOT}/go-cache-${arch}"
+		rm -rf "${cache}"; mkdir -p "${cache}"
+		PATH="${PC_SHIM}:$PATH" PKG_ARCH="${arch}" GOCACHE="${cache}" \
+			PKG_CONFIG_PATH="" MACOSX_DEPLOYMENT_TARGET=13.0 CGO_ENABLED=1 GOOS=darwin GOARCH="${arch}" \
+			go build -p 2 -trimpath -buildvcs=false -ldflags="-s -w" \
+			-o "${BUILD_ROOT}/djonehub-${arch}" ./cmd/djonehub
+	}
+	build_go arm64
+	build_go amd64
+	lipo -create "${BUILD_ROOT}/djonehub-arm64" "${BUILD_ROOT}/djonehub-amd64" -output "${APP_BINARY}"
+fi
 
-cp "${DIST_DIR}/djonehub-macos-${ARCH}" "${DIST_DIR}/djonehub-macos"
+cp "${ROOT_DIR}/scripts/Info.plist" "${APP_DIR}/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${VERSION#v}" "${APP_DIR}/Contents/Info.plist"
+mkdir -p "${APP_DIR}/Contents/Resources/web/dist"
+cp -R "${ROOT_DIR}/web/dist/." "${APP_DIR}/Contents/Resources/web/dist/"
+cp "${ROOT_DIR}/LICENSE" "${STAGE_DIR}/LICENSE"
+cp "${LIBUSB_SOURCE}/COPYING" "${STAGE_DIR}/licenses/libusb-COPYING"
+cp "${ROOT_DIR}/packaging/THIRD_PARTY_NOTICES.md" "${STAGE_DIR}/THIRD_PARTY_NOTICES.md"
+chmod 755 "${APP_BINARY}" "${APP_DIR}/Contents/lib/libusb-1.0.0.dylib"
+codesign --force --deep --sign - "${APP_DIR}"
+if otool -L "${APP_BINARY}" | grep -q '/opt/homebrew\|/usr/local\|/Cellar/'; then
+	printf '%s\n' "Release binary still contains a package-manager dependency." >&2
+	exit 1
+fi
+find "${STAGE_DIR}" -name '._*' -delete
 
-echo "==> 3/3 组装 DJOneHub.app（测试产物）"
-rm -rf "${APP}"
-mkdir -p "${APP}/Contents/MacOS" "${APP}/Contents/Resources"
-cp "${DIST_DIR}/djonehub-macos-${ARCH}" "${APP}/Contents/MacOS/djonehub"
-cp "${ROOT_DIR}/scripts/Info.plist" "${APP}/Contents/Info.plist"
-chmod 755 "${APP}/Contents/MacOS/djonehub"
-codesign --force --deep --sign - "${APP}" >/dev/null 2>&1 || true
+mkdir -p "${DMG_STAGE}"
+ditto --norsrc --noextattr --noqtn --noacl "${APP_DIR}" "${DMG_STAGE}/DJOneHub.app"
+mkdir -p "${DMG_STAGE}/DJOneHub-licenses/licenses"
+cp "${STAGE_DIR}/LICENSE" "${DMG_STAGE}/DJOneHub-licenses/"
+cp "${STAGE_DIR}/THIRD_PARTY_NOTICES.md" "${DMG_STAGE}/DJOneHub-licenses/"
+cp "${STAGE_DIR}/licenses/libusb-COPYING" "${DMG_STAGE}/DJOneHub-licenses/licenses/"
+ln -s /Applications "${DMG_STAGE}/Applications"
+hdiutil create -volname "DJOneHub" -srcfolder "${DMG_STAGE}" -ov -format UDZO "${DMG}"
+hdiutil verify "${DMG}"
+shasum -a 256 "${DMG}" > "${CHECKSUM}"
 
-echo "macOS binaries written to ${DIST_DIR}"
-echo "app bundle: ${APP}"
+printf '%s\n' "Application: ${APP_DIR}"
+printf '%s\n' "DMG: ${DMG}"
+printf '%s\n' "Checksum: ${CHECKSUM}"

@@ -188,3 +188,8 @@ export interface NotificationPreferencesResponse {
   native_ui: boolean
   preferences: NotificationPreferences
 }
+
+export interface StartupStatus {
+  supported: boolean
+  enabled: boolean
+}

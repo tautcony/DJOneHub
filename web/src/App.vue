@@ -22,6 +22,7 @@ import type {
   NetworkTrafficRange,
   NetworkTrafficUpdate,
   SMSMessage,
+  StartupStatus,
   VowifiStatus,
 } from './types'
 import AppShell, { type ShellNavGroup } from './components/AppShell.vue'
@@ -127,6 +128,8 @@ const notificationPermissions = ref<NotificationPermissionStatus | null>(null)
 const notificationPermissionBusy = ref(false)
 const notificationPreferences = ref<NotificationPreferences | null>(null)
 const notificationPreferencesBusy = ref(false)
+const startupSettings = ref<StartupStatus | null>(null)
+const startupBusy = ref(false)
 const sensitiveStorageKey = 'djonehub.show-sensitive'
 const showSensitive = ref(localStorage.getItem(sensitiveStorageKey) === '1')
 const mobileNavOpen = ref(false)
@@ -805,17 +808,32 @@ async function loadNotificationPermissions() {
 
 async function loadSettings() {
   try {
-    const [permissions, preferences] = await Promise.all([
+    const [permissions, preferences, startup] = await Promise.all([
       api.notificationPermissions(),
       api.notificationPreferences(),
+      api.startupSettings(),
     ])
     notificationPermissions.value = permissions
     notificationPreferences.value = preferences.preferences
+    startupSettings.value = startup
     viewError.value = ''
   } catch (error) {
     viewError.value = errorText(error, 'settings.unableLoadNotifications')
   } finally {
     markViewLoaded('settings')
+  }
+}
+
+async function toggleStartup(enabled: boolean) {
+  startupBusy.value = true
+  try {
+    startupSettings.value = await api.updateStartupSettings(enabled)
+    notifySuccess(t('settings.startupSaved'))
+  } catch (error) {
+    notifyError('view', errorText(error, 'settings.unableUpdateStartup'))
+    if (isActiveView('settings')) await loadSettings()
+  } finally {
+    startupBusy.value = false
   }
 }
 
@@ -1174,6 +1192,9 @@ provide(viewContextKey, {
   notificationPermissions,
   notificationPreferences,
   notificationPreferencesBusy,
+  startupBusy,
+  startupSettings,
+  toggleStartup,
   openNotificationSettings,
   requestNotificationPermission,
   saveNotificationPreferences,

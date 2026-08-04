@@ -21,6 +21,7 @@ import (
 	"github.com/iniwex5/vohive/internal/backend"
 	domain "github.com/iniwex5/vohive/internal/domain/device"
 	derrors "github.com/iniwex5/vohive/internal/domain/errors"
+	"github.com/iniwex5/vohive/internal/platform/startup"
 	"github.com/iniwex5/vohive/internal/platform/unsupported"
 	"github.com/iniwex5/vohive/internal/runtime"
 	"github.com/iniwex5/vohive/internal/transport"
@@ -93,6 +94,27 @@ func TestServerEnforcesConfiguredAuthentication(t *testing.T) {
 	}
 	if body["error"]["code"] != string(domainErrorUnauthenticated) {
 		t.Fatalf("body = %#v", body)
+	}
+}
+
+func TestServerManagesLoginStartup(t *testing.T) {
+	server := newTestServer(t, nil)
+	status := startup.Status{Supported: true}
+	server.config.StartupStatus = func() startup.Status { return status }
+	server.config.SetStartupEnabled = func(enabled bool) error {
+		status.Enabled = enabled
+		return nil
+	}
+	handler := server.Handler()
+	read := httptest.NewRecorder()
+	handler.ServeHTTP(read, httptest.NewRequest(http.MethodGet, "/api/v1/settings/startup", nil))
+	if read.Code != http.StatusOK || !strings.Contains(read.Body.String(), `"supported":true`) {
+		t.Fatalf("get startup status = %d, %s", read.Code, read.Body.String())
+	}
+	write := httptest.NewRecorder()
+	handler.ServeHTTP(write, httptest.NewRequest(http.MethodPut, "/api/v1/settings/startup", strings.NewReader(`{"enabled":true}`)))
+	if write.Code != http.StatusOK || !strings.Contains(write.Body.String(), `"enabled":true`) {
+		t.Fatalf("put startup status = %d, %s", write.Code, write.Body.String())
 	}
 }
 

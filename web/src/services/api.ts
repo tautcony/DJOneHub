@@ -11,6 +11,7 @@ import type {
   NotificationPermissionStatus,
   NotificationPreferences,
   NotificationPreferencesResponse,
+  StartupStatus,
   OperationStatus,
   SMSMessage,
   VowifiStatus,
@@ -119,6 +120,12 @@ export const api = {
     request<NotificationPreferencesResponse>('/notifications/preferences', {
       method: 'PUT',
       body: JSON.stringify(preferences),
+    }),
+  startupSettings: () => request<StartupStatus>('/settings/startup'),
+  updateStartupSettings: (enabled: boolean) =>
+    request<StartupStatus>('/settings/startup', {
+      method: 'PUT',
+      body: JSON.stringify({ enabled }),
     }),
   operation: (id: string) => request<OperationStatus>(`/operations/${encodeURIComponent(id)}`),
   calls: () => request<CallStatus>('/calls'),

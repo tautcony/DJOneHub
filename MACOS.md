@@ -1,21 +1,18 @@
 # DJOneHub for macOS
 
-DJOneHub 的 macOS 用户发行入口只有 DMG。DMG 包含一个带原生 UI 的 `DJOneHub.app`、安装脚本和卸载脚本；安装后由一个用户级 LaunchAgent 管理生命周期。
+DJOneHub 的 macOS 用户发行入口只有 DMG。DMG 包含一个带原生 UI 的 `DJOneHub.app`，应用本身负责管理可选的用户级 LaunchAgent。
 
 ## 用户安装
 
 1. 从 Releases 下载与架构匹配的 DMG。
-2. 双击 DMG 内的 `安装 DJOneHub.command`。
-3. 安装脚本将 App 复制到 `~/Library/Application Support/DJOneHub/DJOneHub.app`。
-4. macOS 注册 `~/Library/LaunchAgents/com.jamie.djonehub.plist` 并自动启动服务。
-5. 管理页面地址为 `http://127.0.0.1:7575`。
-
-卸载时双击 DMG 内的 `卸载 DJOneHub.command`。它会停止 LaunchAgent、删除 App 和启动配置，但保留日志目录。
+2. 将 `DJOneHub.app` 拖入“应用程序”目录并启动。
+3. 在应用“设置”中按需开启“登录时启动”。
+4. 管理页面地址为 `http://127.0.0.1:7575`。
 
 日志：
 
 ```text
-~/Library/Logs/DJOneHub/launchd.log
+~/Library/Logs/DJOneHub/djonehub.log
 ```
 
 预览包使用临时签名，首次运行可能需要在“系统设置 → 隐私与安全性”中允许打开。
@@ -34,13 +31,13 @@ DJOneHub 的 macOS 用户发行入口只有 DMG。DMG 包含一个带原生 UI �
 Apple Silicon DMG：
 
 ```sh
-./scripts/build-dmg.sh v0.1.5-preview
+./scripts/build-macos.sh arm64 v0.1.5-preview
 ```
 
 Intel + Apple Silicon 通用 DMG：
 
 ```sh
-./scripts/build-dmg-universal.sh v0.1.5-preview
+./scripts/build-macos.sh universal v0.1.5-preview
 ```
 
 构建结果：
@@ -52,7 +49,7 @@ dist/DJOneHub-macOS-universal-<version>.dmg
 dist/DJOneHub-macOS-universal-<version>.dmg.sha256
 ```
 
-`scripts/package-macos-arm64.sh` 和 `scripts/package-macos-universal.sh` 只负责生成 DMG 使用的 App staging 目录，不是用户安装入口。
+`scripts/build-macos.sh` 按架构完成 App、依赖、DMG 和 SHA-256 校验文件的全部构建；`scripts/build-macos-dev.sh` 只生成本地开发测试 App。
 
 ## 本地开发
 
@@ -71,7 +68,7 @@ npm --prefix web install
 开发前端监听 `127.0.0.1:5176`，后端监听 `127.0.0.1:7576`。macOS 本地原生 UI 测试产物：
 
 ```sh
-./scripts/build-macos.sh
+./scripts/build-macos-dev.sh
 ```
 
 ## 平台边界

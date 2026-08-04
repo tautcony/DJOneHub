@@ -22,6 +22,7 @@ import (
 	"github.com/iniwex5/vohive/internal/platform/darwin"
 	"github.com/iniwex5/vohive/internal/platform/darwin/native"
 	"github.com/iniwex5/vohive/internal/platform/linux"
+	"github.com/iniwex5/vohive/internal/platform/startup"
 	"github.com/iniwex5/vohive/internal/platform/unsupported"
 	"github.com/iniwex5/vohive/internal/platform/windows"
 	"github.com/iniwex5/vohive/internal/runtime"
@@ -133,6 +134,7 @@ func newApp(r *runtime.Runtime, err error, platformAdapter transport.NetworkCont
 	_ = notificationPreferencesStore.Read(&notificationPreferences)
 	notificationPreferences = notificationPreferences.Normalize()
 	bridge := native.New(nil)
+	startupManager := startup.New()
 	bridge.SetNotificationPreferences(notificationPreferences)
 	notifications := notification.New(notification.Config{
 		Events: r.Events(),
@@ -200,6 +202,8 @@ func newApp(r *runtime.Runtime, err error, platformAdapter transport.NetworkCont
 				bridge.SetNotificationPreferences(preferences)
 				return nil
 			},
+			StartupStatus:     startupManager.Status,
+			SetStartupEnabled: startupManager.SetEnabled,
 		}),
 	}, nil
 }
