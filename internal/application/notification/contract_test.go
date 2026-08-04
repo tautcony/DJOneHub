@@ -125,7 +125,7 @@ func TestContractEventFixturesDecode(t *testing.T) {
 			event: EventSMSReceived,
 			assert: func(t *testing.T, data json.RawMessage) {
 				message := decode[SMSMessageEvent](t, data)
-				if message.Index != 7 || message.Sender != "10086" || message.Code != "482913" {
+				if message.Index != 7 || message.Sender != "10086" {
 					t.Errorf("message = %+v", message)
 				}
 				if message.Body != "您的验证码是 482913" {
@@ -134,31 +134,6 @@ func TestContractEventFixturesDecode(t *testing.T) {
 				wantKey := "10086\x00\x00您的验证码是 482913\x002026-08-02T10:00:05Z"
 				if key := message.DedupKey(); key != wantKey {
 					t.Errorf("dedup key = %q, want %q", key, wantKey)
-				}
-			},
-		},
-		{
-			name:  "gps.updated",
-			file:  "testdata/gps_updated.json",
-			event: EventGPSUpdated,
-			assert: func(t *testing.T, data json.RawMessage) {
-				status := decode[GPSUpdateEvent](t, data)
-				if !status.Enabled || status.Fix == nil {
-					t.Fatalf("status = %+v", status)
-				}
-				if status.Fix.Latitude != "31.2304" || status.Fix.Longitude != "121.4737" || status.Fix.HDOP != "1.1" || status.Fix.Satellites != "12" {
-					t.Errorf("fix = %+v", status.Fix)
-				}
-			},
-		},
-		{
-			name:  "gps.updated searching",
-			file:  "testdata/gps_updated_searching.json",
-			event: EventGPSUpdated,
-			assert: func(t *testing.T, data json.RawMessage) {
-				status := decode[GPSUpdateEvent](t, data)
-				if !status.Enabled || status.Fix != nil {
-					t.Errorf("searching status = %+v", status)
 				}
 			},
 		},
@@ -260,7 +235,6 @@ func TestContractCommandFixturesDecode(t *testing.T) {
 	}{
 		{name: "reject_call", file: "testdata/command_reject_call.json", command: Command{Name: CommandRejectCall, Params: map[string]string{"call_id": "1783069200000-1"}}},
 		{name: "open_dashboard", file: "testdata/command_open_dashboard.json", command: Command{Name: CommandOpenDashboard}},
-		{name: "toggle_gps_panel", file: "testdata/command_toggle_gps_panel.json", command: Command{Name: CommandToggleGPSPanel}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

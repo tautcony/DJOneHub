@@ -102,6 +102,16 @@ const {
         </div>
         <p class="settings-detail">{{ t('settings.presentationDetail') }}</p>
         <div v-if="notificationPreferences" class="notification-preference-list">
+          <div class="setting-toggle notification-debug-toggle">
+            <a-switch
+              v-model:checked="notificationPreferences.show_debug"
+              :loading="notificationPreferencesBusy"
+              @change="saveNotificationPreferences"
+            /><span
+              ><strong>{{ t('settings.showNotificationDebug') }}</strong
+              ><small>{{ t('settings.showNotificationDebugDetail') }}</small></span
+            >
+          </div>
           <div class="notification-preference-row">
             <div>
               <strong>{{ t('settings.incomingCall') }}</strong

@@ -72,15 +72,17 @@ const {
         </div>
         <a-alert
           v-if="esim?.card_type === 'physical_sim'"
+          class="esim-state-alert"
           type="info"
           show-icon
           :message="t('esim.physical')"
           :description="t('esim.physicalDetail')" /><a-alert
           v-else-if="esim?.card_type === 'unknown'"
+          class="esim-state-alert"
           type="warning"
           show-icon
           :message="t('esim.unavailable')"
-          :description="esim?.message || t('esim.unavailableDetail')" />
+          :description="t('esim.unavailableDetail')" />
         <div v-else class="profile-grid">
           <div
             v-for="profile in esim?.profiles"

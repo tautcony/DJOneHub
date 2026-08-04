@@ -228,7 +228,6 @@ func TestAPIContractCoversQueriesCommandsAndOperations(t *testing.T) {
 		{name: "device", path: "/api/v1/device"},
 		{name: "status", path: "/api/v1/device/status"},
 		{name: "capabilities", path: "/api/v1/device/capabilities"},
-		{name: "sms", path: "/api/v1/sms"},
 		{name: "esim", path: "/api/v1/esim"},
 		{name: "network", path: "/api/v1/network"},
 	}
@@ -272,7 +271,7 @@ func TestNotificationDebugAPI(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/notifications/debug", nil))
-	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "call_incoming") || !strings.Contains(recorder.Body.String(), "gps_fix") {
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "call_incoming") {
 		t.Fatalf("debug capabilities = %d %s", recorder.Code, recorder.Body.String())
 	}
 
@@ -317,9 +316,9 @@ func TestNotificationPreferencesAndPermissionAPI(t *testing.T) {
 	}
 
 	recorder = httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPut, "/api/v1/notifications/preferences", strings.NewReader(`{"incoming_call":"custom","missed_call":"system","sms":"custom","device_offline":"system"}`))
+	request := httptest.NewRequest(http.MethodPut, "/api/v1/notifications/preferences", strings.NewReader(`{"incoming_call":"custom","missed_call":"system","sms":"custom","device_offline":"system","show_debug":false}`))
 	handler.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusOK || preferences.IncomingCall != notification.NotificationPresentationCustom || preferences.SMS != notification.NotificationPresentationCustom {
+	if recorder.Code != http.StatusOK || preferences.IncomingCall != notification.NotificationPresentationCustom || preferences.SMS != notification.NotificationPresentationCustom || preferences.ShowDebug {
 		t.Fatalf("preferences put = %d %s, value = %+v", recorder.Code, recorder.Body.String(), preferences)
 	}
 

@@ -156,7 +156,7 @@ func (a *ATBackend) GetSignalInfo(ctx context.Context) (*SignalInfo, error) {
 func (a *ATBackend) GetServingSystem(ctx context.Context) (*ServingSystem, error) {
 	ss := &ServingSystem{}
 
-	// AT+CREG? → 注册状态、LAC、CellID
+	// CEREG/CGREG/CREG → 分组域或电路域注册状态、LAC、CellID
 	if regStatus, regText, lac, cellID, err := a.modem.QueryRegistration(); err == nil {
 		ss.RegStatus = regStatus
 		ss.RegStatusText = regText

@@ -19,7 +19,7 @@ type recordedCallEvent struct {
 func collectCallEvents(t *testing.T, count int, fn func(*Service)) []recordedCallEvent {
 	t.Helper()
 	bus := runtime.NewEventBus()
-	service := NewService(nil, operation.NewManager(bus), nil, "")
+	service := NewService(nil, operation.NewManager(bus), nil, nil)
 	_, events, unsubscribe := bus.Subscribe(32)
 	defer unsubscribe()
 	fn(service)
@@ -48,8 +48,8 @@ func candidate(index int, direction, state, number string) callCandidate {
 func TestApplyCallsPublishesIncomingThenEnded(t *testing.T) {
 	collected := collectCallEvents(t, 2, func(service *Service) {
 		now := time.Date(2026, 8, 2, 10, 0, 0, 0, time.UTC)
-		service.applyCalls([]callCandidate{candidate(1, "incoming", "incoming", "18900007376")}, now)
-		service.applyCalls(nil, now.Add(45*time.Second))
+		service.applyCalls([]callCandidate{candidate(1, "incoming", "incoming", "18900007376")}, now, "")
+		service.applyCalls(nil, now.Add(45*time.Second), "")
 	})
 	if len(collected) != 2 {
 		t.Fatalf("expected 2 events, got %d", len(collected))
@@ -71,11 +71,11 @@ func TestApplyCallsPublishesIncomingThenEnded(t *testing.T) {
 func TestApplyCallsPublishesUpdatedOnlyOnChange(t *testing.T) {
 	collected := collectCallEvents(t, 2, func(service *Service) {
 		now := time.Date(2026, 8, 2, 10, 0, 0, 0, time.UTC)
-		service.applyCalls([]callCandidate{candidate(1, "incoming", "incoming", "18900007376")}, now)
+		service.applyCalls([]callCandidate{candidate(1, "incoming", "incoming", "18900007376")}, now, "")
 		// Same state and number: no new event.
-		service.applyCalls([]callCandidate{candidate(1, "incoming", "incoming", "18900007376")}, now.Add(3*time.Second))
+		service.applyCalls([]callCandidate{candidate(1, "incoming", "incoming", "18900007376")}, now.Add(3*time.Second), "")
 		// State change: call.updated.
-		service.applyCalls([]callCandidate{candidate(1, "incoming", "active", "18900007376")}, now.Add(6*time.Second))
+		service.applyCalls([]callCandidate{candidate(1, "incoming", "active", "18900007376")}, now.Add(6*time.Second), "")
 	})
 	if len(collected) != 2 {
 		t.Fatalf("expected 2 events (incoming + updated), got %d: %+v", len(collected), collected)
@@ -91,9 +91,9 @@ func TestApplyCallsPublishesUpdatedOnlyOnChange(t *testing.T) {
 func TestApplyCallsPublishesEndedNotMissedForAnsweredCall(t *testing.T) {
 	collected := collectCallEvents(t, 3, func(service *Service) {
 		now := time.Date(2026, 8, 2, 10, 0, 0, 0, time.UTC)
-		service.applyCalls([]callCandidate{candidate(1, "incoming", "incoming", "18900007376")}, now)
-		service.applyCalls([]callCandidate{candidate(1, "incoming", "active", "18900007376")}, now.Add(3*time.Second))
-		service.applyCalls(nil, now.Add(60*time.Second))
+		service.applyCalls([]callCandidate{candidate(1, "incoming", "incoming", "18900007376")}, now, "")
+		service.applyCalls([]callCandidate{candidate(1, "incoming", "active", "18900007376")}, now.Add(3*time.Second), "")
+		service.applyCalls(nil, now.Add(60*time.Second), "")
 	})
 	if len(collected) != 3 {
 		t.Fatalf("expected 3 events, got %d: %+v", len(collected), collected)
@@ -106,9 +106,9 @@ func TestApplyCallsPublishesEndedNotMissedForAnsweredCall(t *testing.T) {
 func TestApplyCallsArchivesReplacedActiveCall(t *testing.T) {
 	collected := collectCallEvents(t, 3, func(service *Service) {
 		now := time.Date(2026, 8, 2, 10, 0, 0, 0, time.UTC)
-		service.applyCalls([]callCandidate{candidate(1, "incoming", "incoming", "18900007376")}, now)
+		service.applyCalls([]callCandidate{candidate(1, "incoming", "incoming", "18900007376")}, now, "")
 		// A second call replaces the first; the first is archived and ends.
-		service.applyCalls([]callCandidate{candidate(2, "incoming", "waiting", "18800000000")}, now.Add(10*time.Second))
+		service.applyCalls([]callCandidate{candidate(2, "incoming", "waiting", "18800000000")}, now.Add(10*time.Second), "")
 	})
 	if len(collected) != 3 {
 		t.Fatalf("expected 3 events, got %d: %+v", len(collected), collected)

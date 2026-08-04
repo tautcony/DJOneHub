@@ -8,16 +8,12 @@ import { useViewContext } from './context'
 
 const { t } = useI18n()
 const {
-  cellularPolicy,
   checkNetwork,
   device,
   loadView,
   network,
-  networkChecks,
   networkMode,
-  runNetworkCheck,
   setNetworkMode,
-  toggleCellularPolicy,
   usbNetworkModeLabel,
   usbNetworkModeOptions,
   loadedViews,
@@ -46,18 +42,25 @@ function bytes(value: number) {
       ><LoadingState v-if="!loadedViews.network" /><template v-else
         ><div class="detail-list">
           <FieldRow :label="t('network.usbMode')" :value="usbNetworkModeLabel(network?.mode)" /><FieldRow
-            :label="t('network.radioMode')"
-            :value="network?.network_mode"
-          /><FieldRow :label="t('network.interface')" :value="network?.interface" monospace /><FieldRow
+			:label="t('network.radioMode')"
+			:value="network?.network_mode"
+		  /><FieldRow
+			:label="t('network.band')"
+			:value="network?.radio_band"
+			monospace
+		  /><FieldRow :label="t('network.interface')" :value="network?.interface" monospace /><FieldRow
             :label="t('network.defaultRoute')"
             :value="network?.default_route"
+          /><FieldRow
+            :label="t('network.systemDefaultRoute')"
+            :value="network?.system_default_route"
           /><FieldRow
             :label="t('network.addresses')"
             :value="network?.addresses?.join(', ')"
             monospace
           /><FieldRow
             :label="t('network.traffic')"
-            :value="`${bytes(networkTraffic.rxBytes)} ${t('network.received')} · ${bytes(networkTraffic.txBytes)} ${t('network.sent')}`"
+            :value="`${bytes(networkTraffic.rxBytes)} ${t('common.received')} · ${bytes(networkTraffic.txBytes)} ${t('common.sent')}`"
           /><FieldRow
             :label="t('network.currentDownload')"
             :value="`${bytes(networkTraffic.rxRate)}/s`"
@@ -70,27 +73,7 @@ function bytes(value: number) {
             ><StopOutlined />{{ t('network.reboot') }}</a-button
           >
         </div>
-        <div class="network-checks">
-          <div class="panel-heading">
-            <h3>{{ t('network.checks') }}</h3>
-            <span>{{ t('network.checksHint') }}</span>
-          </div>
-          <div class="panel-actions">
-            <a-button @click="runNetworkCheck('4g')">{{ t('network.check4g') }}</a-button
-            ><a-button @click="runNetworkCheck('proxy')">{{ t('network.checkProxy') }}</a-button>
-          </div>
-          <div class="network-check-results">
-            <div v-for="item in networkChecks" :key="item.label" class="check-result">
-              <a-tag :color="item.ok ? 'success' : 'error'">{{
-                item.ok ? t('status.supported') : t('status.notSupported')
-              }}</a-tag
-              ><strong>{{ item.label }}</strong
-              ><span>{{ item.summary }}</span
-              ><small>{{ item.detail }}</small>
-            </div>
-          </div>
-        </div></template
-      ></Panel
+      </template></Panel
     ><Panel
       :eyebrow="t('network.modeEyebrow')"
       :title="t('network.usbNetworkMode')"
@@ -106,18 +89,7 @@ function bytes(value: number) {
           class="inline-alert"
           type="warning"
           show-icon
-          :message="t('network.unavailableControl')"
-      /></a-form>
-      <div class="policy-block">
-        <div>
-          <span>{{ t('network.policy') }}</span
-          ><a-switch
-            :checked="!cellularPolicy?.force_off"
-            :disabled="!cellularPolicy"
-            @change="toggleCellularPolicy"
-          /><strong>{{ cellularPolicy?.force_off ? t('network.policyOff') : t('network.policyOn') }}</strong>
-        </div>
-      </div></Panel
-    >
+          :message="t('network.unavailableControl')" /></a-form
+    ></Panel>
   </section>
 </template>

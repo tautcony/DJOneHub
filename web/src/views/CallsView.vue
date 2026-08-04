@@ -4,10 +4,23 @@ import { StopOutlined } from '@ant-design/icons-vue'
 import EmptyState from '../components/EmptyState.vue'
 import LoadingState from '../components/LoadingState.vue'
 import Panel from '../components/Panel.vue'
+import { formatDateTime } from '../utils/date'
 import { useViewContext } from './context'
 
 const { t } = useI18n()
-const { calls, device, loadedViews, formatSMSDate, maskSensitive, rejectCall } = useViewContext()
+const { calls, device, loadedViews, rejectCall } = useViewContext()
+
+function displayNumber(number?: string) {
+  return number?.trim() || t('calls.unknownNumber')
+}
+
+function callState(state: string) {
+  return t(`calls.state.${state}`)
+}
+
+function callDirection(direction: string) {
+  return t(`calls.direction.${direction}`)
+}
 </script>
 
 <template>
@@ -20,16 +33,24 @@ const { calls, device, loadedViews, formatSMSDate, maskSensitive, rejectCall } =
     >
       <LoadingState v-if="!loadedViews.calls" />
       <div v-else-if="calls?.active" class="active-call">
-        <div>
-          <span>{{ calls.active.state }}</span
-          ><strong>{{ maskSensitive(calls.active.number) }}</strong
-          ><small>{{ formatSMSDate(calls.active.started_at) }}</small>
+        <div class="active-call-content">
+          <span class="active-call-state">{{ callState(calls.active.state) }}</span
+          ><strong class="active-call-number">{{ displayNumber(calls.active.number) }}</strong
+          ><time>{{ formatDateTime(calls.active.started_at) }}</time>
         </div>
-        <a-button danger :disabled="!device.has('call_monitor')" @click="rejectCall"
+        <a-button
+          class="active-call-action"
+          danger
+          :disabled="!device.has('call_monitor')"
+          @click="rejectCall"
           ><StopOutlined />{{ t('calls.reject') }}</a-button
         >
       </div>
-      <EmptyState v-else :title="calls?.last_poll_error ? t('calls.monitorOffline') : t('calls.noActive')" />
+      <EmptyState
+        v-else
+        class="call-empty-state"
+        :title="calls?.last_poll_error ? t('calls.monitorOffline') : t('calls.noActive')"
+      />
     </Panel>
     <Panel
       class="call-panel"
@@ -40,22 +61,26 @@ const { calls, device, loadedViews, formatSMSDate, maskSensitive, rejectCall } =
       <LoadingState v-if="!loadedViews.calls" />
       <a-list
         v-else-if="calls?.history?.length"
-        class="message-list"
+        class="call-history-list"
         size="small"
         :data-source="calls.history"
-        ><template #renderItem="{ item }"
-          ><a-list-item class="message-row"
-            ><strong>{{ maskSensitive(item.number) }}</strong
-            ><span
-              ><a-tag :color="item.missed ? 'error' : 'success'">{{
-                item.missed ? t('calls.missed') : t('calls.completed')
-              }}</a-tag>
-              · {{ item.direction }}</span
-            ><small>{{ formatSMSDate(item.started_at) }}</small></a-list-item
-          ></template
-        ></a-list
       >
-      <EmptyState v-else :title="t('calls.noHistory')" />
+        <template #renderItem="{ item }">
+          <a-list-item class="call-history-row">
+            <div class="call-history-main">
+              <strong class="call-history-number">{{ displayNumber(item.number) }}</strong>
+              <div class="call-history-meta">
+                <a-tag :color="item.missed ? 'error' : 'success'">{{
+                  item.missed ? t('calls.missed') : t('calls.completed')
+                }}</a-tag>
+                <span>{{ callDirection(item.direction) }}</span>
+              </div>
+            </div>
+            <time class="call-history-time">{{ formatDateTime(item.started_at) }}</time>
+          </a-list-item>
+        </template>
+      </a-list>
+      <EmptyState v-else class="call-empty-state" :title="t('calls.noHistory')" />
     </Panel>
   </section>
 </template>

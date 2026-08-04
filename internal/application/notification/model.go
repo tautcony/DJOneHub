@@ -27,18 +27,14 @@ const (
 	EventCallMissed          = "call.missed"
 	EventSMSReceived         = "sms.received"
 	EventSMSUpdated          = "sms.updated"
-	EventGPSUpdated          = "gps.updated"
 	EventNetworkUpdated      = "network.updated"
 )
 
 // Native commands are the only user actions Swift may send back to Go.
 // Go executes them asynchronously and replies with a result event.
 const (
-	CommandRejectCall     = "reject_call"
-	CommandOpenDashboard  = "open_dashboard"
-	CommandToggleGPSPanel = "toggle_gps_panel"
-	CommandOpenGPSPanel   = "open_gps_panel"
-	CommandCloseGPSPanel  = "close_gps_panel"
+	CommandRejectCall    = "reject_call"
+	CommandOpenDashboard = "open_dashboard"
 	// CommandNotificationPermissionStatus is an internal status update sent
 	// from Swift to Go. It is not a user action and is consumed by the bridge.
 	CommandNotificationPermissionStatus = "notification_permission_status"
@@ -74,6 +70,7 @@ type NotificationPreferences struct {
 	MissedCall    string `json:"missed_call"`
 	SMS           string `json:"sms"`
 	DeviceOffline string `json:"device_offline"`
+	ShowDebug     bool   `json:"show_debug"`
 }
 
 func DefaultNotificationPreferences() NotificationPreferences {
@@ -82,6 +79,7 @@ func DefaultNotificationPreferences() NotificationPreferences {
 		MissedCall:    NotificationPresentationSystem,
 		SMS:           NotificationPresentationSystem,
 		DeviceOffline: NotificationPresentationSystem,
+		ShowDebug:     true,
 	}
 }
 
@@ -152,9 +150,6 @@ const (
 	DebugSMSReceived      = "sms_received"
 	DebugDeviceOffline    = "device_offline"
 	DebugDeviceReady      = "device_ready"
-	DebugGPSSearching     = "gps_searching"
-	DebugGPSFix           = "gps_fix"
-	DebugGPSDisabled      = "gps_disabled"
 	DebugNetworkConnected = "network_connected"
 	DebugNetworkWeak      = "network_weak"
 	DebugNetworkOffline   = "network_offline"
@@ -169,7 +164,6 @@ type DebugRequest struct {
 	Sender    string `json:"sender,omitempty"`
 	Recipient string `json:"recipient,omitempty"`
 	Body      string `json:"body,omitempty"`
-	Code      string `json:"code,omitempty"`
 }
 
 // DebugAction describes one supported debug scenario for the management UI.
@@ -189,9 +183,6 @@ func DebugActions() []DebugAction {
 		{Action: DebugSMSReceived, Event: EventSMSReceived},
 		{Action: DebugDeviceOffline, Event: EventDeviceOffline, Count: OfflineErrorThreshold},
 		{Action: DebugDeviceReady, Event: EventDeviceStatusChanged},
-		{Action: DebugGPSSearching, Event: EventGPSUpdated},
-		{Action: DebugGPSFix, Event: EventGPSUpdated},
-		{Action: DebugGPSDisabled, Event: EventGPSUpdated},
 		{Action: DebugNetworkConnected, Event: EventNetworkUpdated},
 		{Action: DebugNetworkWeak, Event: EventNetworkUpdated},
 		{Action: DebugNetworkOffline, Event: EventNetworkUpdated},
@@ -218,32 +209,17 @@ type SMSMessageEvent struct {
 	Sender     string    `json:"sender,omitempty"`
 	Recipient  string    `json:"recipient,omitempty"`
 	Body       string    `json:"body"`
-	Code       string    `json:"code,omitempty"`
 	ReceivedAt time.Time `json:"received_at"`
+	// RecordedAt is the device-local moment the message was first recorded;
+	// the ordering key shared with the SMS list API.
+	RecordedAt time.Time `json:"recorded_at,omitempty"`
+	// ICCID is the SIM identity the message was recorded under.
+	ICCID string `json:"iccid,omitempty"`
 }
 
 // DedupKey returns the stable key used to show each short message once.
 func (m SMSMessageEvent) DedupKey() string {
 	return m.Sender + "\x00" + m.Recipient + "\x00" + m.Body + "\x00" + m.ReceivedAt.UTC().Format(time.RFC3339Nano)
-}
-
-// GPSFixEvent is the fix payload inside GPSUpdateEvent. Coordinate fields
-// stay strings to preserve modem precision (same values as extras.GPSFix).
-type GPSFixEvent struct {
-	UTC        string `json:"utc"`
-	Latitude   string `json:"latitude"`
-	Longitude  string `json:"longitude"`
-	HDOP       string `json:"hdop"`
-	Satellites string `json:"satellites"`
-}
-
-// GPSUpdateEvent is the payload of gps.updated. A nil Fix with Enabled set
-// means the receiver is still searching.
-type GPSUpdateEvent struct {
-	Enabled     bool         `json:"enabled"`
-	Fix         *GPSFixEvent `json:"fix,omitempty"`
-	LastChecked time.Time    `json:"last_checked"`
-	LastError   string       `json:"last_error,omitempty"`
 }
 
 // DeviceOfflineEvent is the payload of device.offline, published when the

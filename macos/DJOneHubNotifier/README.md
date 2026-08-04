@@ -2,7 +2,7 @@
 
 DJOneHub 的 macOS 原生 UI 层，作为**静态库**链接进 Go 主进程（`internal/platform/darwin/native` 通过 cgo 调用），不再作为独立进程运行：
 
-- UserNotifications 系统通知、可选的 AppKit 自绘提示面板、菜单栏 GPS/4G 图标、MapKit GPS 面板和通知动作。
+- UserNotifications 系统通知、可选的 AppKit 自绘提示面板、菜单栏 4G 图标和通知动作。
 - 不访问 USB、不访问 HTTP、不轮询、不维护去重状态 —— 事件与命令全部通过原生桥接（`docs/native-bridge-contract.md`）与 Go 主进程交换。
 - 非 macOS 平台不参与编译。
 

@@ -178,7 +178,7 @@ final class NativeNotificationService {
         let sender = (message.sender?.isEmpty == false) ? message.sender! : "未知发送方"
         let content = UNMutableNotificationContent()
         content.title = sender
-        content.subtitle = message.code == nil ? "DJOneHub 短信" : "DJOneHub 验证码"
+        content.subtitle = "DJOneHub 短信"
         content.body = NotificationText.smsPreview(message)
         content.sound = .default
         content.categoryIdentifier = NativeNotificationCategory.standard

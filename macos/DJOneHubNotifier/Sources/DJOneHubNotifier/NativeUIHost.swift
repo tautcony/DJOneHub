@@ -115,25 +115,16 @@ final class NativeUIHost {
     }
 }
 
-// UIAppDelegate owns system notifications, the GPS map panel, the menu bar
-// status items and the GPS search animation. It is driven entirely by bridge
-// events: no polling, no HTTP, no dedup.
+// UIAppDelegate owns system notifications and the cellular menu bar status
+// item. It is driven entirely by bridge events: no polling, no HTTP, no dedup.
 @MainActor
 final class UIAppDelegate: NSObject, NSApplicationDelegate, @MainActor UNUserNotificationCenterDelegate {
     private let notificationService = NativeNotificationService()
     private let panel = NotifierPanel()
-    private let gpsMapPanel = GPSMapPanel()
     private var notificationPreferences = NotificationPreferences.system
     private var webURL: URL?
 
-    private var gpsAnimationTimer: Timer?
-    private var gpsSearchTimeoutTimer: Timer?
-    private var gpsStatusItem: NSStatusItem?
     private var cellularStatusItem: NSStatusItem?
-    private var gpsWasEnabled = false
-    private var gpsSearchTimedOut = false
-    private var gpsStartupFramesRemaining = 0
-    private var gpsAnimationFrame = 0
     private var activeCallID: String?
     private var activeCallNumber: String?
     private var activeCall: CallEvent?
@@ -167,12 +158,8 @@ final class UIAppDelegate: NSObject, NSApplicationDelegate, @MainActor UNUserNot
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        stopGPSAnimation()
-        cancelGPSSearchTimeout()
-        removeGPSStatusItem()
         removeCellularStatusItem()
         panel.hide()
-        gpsMapPanel.hide()
     }
 
     // MARK: - Bridge event handling
@@ -235,8 +222,7 @@ final class UIAppDelegate: NSObject, NSApplicationDelegate, @MainActor UNUserNot
                 panel.show(
                     .sms(
                         sender: (message.sender?.isEmpty == false) ? message.sender! : "未知发送方",
-                        preview: NotificationText.smsPreview(message),
-                        code: message.code
+                        preview: NotificationText.smsPreview(message)
                     ),
                     onReject: {},
                     onOpen: { [weak self] in self?.openDashboard() }
@@ -255,9 +241,6 @@ final class UIAppDelegate: NSObject, NSApplicationDelegate, @MainActor UNUserNot
             } else {
                 notificationService.showOffline(offline)
             }
-        case BridgeEventType.gpsUpdated:
-            guard let status = event.decode(GPSUpdateEvent.self) else { return }
-            applyGPS(status)
         case BridgeEventType.networkUpdated:
             guard let state = event.decode(NetworkUpdateEvent.self) else { return }
             applyNetwork(state)
@@ -410,38 +393,6 @@ final class UIAppDelegate: NSObject, NSApplicationDelegate, @MainActor UNUserNot
         }
     }
 
-    // MARK: - GPS
-
-    private func applyGPS(_ status: GPSUpdateEvent) {
-        if status.enabled {
-            if !gpsWasEnabled {
-                gpsWasEnabled = true
-                gpsSearchTimedOut = false
-                startGPSAnimation()
-                scheduleGPSSearchTimeout()
-                gpsMapPanel.show()
-            }
-            gpsMapPanel.update(with: status.fix)
-            if let signalLevel = Self.gpsSignalLevel(for: status.fix) {
-                stopGPSAnimation()
-                cancelGPSSearchTimeout()
-                showGPSStatusItem(signalLevel: signalLevel)
-            } else if gpsSearchTimedOut {
-                stopGPSAnimation()
-                showGPSStatusItem(signalLevel: nil)
-            } else if gpsAnimationTimer == nil {
-                startGPSAnimation()
-            }
-        } else {
-            gpsWasEnabled = false
-            gpsSearchTimedOut = false
-            stopGPSAnimation()
-            cancelGPSSearchTimeout()
-            removeGPSStatusItem()
-            gpsMapPanel.hide()
-        }
-    }
-
     private func applyNetwork(_ state: NetworkUpdateEvent) {
         guard state.registered,
               Self.isCellularNetwork(state.networkMode),
@@ -469,81 +420,6 @@ final class UIAppDelegate: NSObject, NSApplicationDelegate, @MainActor UNUserNot
         self.cellularStatusItem = nil
     }
 
-    private func showGPSStatusItem(signalLevel: Int?, scanPhase: Int? = nil) {
-        if gpsStatusItem == nil {
-            gpsStatusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-            gpsStatusItem?.button?.target = self
-            gpsStatusItem?.button?.action = #selector(openDJOneHubFromMenuBar)
-        }
-        gpsStatusItem?.button?.image = Self.gpsStatusImage(signalLevel: signalLevel, scanPhase: scanPhase)
-        if signalLevel != nil {
-            gpsStatusItem?.button?.toolTip = "DJOneHub GPS 定位已开启；点击展开或收起地图"
-        } else if gpsSearchTimedOut {
-            gpsStatusItem?.button?.toolTip = "DJOneHub GPS 定位已开启：暂未找到卫星信号；点击展开或收起地图"
-        } else {
-            gpsStatusItem?.button?.toolTip = "DJOneHub GPS 定位已开启：正在搜索卫星；点击展开或收起地图"
-        }
-    }
-
-    private func removeGPSStatusItem() {
-        guard let gpsStatusItem else { return }
-        NSStatusBar.system.removeStatusItem(gpsStatusItem)
-        self.gpsStatusItem = nil
-    }
-
-    private func startGPSAnimation() {
-        guard gpsAnimationTimer == nil else { return }
-        gpsStartupFramesRemaining = 8
-        gpsAnimationFrame = 0
-        renderGPSAnimationFrame()
-        gpsAnimationTimer = Timer.scheduledTimer(withTimeInterval: 0.32, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                self?.renderGPSAnimationFrame()
-            }
-        }
-    }
-
-    private func stopGPSAnimation() {
-        gpsAnimationTimer?.invalidate()
-        gpsAnimationTimer = nil
-        gpsStartupFramesRemaining = 0
-    }
-
-    private func scheduleGPSSearchTimeout() {
-        cancelGPSSearchTimeout()
-        gpsSearchTimeoutTimer = Timer.scheduledTimer(withTimeInterval: 120, repeats: false) { [weak self] _ in
-            Task { @MainActor in
-                guard let self, self.gpsWasEnabled else { return }
-                self.gpsSearchTimedOut = true
-                self.stopGPSAnimation()
-                self.showGPSStatusItem(signalLevel: nil)
-            }
-        }
-    }
-
-    private func cancelGPSSearchTimeout() {
-        gpsSearchTimeoutTimer?.invalidate()
-        gpsSearchTimeoutTimer = nil
-    }
-
-    private func renderGPSAnimationFrame() {
-        gpsAnimationFrame += 1
-        if gpsStartupFramesRemaining > 0 {
-            // First show a neutral, rising four-bar search animation. It is a
-            // UI transition only; no position or signal result is fabricated.
-            let level = ((gpsAnimationFrame - 1) % 4) + 1
-            showGPSStatusItem(signalLevel: level)
-            gpsStartupFramesRemaining -= 1
-            return
-        }
-        // Until the module reports a valid fix, use a red rotating scan arc.
-        showGPSStatusItem(signalLevel: nil, scanPhase: gpsAnimationFrame % 8)
-    }
-
-    @objc private func openDJOneHubFromMenuBar() {
-        gpsMapPanel.toggle()
-    }
-
     @objc private func openDJOneHubFromCellularMenuBar() {
         openDashboard()
     }
@@ -556,9 +432,9 @@ final class UIAppDelegate: NSObject, NSApplicationDelegate, @MainActor UNUserNot
     }
 
     private static func cellularSignalLevel(_ dbm: Int) -> Int {
-        if dbm >= -65 { return 4 }
+        if dbm >= -60 { return 4 }
         if dbm >= -75 { return 3 }
-        if dbm >= -85 { return 2 }
+        if dbm >= -90 { return 2 }
         return 1
     }
 
@@ -593,82 +469,4 @@ final class UIAppDelegate: NSObject, NSApplicationDelegate, @MainActor UNUserNot
         return image
     }
 
-    private static func gpsSignalLevel(for fix: GPSFixEvent?) -> Int? {
-        guard let fix,
-              let satellites = Int(fix.satellites),
-              let hdop = Double(fix.hdop),
-              satellites >= 4,
-              hdop.isFinite
-        else { return nil }
-        if satellites >= 10 && hdop <= 1.2 { return 4 }
-        if satellites >= 8 && hdop <= 2 { return 3 }
-        if satellites >= 6 && hdop <= 3.5 { return 2 }
-        if hdop <= 5 { return 1 }
-        return nil
-    }
-
-    // `satellite` is not present in every macOS SF Symbols release. Draw a
-    // compact vector icon so the menu-bar indicator is reliable on macOS 13.
-    // A missing or weak fix is deliberately red and omits signal bars.
-    private static func gpsStatusImage(signalLevel: Int?, scanPhase: Int? = nil) -> NSImage {
-        let image = NSImage(size: NSSize(width: 18, height: 18))
-        image.lockFocus()
-        let weakSignal = signalLevel == nil
-        let color: NSColor = weakSignal ? .systemRed : .black
-        color.setFill()
-        color.setStroke()
-
-        NSBezierPath(ovalIn: NSRect(x: 7, y: 7, width: 4, height: 4)).fill()
-
-        let upperPanel = NSBezierPath()
-        upperPanel.move(to: NSPoint(x: 2, y: 12))
-        upperPanel.line(to: NSPoint(x: 6.5, y: 10.5))
-        upperPanel.line(to: NSPoint(x: 7.5, y: 12.5))
-        upperPanel.line(to: NSPoint(x: 3, y: 14))
-        upperPanel.close()
-        upperPanel.fill()
-
-        let lowerPanel = NSBezierPath()
-        lowerPanel.move(to: NSPoint(x: 10.5, y: 5.5))
-        lowerPanel.line(to: NSPoint(x: 15, y: 4))
-        lowerPanel.line(to: NSPoint(x: 16, y: 6))
-        lowerPanel.line(to: NSPoint(x: 11.5, y: 7.5))
-        lowerPanel.close()
-        lowerPanel.fill()
-
-        let antenna = NSBezierPath()
-        antenna.move(to: NSPoint(x: 10, y: 10))
-        antenna.line(to: NSPoint(x: 14.5, y: 14.5))
-        antenna.lineWidth = 1.3
-        antenna.stroke()
-
-        if let signalLevel {
-            for level in 1...signalLevel {
-                let radius = CGFloat(2) + CGFloat(level) * 1.65
-                let wave = NSBezierPath()
-                wave.appendArc(withCenter: NSPoint(x: 10, y: 10), radius: radius, startAngle: 30, endAngle: 72, clockwise: false)
-                wave.lineWidth = 1.15
-                wave.stroke()
-            }
-        } else if let scanPhase {
-            let scan = NSBezierPath()
-            let startAngle = CGFloat(scanPhase * 45)
-            scan.appendArc(
-                withCenter: NSPoint(x: 9, y: 9),
-                radius: 7,
-                startAngle: startAngle,
-                endAngle: startAngle + 78,
-                clockwise: false
-            )
-            scan.lineWidth = 1.35
-            scan.stroke()
-        }
-
-        image.unlockFocus()
-        image.isTemplate = !weakSignal
-        image.accessibilityDescription = weakSignal
-            ? "DJOneHub GPS 信号弱"
-            : "DJOneHub GPS 定位正常"
-        return image
-    }
 }

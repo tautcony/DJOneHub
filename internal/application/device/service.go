@@ -2,6 +2,9 @@ package device
 
 import (
 	"context"
+	"strings"
+	"sync"
+	"time"
 
 	"github.com/iniwex5/vohive/internal/backend"
 	domain "github.com/iniwex5/vohive/internal/domain/device"
@@ -16,9 +19,42 @@ type Status struct {
 	SIM      backend.SIMState   `json:"sim"`
 }
 
-type Service struct{ runtime *runtime.Runtime }
+type Service struct {
+	runtime *runtime.Runtime
+
+	mu             sync.Mutex
+	iccidCache     string
+	iccidCacheGen  uint64
+	iccidCacheTime time.Time
+}
 
 func NewService(runtime *runtime.Runtime) *Service { return &Service{runtime: runtime} }
+
+// CurrentICCID returns the ICCID of the inserted SIM, or "" when none is
+// available. It is meant for record stamping (SMS, calls) by the 3-second
+// pollers, so the modem is only queried when the device generation changed or
+// the cache is older than a minute — never on every tick.
+func (s *Service) CurrentICCID(ctx context.Context) string {
+	generation := s.runtime.Snapshot().Generation
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if generation == s.iccidCacheGen && !s.iccidCacheTime.IsZero() && time.Since(s.iccidCacheTime) < time.Minute {
+		return s.iccidCache
+	}
+	s.iccidCache = ""
+	s.iccidCacheGen = generation
+	s.iccidCacheTime = time.Now()
+	b, err := s.runtime.Backend()
+	if err != nil {
+		return ""
+	}
+	sim, err := b.SIM(ctx)
+	if err != nil {
+		return ""
+	}
+	s.iccidCache = strings.TrimSpace(sim.ICCID)
+	return s.iccidCache
+}
 
 func (s *Service) Status(ctx context.Context) (Status, error) {
 	snapshot := s.runtime.Snapshot()

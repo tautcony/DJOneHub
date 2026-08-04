@@ -25,9 +25,10 @@ type NetworkController interface {
 // operating-system commands into application services.
 type NetworkDiagnostics interface {
 	Diagnostics(context.Context, device.Candidate) (map[string]any, error)
-	CheckRoute(context.Context, device.Candidate, string) (Connectivity, error)
-	CellularPolicy(context.Context, device.Candidate) (CellularPolicy, error)
-	SetCellularPolicy(context.Context, device.Candidate, bool) (CellularPolicy, error)
+}
+
+type NetworkTrafficReader interface {
+	NetworkTraffic(context.Context, device.Candidate) (rxBytes, txBytes uint64, err error)
 }
 
 type PacketTunnel interface {
@@ -45,22 +46,19 @@ type ServiceInstaller interface {
 }
 
 type NetworkStatus struct {
-	Mode         string   `json:"mode,omitempty"`
-	NetworkMode  string   `json:"network_mode,omitempty"`
-	Interface    string   `json:"interface,omitempty"`
-	Addresses    []string `json:"addresses,omitempty"`
-	DefaultRoute string   `json:"default_route,omitempty"`
-	RXBytes      uint64   `json:"rx_bytes"`
-	TXBytes      uint64   `json:"tx_bytes"`
+	Mode               string   `json:"mode,omitempty"`
+	NetworkMode        string   `json:"network_mode,omitempty"`
+	RadioBand          string   `json:"radio_band,omitempty"`
+	Interface          string   `json:"interface,omitempty"`
+	Addresses          []string `json:"addresses,omitempty"`
+	DefaultRoute       string   `json:"default_route,omitempty"`
+	SystemDefaultRoute string   `json:"system_default_route,omitempty"`
+	RXBytes            uint64   `json:"rx_bytes"`
+	TXBytes            uint64   `json:"tx_bytes"`
 }
 
 type Connectivity struct {
 	OK      bool   `json:"ok"`
 	Summary string `json:"summary"`
 	Detail  string `json:"detail,omitempty"`
-}
-
-type CellularPolicy struct {
-	ForceOff bool     `json:"force_off"`
-	Services []string `json:"services,omitempty"`
 }

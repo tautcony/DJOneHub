@@ -17,7 +17,6 @@ type recordingSink struct {
 	missed    []CallEvent
 	messages  []SMSMessageEvent
 	offline   []DeviceOfflineEvent
-	gps       []GPSUpdateEvent
 	network   []NetworkUpdateEvent
 	hidden    int
 }
@@ -38,9 +37,6 @@ func (s *recordingSink) ShowOffline(event DeviceOfflineEvent) {
 	s.record(func() { s.offline = append(s.offline, event) })
 }
 func (s *recordingSink) HideCall(call CallEvent) { s.record(func() { s.hidden++ }) }
-func (s *recordingSink) UpdateGPS(status GPSUpdateEvent) {
-	s.record(func() { s.gps = append(s.gps, status) })
-}
 func (s *recordingSink) UpdateNetwork(state NetworkUpdateEvent) {
 	s.record(func() { s.network = append(s.network, state) })
 }
@@ -51,12 +47,12 @@ func (s *recordingSink) record(fn func()) {
 	fn()
 }
 
-func (s *recordingSink) snapshot() (shown []CallEvent, updated []CallEvent, missed []CallEvent, messages []SMSMessageEvent, offline []DeviceOfflineEvent, gps []GPSUpdateEvent, network []NetworkUpdateEvent, hidden int) {
+func (s *recordingSink) snapshot() (shown []CallEvent, updated []CallEvent, missed []CallEvent, messages []SMSMessageEvent, offline []DeviceOfflineEvent, network []NetworkUpdateEvent, hidden int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]CallEvent(nil), s.shownCall...), append([]CallEvent(nil), s.updated...), append([]CallEvent(nil), s.missed...),
 		append([]SMSMessageEvent(nil), s.messages...), append([]DeviceOfflineEvent(nil), s.offline...),
-		append([]GPSUpdateEvent(nil), s.gps...), append([]NetworkUpdateEvent(nil), s.network...), s.hidden
+		append([]NetworkUpdateEvent(nil), s.network...), s.hidden
 }
 
 // sinkState bundles the recording sink snapshot for predicate assertions.
@@ -64,7 +60,6 @@ type sinkState struct {
 	shown, updated, missed []CallEvent
 	messages               []SMSMessageEvent
 	offline                []DeviceOfflineEvent
-	gps                    []GPSUpdateEvent
 	network                []NetworkUpdateEvent
 	hidden                 int
 }
@@ -76,7 +71,7 @@ func waitFor(t *testing.T, sink *recordingSink, predicate func(state sinkState) 
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		state := sinkState{}
-		state.shown, state.updated, state.missed, state.messages, state.offline, state.gps, state.network, state.hidden = sink.snapshot()
+		state.shown, state.updated, state.missed, state.messages, state.offline, state.network, state.hidden = sink.snapshot()
 		if predicate(state) {
 			return
 		}
@@ -118,7 +113,7 @@ func callEvent(id, state string) CallEvent {
 
 func smsEvent(sender, body string, index int) SMSMessageEvent {
 	received := time.Date(2026, 8, 2, 10, 0, 0, 0, time.UTC)
-	return SMSMessageEvent{Index: index, Sender: sender, Body: body, Code: "482913", ReceivedAt: received}
+	return SMSMessageEvent{Index: index, Sender: sender, Body: body, ReceivedAt: received}
 }
 
 func TestStartupBaselineSuppressesExistingState(t *testing.T) {
@@ -214,7 +209,7 @@ func TestOutgoingAndAnsweredCallsDoNotPrompt(t *testing.T) {
 	publish(t, bus, EventCallIncoming, callEvent("call-3", "active"))
 
 	time.Sleep(10 * time.Millisecond)
-	shown, _, _, _, _, _, _, _ := sink.snapshot()
+	shown, _, _, _, _, _, _ := sink.snapshot()
 	if len(shown) != 0 {
 		t.Errorf("non-ringing calls must not prompt, shown=%v", shown)
 	}
@@ -230,7 +225,7 @@ func TestSMSDedup(t *testing.T) {
 
 	waitFor(t, sink, func(state sinkState) bool { return len(state.messages) == 1 })
 	time.Sleep(10 * time.Millisecond)
-	_, _, _, messages, _, _, _, _ := sink.snapshot()
+	_, _, _, messages, _, _, _ := sink.snapshot()
 	if len(messages) != 1 {
 		t.Errorf("duplicate sms must prompt once, messages=%v", messages)
 	}
@@ -245,7 +240,7 @@ func TestOfflineThresholdAndRecovery(t *testing.T) {
 		publish(t, bus, EventDeviceOffline, offline)
 	}
 	time.Sleep(10 * time.Millisecond)
-	if _, _, _, _, offlineShown, _, _, _ := sink.snapshot(); len(offlineShown) != 0 {
+	if _, _, _, _, offlineShown, _, _ := sink.snapshot(); len(offlineShown) != 0 {
 		t.Fatalf("offline must not show before threshold, shown=%v", offlineShown)
 	}
 	publish(t, bus, EventDeviceOffline, offline)
@@ -254,7 +249,7 @@ func TestOfflineThresholdAndRecovery(t *testing.T) {
 	// Further error events must not repeat the prompt.
 	publish(t, bus, EventDeviceOffline, offline)
 	time.Sleep(10 * time.Millisecond)
-	if _, _, _, _, offlineShown, _, _, _ := sink.snapshot(); len(offlineShown) != 1 {
+	if _, _, _, _, offlineShown, _, _ := sink.snapshot(); len(offlineShown) != 1 {
 		t.Errorf("offline prompt must not repeat, shown=%v", offlineShown)
 	}
 
@@ -264,21 +259,6 @@ func TestOfflineThresholdAndRecovery(t *testing.T) {
 		publish(t, bus, EventDeviceOffline, offline)
 	}
 	waitFor(t, sink, func(state sinkState) bool { return len(state.offline) == 2 })
-}
-
-func TestGPSAndNetworkForwardToMenuBarModels(t *testing.T) {
-	bus := runtime.NewEventBus()
-	_, sink := newService(t, bus, nil, nil)
-
-	gps := GPSUpdateEvent{Enabled: true, Fix: &GPSFixEvent{Latitude: "31.2304", Longitude: "121.4737", HDOP: "1.1", Satellites: "12"}, LastChecked: time.Now().UTC()}
-	state := NetworkUpdateEvent{NetworkMode: "LTE", Registered: true, SignalDBM: -83}
-	publish(t, bus, EventGPSUpdated, gps)
-	publish(t, bus, EventNetworkUpdated, state)
-
-	waitFor(t, sink, func(state sinkState) bool {
-		return len(state.gps) == 1 && state.gps[0].Fix.Latitude == "31.2304" &&
-			len(state.network) == 1 && state.network[0].SignalDBM == -83
-	})
 }
 
 func TestDebugPublishesNotifierScenarios(t *testing.T) {
@@ -301,11 +281,8 @@ func TestDebugPublishesNotifierScenarios(t *testing.T) {
 	if _, err := service.Debug(DebugRequest{Action: DebugCallMissed, CallID: callID}); err != nil {
 		t.Fatalf("debug missed: %v", err)
 	}
-	if _, err := service.Debug(DebugRequest{Action: DebugSMSReceived, Body: "debug body", Code: "123456"}); err != nil {
+	if _, err := service.Debug(DebugRequest{Action: DebugSMSReceived, Body: "debug body"}); err != nil {
 		t.Fatalf("debug SMS: %v", err)
-	}
-	if _, err := service.Debug(DebugRequest{Action: DebugGPSFix}); err != nil {
-		t.Fatalf("debug GPS: %v", err)
 	}
 	if _, err := service.Debug(DebugRequest{Action: DebugNetworkWeak}); err != nil {
 		t.Fatalf("debug network: %v", err)
@@ -318,8 +295,7 @@ func TestDebugPublishesNotifierScenarios(t *testing.T) {
 		return len(state.shown) == 1 && state.shown[0].ID == callID &&
 			len(state.updated) == 1 && state.updated[0].ID == callID &&
 			len(state.missed) == 1 && state.missed[0].ID == callID &&
-			len(state.messages) == 1 && state.messages[0].Code == "123456" &&
-			len(state.gps) == 1 && state.gps[0].Fix != nil &&
+			len(state.messages) == 1 && state.messages[0].Body == "debug body" &&
 			len(state.network) == 1 && state.network[0].SignalDBM == -101 &&
 			len(state.offline) == 1 && state.hidden == 1
 	})
@@ -339,9 +315,6 @@ func TestValidateCommand(t *testing.T) {
 	valid := []Command{
 		{Name: CommandRejectCall, Params: map[string]string{"call_id": "call-1"}},
 		{Name: CommandOpenDashboard},
-		{Name: CommandToggleGPSPanel},
-		{Name: CommandOpenGPSPanel},
-		{Name: CommandCloseGPSPanel},
 	}
 	for _, command := range valid {
 		if err := ValidateCommand(command); err != nil {

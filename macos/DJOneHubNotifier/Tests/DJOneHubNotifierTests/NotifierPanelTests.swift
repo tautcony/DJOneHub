@@ -38,18 +38,12 @@ final class NotifierPanelTests: XCTestCase {
     }
 
     @MainActor
-    func testGPSPanelUsesSharedRoundedSurfaceAndWindowShadow() {
-        let panel = GPSMapPanel()
-        XCTAssertTrue(panel.usesSharedSurfaceStyle)
-    }
-
-    @MainActor
     func testPanelKeepsConfiguredSizeForEveryContentShape() {
         let panel = NotifierPanel()
         defer { panel.hide() }
         let cases: [(PanelContent, CGFloat)] = [
             (.incoming(number: "1", startedAt: Date(), state: "incoming", rejecting: false), 138),
-            (.sms(sender: "1", preview: "短", code: nil), 60),
+            (.sms(sender: "1", preview: "短"), 60),
             (.error(message: "短"), 76),
         ]
 

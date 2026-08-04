@@ -1,9 +1,9 @@
 import type {
   CallStatus,
-  CellularPolicy,
   DeviceStatus,
   EsimOverview,
-  GPSStatus,
+  NetworkTrafficDaily,
+  NetworkTrafficRange,
   NetworkStatus,
   NotificationDebugInfo,
   NotificationDebugRequest,
@@ -54,7 +54,6 @@ export const api = {
     ),
   rescan: () => request<{ state: unknown }>('/device/actions/rescan', { method: 'POST' }),
   reboot: () => request<{ accepted: boolean }>('/device/actions/reboot', { method: 'POST' }),
-  sms: () => request<{ items: SMSMessage[] }>('/sms'),
   smsRefresh: () => request<{ items: SMSMessage[] }>('/sms/actions/refresh', { method: 'POST' }),
   smsClear: () => request<{ state: string }>('/sms/actions/clear', { method: 'POST' }),
   sendSMS: (to: string, body: string) =>
@@ -84,6 +83,10 @@ export const api = {
       body: JSON.stringify({ iccid }),
     }),
   network: () => request<NetworkStatus>('/network'),
+  networkTrafficDaily: (date?: string) =>
+    request<NetworkTrafficDaily>(`/network/traffic/daily${date ? `?date=${encodeURIComponent(date)}` : ''}`),
+  networkTrafficRange: (period: 'day' | 'week' | 'month') =>
+    request<NetworkTrafficRange>(`/network/traffic/range?range=${encodeURIComponent(period)}`),
   networkMode: (mode: string) =>
     request<{ operation_id: string }>('/network/actions/mode', {
       method: 'POST',
@@ -91,21 +94,6 @@ export const api = {
     }),
   networkCheck: () =>
     request<{ ok: boolean; summary: string; detail?: string }>('/network/actions/check', { method: 'POST' }),
-  networkTraffic: () => request<{ rx_bytes: number; tx_bytes: number }>('/network/actions/traffic'),
-  networkCheck4G: () =>
-    request<{ ok: boolean; summary: string; detail?: string }>('/network/actions/check-4g', {
-      method: 'POST',
-    }),
-  networkCheckProxy: () =>
-    request<{ ok: boolean; summary: string; detail?: string }>('/network/actions/check-proxy', {
-      method: 'POST',
-    }),
-  networkPolicy: () => request<CellularPolicy>('/network/policy'),
-  setNetworkPolicy: (force_off: boolean) =>
-    request<CellularPolicy>('/network/actions/policy', {
-      method: 'POST',
-      body: JSON.stringify({ force_off }),
-    }),
   rawAT: (command: string) =>
     request<{ response: string }>('/device/actions/raw-at', {
       method: 'POST',
@@ -135,10 +123,6 @@ export const api = {
   operation: (id: string) => request<OperationStatus>(`/operations/${encodeURIComponent(id)}`),
   calls: () => request<CallStatus>('/calls'),
   rejectCall: () => request<{ rejected: boolean }>('/calls/actions/reject', { method: 'POST' }),
-  gps: () => request<GPSStatus>('/gps'),
-  gpsStart: () => request<GPSStatus>('/gps/actions/start', { method: 'POST' }),
-  gpsStop: () => request<GPSStatus>('/gps/actions/stop', { method: 'POST' }),
-  gpsRefresh: () => request<GPSStatus>('/gps/actions/refresh', { method: 'POST' }),
   esimHealth: () => request<Record<string, unknown>>('/esim/health'),
   esimNotes: () =>
     request<{ notes: Record<string, { label: string; phone: string; tags: string }> }>('/esim/notes'),

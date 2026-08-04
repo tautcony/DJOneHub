@@ -52,6 +52,7 @@ type App struct {
 	Notification *notification.Service
 	NativeUI     *native.Bridge
 	HTTP         *httpapi.Server
+	Store        *storage.SQLiteStore
 }
 
 func NewOffline() (*App, error) {
@@ -87,23 +88,47 @@ func newApp(r *runtime.Runtime, err error, platformAdapter transport.NetworkCont
 	if err != nil {
 		return nil, err
 	}
+	storeDir, _ := os.UserConfigDir()
+	if storeDir == "" {
+		storeDir = "."
+	}
+	database, err := storage.OpenSQLite(filepath.Join(storeDir, "DJOneHub", "djonehub.sqlite3"))
+	if err != nil {
+		return nil, err
+	}
+	profileStore := database.Namespace("profile_notes")
+	if exists, _ := profileStore.Exists(); !exists {
+		var notes map[string]extras.ProfileNote
+		legacy := storage.NewJSONStore(filepath.Join(storeDir, "DJOneHub", "profile-notes.json"))
+		if legacy.Read(&notes) == nil && notes != nil {
+			_ = profileStore.Write(&notes)
+		}
+	}
+	notificationPreferencesStore := database.Namespace("notification_preferences")
+	if exists, _ := notificationPreferencesStore.Exists(); !exists {
+		legacy := storage.NewJSONStore(filepath.Join(storeDir, "DJOneHub", "notification-preferences.json"))
+		var legacyPreferences notification.NotificationPreferences
+		if legacy.Read(&legacyPreferences) == nil {
+			_ = notificationPreferencesStore.Write(&legacyPreferences)
+		}
+	}
+	legacySMSPath := filepath.Join(storeDir, "DJOneHub", "sms-sent-history.json")
+	if err := sms.MigrateLegacySentHistory(database, legacySMSPath); err != nil {
+		_ = database.Close()
+		return nil, fmt.Errorf("migrate sms history: %w", err)
+	}
 	ops := operation.NewManager(r.Events())
 	devices := device.NewService(r)
-	smsService := sms.NewService(devices, ops, r)
+	smsService := sms.NewService(devices, ops, r, database)
 	esimService := esim.NewService(devices, ops, r)
-	networkService := network.NewService(devices, ops, r, platformAdapter)
+	networkService := network.NewService(devices, ops, r, platformAdapter, database)
 	rawATService := rawat.NewService(devices, r)
 	platformDependencies := vowifi.PlatformDependencies{Network: platformAdapter}
 	if tunnel, ok := platformAdapter.(transport.PacketTunnel); ok {
 		platformDependencies.Tunnel = tunnel
 	}
 	vowifiService := vowifi.NewService(devices, ops, r, platformDependencies)
-	storeDir, _ := os.UserConfigDir()
-	if storeDir == "" {
-		storeDir = "."
-	}
-	extraService := extras.NewService(devices, ops, r, filepath.Join(storeDir, "DJOneHub", "profile-notes.json"))
-	notificationPreferencesStore := storage.NewJSONStore(filepath.Join(storeDir, "DJOneHub", "notification-preferences.json"))
+	extraService := extras.NewService(devices, ops, r, profileStore, database)
 	notificationPreferences := notification.DefaultNotificationPreferences()
 	_ = notificationPreferencesStore.Read(&notificationPreferences)
 	notificationPreferences = notificationPreferences.Normalize()
@@ -129,7 +154,7 @@ func newApp(r *runtime.Runtime, err error, platformAdapter transport.NetworkCont
 			}
 			out := make([]notification.SMSMessageEvent, 0, len(messages))
 			for _, message := range messages {
-				out = append(out, notification.SMSMessageEvent{Index: message.Index, Sender: message.Sender, Recipient: message.Recipient, Body: message.Body, Code: message.Code, ReceivedAt: message.ReceivedAt})
+				out = append(out, notification.SMSMessageEvent{Index: message.Index, Sender: message.Sender, Recipient: message.Recipient, Body: message.Body, ReceivedAt: message.ReceivedAt, RecordedAt: message.RecordedAt, ICCID: message.ICCID})
 			}
 			return out, nil
 		},
@@ -148,6 +173,7 @@ func newApp(r *runtime.Runtime, err error, platformAdapter transport.NetworkCont
 		Extras:       extraService,
 		Notification: notifications,
 		NativeUI:     bridge,
+		Store:        database,
 		HTTP: httpapi.NewServer(httpapi.Config{
 			Device:                        devices,
 			SMS:                           smsService,
@@ -204,7 +230,7 @@ func (h *nativeCommandHandler) HandleCommand(ctx context.Context, command notifi
 func (a *App) Start(ctx context.Context) {
 	a.Runtime.Start(ctx)
 	// SMS and network pollers drive sms.received / network.updated events;
-	// extras already starts its own call and GPS pollers. The notification
+	// extras already starts its own call poller. The notification
 	// policy subscribes last so its startup baseline is established after the
 	// pollers are running.
 	a.SMS.Start(ctx)
@@ -219,4 +245,5 @@ func (a *App) Start(ctx context.Context) {
 func (a *App) Stop() {
 	a.Notification.Stop()
 	a.Runtime.Stop()
+	_ = a.Store.Close()
 }

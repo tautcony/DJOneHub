@@ -3,15 +3,26 @@ package darwin
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
-	"net/url"
 	"os/exec"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/iniwex5/vohive/internal/domain/device"
 	"github.com/iniwex5/vohive/internal/transport"
+)
+
+const connectivityCheckURL = "http://connectivitycheck.gstatic.com/generate_204"
+
+var (
+	ifconfigHeaderPattern = regexp.MustCompile(`^([[:alnum:]_.-]+):\s+flags=`)
+	interfaceNamePattern  = regexp.MustCompile(`"IOInterfaceName"\s*=\s*"([^"]+)"`)
+	networkHeaderPattern  = regexp.MustCompile(`^\((\*|\d+)\)\s+(.+)$`)
+	networkDetailPattern  = regexp.MustCompile(`^\(Hardware Port:\s*([^,]+),\s*Device:\s*([^)]+)\)$`)
 )
 
 type macInterface struct {
@@ -20,105 +31,108 @@ type macInterface struct {
 	IPv4   string `json:"ipv4"`
 	Kind   string `json:"kind"`
 }
+
 type macRoute struct {
 	Interface string `json:"interface"`
 	Gateway   string `json:"gateway"`
 }
 
-func (a *Adapter) Diagnostics(ctx context.Context, _ device.Candidate) (map[string]any, error) {
-	interfaces := macInterfaces(ctx)
-	route := macDefaultRoute(ctx)
-	return map[string]any{
-		"mac_interfaces":      interfaces,
-		"default_route":       route,
-		"usb_network_present": hasUSBNetwork(interfaces),
+func (a *Adapter) Status(ctx context.Context, candidate device.Candidate) (transport.NetworkStatus, error) {
+	name := a.moduleNetworkInterface(ctx, candidate)
+	if name == "" {
+		return transport.NetworkStatus{}, fmt.Errorf("QDC507 ECM network interface was not found")
+	}
+	item, addresses, err := macInterfaceDetails(ctx, name)
+	if err != nil {
+		return transport.NetworkStatus{}, err
+	}
+	rxBytes, txBytes := macInterfaceCounters(ctx, name)
+	defaultRoute := macScopedDefaultRoute(ctx, name)
+	systemRoute := macDefaultRoute(ctx)
+	return transport.NetworkStatus{
+		Interface:          item.Name,
+		Addresses:          addresses,
+		DefaultRoute:       formatRoute(defaultRoute),
+		SystemDefaultRoute: formatRoute(systemRoute),
+		RXBytes:            rxBytes,
+		TXBytes:            txBytes,
 	}, nil
 }
 
-func (a *Adapter) CheckRoute(ctx context.Context, _ device.Candidate, kind string) (transport.Connectivity, error) {
-	if kind == "proxy" {
-		proxyURL, _ := url.Parse("http://127.0.0.1:7890")
-		client := &http.Client{Timeout: 8 * time.Second, Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}}
-		request, err := http.NewRequestWithContext(ctx, http.MethodHead, "https://www.google.com/generate_204", nil)
-		if err != nil {
-			return transport.Connectivity{Summary: "proxy request could not be created", Detail: err.Error()}, nil
-		}
-		response, err := client.Do(request)
-		if err != nil {
-			return transport.Connectivity{Summary: "proxy is unavailable", Detail: "127.0.0.1:7890: " + err.Error()}, nil
-		}
-		defer response.Body.Close()
-		return transport.Connectivity{OK: response.StatusCode >= 200 && response.StatusCode < 400, Summary: "proxy check completed", Detail: response.Status}, nil
+func (a *Adapter) NetworkTraffic(ctx context.Context, candidate device.Candidate) (uint64, uint64, error) {
+	name := a.moduleNetworkInterface(ctx, candidate)
+	if name == "" {
+		return 0, 0, fmt.Errorf("QDC507 ECM network interface was not found")
 	}
-	route := macDefaultRoute(ctx)
-	interfaces := macInterfaces(ctx)
-	if route.Interface == "" {
-		return transport.Connectivity{Summary: "no default route was reported", Detail: "macOS returned no default route"}, nil
-	}
-	for _, item := range interfaces {
-		if item.Name == route.Interface && item.Kind == "ethernet" && item.Name != "en0" && item.Status == "active" {
-			return transport.Connectivity{OK: true, Summary: "the 4G interface is the active default route", Detail: fmt.Sprintf("%s -> %s (%s)", route.Interface, route.Gateway, item.IPv4)}, nil
-		}
-	}
-	return transport.Connectivity{Summary: "the 4G interface is not the active default route", Detail: fmt.Sprintf("default route %s -> %s", route.Interface, route.Gateway)}, nil
+	rxBytes, txBytes := macInterfaceCounters(ctx, name)
+	return rxBytes, txBytes, nil
 }
 
-func (a *Adapter) CellularPolicy(context.Context, device.Candidate) (transport.CellularPolicy, error) {
-	a.policyMu.Lock()
-	defer a.policyMu.Unlock()
-	if err := a.loadPolicyLocked(); err != nil {
-		return transport.CellularPolicy{}, err
-	}
-	return transport.CellularPolicy{ForceOff: a.force4GOff, Services: append([]string(nil), a.disabled4GServices...)}, nil
-}
-
-func (a *Adapter) SetCellularPolicy(ctx context.Context, _ device.Candidate, forceOff bool) (transport.CellularPolicy, error) {
-	a.policyMu.Lock()
-	defer a.policyMu.Unlock()
-	services, err := networkServices(ctx)
+func (a *Adapter) CheckConnectivity(ctx context.Context, candidate device.Candidate) (transport.Connectivity, error) {
+	status, err := a.Status(ctx, candidate)
 	if err != nil {
-		return transport.CellularPolicy{}, err
+		return transport.Connectivity{Summary: "ECM interface is unavailable", Detail: err.Error()}, nil
 	}
-	changed := make([]string, 0)
-	for _, service := range services {
-		if !isCellularService(service) {
-			continue
-		}
-		if err := setNetworkService(ctx, service.Name, !forceOff); err != nil {
-			return transport.CellularPolicy{}, err
-		}
-		if forceOff {
-			changed = append(changed, service.Name)
-		}
+	item, _, err := macInterfaceDetails(ctx, status.Interface)
+	if err != nil {
+		return transport.Connectivity{Summary: "ECM interface could not be inspected", Detail: err.Error()}, nil
 	}
-	a.force4GOff, a.disabled4GServices = forceOff, changed
-	a.policyLoaded = true
-	if a.policyStore != nil {
-		if err := a.policyStore.Write(map[string]any{"force_off": forceOff, "services": changed}); err != nil {
-			return transport.CellularPolicy{}, err
-		}
+	if item.Status != "active" {
+		return transport.Connectivity{Summary: "ECM interface is not active", Detail: status.Interface}, nil
 	}
-	return transport.CellularPolicy{ForceOff: forceOff, Services: append([]string(nil), changed...)}, nil
+
+	source := preferredSourceAddress(status.Addresses)
+	if source == nil {
+		return transport.Connectivity{Summary: "ECM interface has no usable IP address", Detail: status.Interface}, nil
+	}
+	scopedRoute := macScopedDefaultRoute(ctx, status.Interface)
+	if scopedRoute.Interface != status.Interface || scopedRoute.Gateway == "" {
+		return transport.Connectivity{Summary: "ECM interface has no scoped default route", Detail: status.Interface}, nil
+	}
+
+	dialer := &net.Dialer{Timeout: 6 * time.Second, LocalAddr: &net.TCPAddr{IP: source}}
+	client := &http.Client{
+		Timeout: 8 * time.Second,
+		Transport: &http.Transport{
+			Proxy:       nil,
+			DialContext: dialer.DialContext,
+		},
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, connectivityCheckURL, nil)
+	if err != nil {
+		return transport.Connectivity{}, err
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return transport.Connectivity{
+			Summary: "ECM interface is configured but internet access failed",
+			Detail:  fmt.Sprintf("%s via %s: %v", status.Interface, scopedRoute.Gateway, err),
+		}, nil
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusNoContent {
+		return transport.Connectivity{
+			Summary: "ECM internet check returned an unexpected response",
+			Detail:  fmt.Sprintf("%s via %s: %s", status.Interface, scopedRoute.Gateway, response.Status),
+		}, nil
+	}
+	return transport.Connectivity{
+		OK:      true,
+		Summary: "ECM internet access is available",
+		Detail:  fmt.Sprintf("%s (%s) via %s", status.Interface, source, scopedRoute.Gateway),
+	}, nil
 }
 
-func (a *Adapter) loadPolicyLocked() error {
-	if a.policyLoaded {
-		return nil
-	}
-	a.policyLoaded = true
-	if a.policyStore == nil {
-		return nil
-	}
-	var value struct {
-		ForceOff bool     `json:"force_off"`
-		Services []string `json:"services"`
-	}
-	if err := a.policyStore.Read(&value); err != nil {
-		return err
-	}
-	a.force4GOff = value.ForceOff
-	a.disabled4GServices = append([]string(nil), value.Services...)
-	return nil
+func (a *Adapter) Diagnostics(ctx context.Context, candidate device.Candidate) (map[string]any, error) {
+	interfaces := macInterfaces(ctx)
+	route := macDefaultRoute(ctx)
+	moduleInterface := a.moduleNetworkInterface(ctx, candidate)
+	return map[string]any{
+		"mac_interfaces":      interfaces,
+		"default_route":       route,
+		"module_interface":    moduleInterface,
+		"usb_network_present": moduleInterface != "",
+	}, nil
 }
 
 func commandOutput(ctx context.Context, name string, args ...string) string {
@@ -128,42 +142,180 @@ func commandOutput(ctx context.Context, name string, args ...string) string {
 	}
 	return string(output)
 }
+
 func macInterfaces(ctx context.Context) []macInterface {
-	output := commandOutput(ctx, "ifconfig")
-	result := []macInterface{}
-	for _, block := range strings.Split(output, "\n\n") {
-		lines := strings.Split(strings.TrimSpace(block), "\n")
-		if len(lines) == 0 {
+	return parseIfconfig(commandOutput(ctx, "ifconfig", "-a"))
+}
+
+func parseIfconfig(output string) []macInterface {
+	var result []macInterface
+	var current *macInterface
+	appendCurrent := func() {
+		if current == nil || current.Name == "" || strings.HasPrefix(current.Name, "lo") || strings.HasPrefix(current.Name, "utun") {
+			return
+		}
+		result = append(result, *current)
+	}
+	for _, rawLine := range strings.Split(strings.ReplaceAll(output, "\r\n", "\n"), "\n") {
+		if match := ifconfigHeaderPattern.FindStringSubmatch(rawLine); len(match) == 2 {
+			appendCurrent()
+			current = &macInterface{Name: match[1], Status: "unknown", Kind: interfaceKind(match[1])}
 			continue
 		}
-		fields := strings.Fields(lines[0])
-		if len(fields) == 0 {
+		if current == nil {
 			continue
 		}
-		name := strings.TrimSuffix(fields[0], ":")
-		if name == "" || strings.HasPrefix(name, "lo") || strings.HasPrefix(name, "utun") {
-			continue
+		line := strings.TrimSpace(rawLine)
+		if strings.HasPrefix(line, "status:") {
+			current.Status = strings.TrimSpace(strings.TrimPrefix(line, "status:"))
 		}
-		item := macInterface{Name: name, Status: "unknown", Kind: interfaceKind(name)}
-		for _, line := range lines {
-			line = strings.TrimSpace(line)
-			if strings.HasPrefix(line, "status:") {
-				item.Status = strings.TrimSpace(strings.TrimPrefix(line, "status:"))
+		if strings.HasPrefix(line, "inet ") {
+			parts := strings.Fields(line)
+			if len(parts) > 1 {
+				current.IPv4 = parts[1]
 			}
-			if strings.HasPrefix(line, "inet ") {
-				parts := strings.Fields(line)
-				if len(parts) > 1 {
-					item.IPv4 = parts[1]
-				}
+		}
+	}
+	appendCurrent()
+	return result
+}
+
+func macInterfaceDetails(ctx context.Context, name string) (macInterface, []string, error) {
+	iface, err := net.InterfaceByName(name)
+	if err != nil {
+		return macInterface{}, nil, fmt.Errorf("read ECM interface %s: %w", name, err)
+	}
+	addresses, err := iface.Addrs()
+	if err != nil {
+		return macInterface{}, nil, fmt.Errorf("read ECM addresses for %s: %w", name, err)
+	}
+	items := parseIfconfig(commandOutput(ctx, "ifconfig", name))
+	item := macInterface{Name: name, Status: "unknown", Kind: interfaceKind(name)}
+	if len(items) > 0 {
+		item = items[0]
+	}
+	values := make([]string, 0, len(addresses))
+	for _, address := range addresses {
+		values = append(values, address.String())
+	}
+	sort.Strings(values)
+	return item, values, nil
+}
+
+func (a *Adapter) moduleNetworkInterface(ctx context.Context, candidate device.Candidate) string {
+	cacheKey := candidate.StableID()
+	a.networkMu.Lock()
+	cached := a.networkInterfaces[cacheKey]
+	a.networkMu.Unlock()
+	if cached != "" {
+		if _, err := net.InterfaceByName(cached); err == nil {
+			return cached
+		}
+		a.networkMu.Lock()
+		delete(a.networkInterfaces, cacheKey)
+		a.networkMu.Unlock()
+	}
+	if name := strings.TrimSpace(candidate.NetworkInterface); name != "" {
+		if _, err := net.InterfaceByName(name); err == nil {
+			return a.cacheNetworkInterface(cacheKey, name)
+		}
+	}
+	output := commandOutput(ctx, "ioreg", "-r", "-c", "IOUSBHostInterface", "-l", "-w", "0")
+	if names := parseECMInterfaceNames(output, candidate); len(names) > 0 {
+		return a.cacheNetworkInterface(cacheKey, names[0])
+	}
+	services, _ := networkServices(ctx)
+	for _, service := range services {
+		if isModuleNetworkService(service) {
+			if _, err := net.InterfaceByName(service.Device); err == nil {
+				return a.cacheNetworkInterface(cacheKey, service.Device)
 			}
 		}
-		result = append(result, item)
+	}
+	return ""
+}
+
+func (a *Adapter) cacheNetworkInterface(key, name string) string {
+	a.networkMu.Lock()
+	a.networkInterfaces[key] = name
+	a.networkMu.Unlock()
+	return name
+}
+
+func parseECMInterfaceNames(output string, candidate device.Candidate) []string {
+	var result []string
+	for _, block := range strings.Split("\n"+output, "\n+-o ") {
+		class, classOK := intProperty(block, "bInterfaceClass")
+		subclass, subclassOK := intProperty(block, "bInterfaceSubClass")
+		if !classOK || !subclassOK || class != 2 || subclass != 6 || !usbBlockMatchesCandidate(block, candidate) {
+			continue
+		}
+		match := interfaceNamePattern.FindStringSubmatch(block)
+		if len(match) == 2 && regexp.MustCompile(`^en\d+$`).MatchString(match[1]) {
+			result = append(result, match[1])
+		}
+	}
+	sort.Strings(result)
+	return uniqueStrings(result)
+}
+
+func usbBlockMatchesCandidate(block string, candidate device.Candidate) bool {
+	vendorID, vendorOK := intProperty(block, "idVendor")
+	productID, productOK := intProperty(block, "idProduct")
+	if !vendorOK || !productOK || !supportedUSBNetworkIdentity(vendorID, productID) {
+		return false
+	}
+	if value, err := strconv.ParseUint(strings.TrimSpace(candidate.Identity.VendorID), 16, 16); err == nil && int(value) != vendorID {
+		return false
+	}
+	if value, err := strconv.ParseUint(strings.TrimSpace(candidate.Identity.ProductID), 16, 16); err == nil && int(value) != productID {
+		return false
+	}
+	candidateLocation := strings.TrimPrefix(strings.TrimPrefix(strings.TrimSpace(candidate.Identity.PhysicalLocation), "0x"), "0X")
+	if candidateLocation == "" || candidateLocation == "unknown" {
+		return true
+	}
+	wantLocation, err := strconv.ParseUint(candidateLocation, 16, 32)
+	if err != nil {
+		return true
+	}
+	location, ok := intProperty(block, "locationID")
+	return ok && uint64(location) == wantLocation
+}
+
+func supportedUSBNetworkIdentity(vendorID, productID int) bool {
+	for _, identity := range supportedUSBIdentities {
+		if identity.vendorID == vendorID && identity.productID == productID {
+			return true
+		}
+	}
+	return false
+}
+
+func uniqueStrings(values []string) []string {
+	if len(values) < 2 {
+		return values
+	}
+	result := values[:1]
+	for _, value := range values[1:] {
+		if value != result[len(result)-1] {
+			result = append(result, value)
+		}
 	}
 	return result
 }
+
 func macDefaultRoute(ctx context.Context) macRoute {
+	return parseRoute(commandOutput(ctx, "route", "-n", "get", "default"))
+}
+
+func macScopedDefaultRoute(ctx context.Context, name string) macRoute {
+	return parseRoute(commandOutput(ctx, "route", "-n", "get", "-ifscope", name, "default"))
+}
+
+func parseRoute(output string) macRoute {
 	result := macRoute{}
-	for _, line := range strings.Split(commandOutput(ctx, "route", "-n", "get", "default"), "\n") {
+	for _, line := range strings.Split(output, "\n") {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "gateway:") {
 			result.Gateway = strings.TrimSpace(strings.TrimPrefix(line, "gateway:"))
@@ -174,6 +326,66 @@ func macDefaultRoute(ctx context.Context) macRoute {
 	}
 	return result
 }
+
+func formatRoute(route macRoute) string {
+	if route.Interface == "" {
+		return ""
+	}
+	if route.Gateway == "" {
+		return route.Interface
+	}
+	return fmt.Sprintf("%s via %s", route.Interface, route.Gateway)
+}
+
+func preferredSourceAddress(addresses []string) net.IP {
+	var ipv6 net.IP
+	for _, address := range addresses {
+		ip, _, err := net.ParseCIDR(address)
+		if err != nil || ip.IsLoopback() || ip.IsLinkLocalUnicast() {
+			continue
+		}
+		if ip.To4() != nil {
+			return ip
+		}
+		if ipv6 == nil {
+			ipv6 = ip
+		}
+	}
+	return ipv6
+}
+
+func macInterfaceCounters(ctx context.Context, name string) (uint64, uint64) {
+	return parseInterfaceCounters(commandOutput(ctx, "netstat", "-ibn", "-I", name), name)
+}
+
+func parseInterfaceCounters(output, name string) (uint64, uint64) {
+	var ibytesIndex, obytesIndex = -1, -1
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		if fields[0] == "Name" {
+			for index, field := range fields {
+				switch field {
+				case "Ibytes":
+					ibytesIndex = index
+				case "Obytes":
+					obytesIndex = index
+				}
+			}
+			continue
+		}
+		if fields[0] != name || ibytesIndex < 0 || obytesIndex < 0 || len(fields) <= obytesIndex || !strings.HasPrefix(fields[2], "<Link#") {
+			continue
+		}
+		rxBytes, _ := strconv.ParseUint(fields[ibytesIndex], 10, 64)
+		txBytes, _ := strconv.ParseUint(fields[obytesIndex], 10, 64)
+		return rxBytes, txBytes
+	}
+	return 0, 0
+}
+
 func interfaceKind(name string) string {
 	switch {
 	case strings.HasPrefix(name, "en"):
@@ -186,14 +398,6 @@ func interfaceKind(name string) string {
 		return "other"
 	}
 }
-func hasUSBNetwork(items []macInterface) bool {
-	for _, item := range items {
-		if item.Kind == "ethernet" && item.Name != "en0" && item.Status == "active" {
-			return true
-		}
-	}
-	return false
-}
 
 type networkService struct {
 	Name, HardwarePort, Device string
@@ -205,31 +409,24 @@ func networkServices(ctx context.Context) ([]networkService, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read macOS network services: %s", strings.TrimSpace(string(output)))
 	}
-	header := regexp.MustCompile(`^\((\*|\d+)\)\s+(.+)$`)
-	detail := regexp.MustCompile(`^\(Hardware Port:\s*([^,]+),\s*Device:\s*([^)]+)\)$`)
 	lines := strings.Split(strings.ReplaceAll(string(output), "\r\n", "\n"), "\n")
 	result := []networkService{}
 	for index := 0; index+1 < len(lines); index++ {
-		h, d := header.FindStringSubmatch(strings.TrimSpace(lines[index])), detail.FindStringSubmatch(strings.TrimSpace(lines[index+1]))
-		if len(h) == 3 && len(d) == 3 {
-			result = append(result, networkService{Name: strings.TrimSpace(h[2]), HardwarePort: strings.TrimSpace(d[1]), Device: strings.TrimSpace(d[2]), Disabled: h[1] == "*"})
+		header := networkHeaderPattern.FindStringSubmatch(strings.TrimSpace(lines[index]))
+		detail := networkDetailPattern.FindStringSubmatch(strings.TrimSpace(lines[index+1]))
+		if len(header) == 3 && len(detail) == 3 {
+			result = append(result, networkService{
+				Name: strings.TrimSpace(header[2]), HardwarePort: strings.TrimSpace(detail[1]),
+				Device: strings.TrimSpace(detail[2]), Disabled: header[1] == "*",
+			})
 		}
 	}
 	return result, nil
 }
-func isCellularService(item networkService) bool {
+
+func isModuleNetworkService(item networkService) bool {
 	return strings.EqualFold(item.HardwarePort, "Baiwang") && regexp.MustCompile(`^en\d+$`).MatchString(item.Device)
-}
-func setNetworkService(ctx context.Context, name string, enabled bool) error {
-	value := "off"
-	if enabled {
-		value = "on"
-	}
-	output, err := exec.CommandContext(ctx, "/usr/sbin/networksetup", "-setnetworkserviceenabled", name, value).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("%s: %s", name, strings.TrimSpace(string(output)))
-	}
-	return nil
 }
 
 var _ transport.NetworkDiagnostics = (*Adapter)(nil)
+var _ transport.NetworkTrafficReader = (*Adapter)(nil)

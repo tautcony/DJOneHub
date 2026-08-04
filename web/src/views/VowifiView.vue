@@ -45,7 +45,7 @@ const { device, loadVowifi, loadedViews, runVowifi, vowifi, vowifiOperation } = 
         </div>
         <a-alert
           v-if="!device.has('vowifi_control')"
-          class="inline-alert"
+          class="inline-alert vowifi-control-alert"
           type="warning"
           show-icon
           :message="t('vowifi.unavailableControl')" /><OperationStatusView

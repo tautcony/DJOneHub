@@ -35,7 +35,7 @@ type DeviceInfoProvider interface {
 	GetSignalInfo(ctx context.Context) (*SignalInfo, error)
 
 	// GetServingSystem 获取网络注册状态和服务系统信息
-	// AT 实现：AT+CREG? + AT+COPS?
+	// AT 实现：AT+CEREG?/AT+CGREG?/AT+CREG? + AT+COPS?
 	// QMI 实现：NAS.GetServingSystem
 	GetServingSystem(ctx context.Context) (*ServingSystem, error)
 

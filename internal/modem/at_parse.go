@@ -167,24 +167,33 @@ func parseCOPSAct(resp string) (string, bool) {
 }
 
 func parseCREG(resp string) (int, string, string, bool) {
-	line, ok := findLineWithPrefix(resp, "+CREG:")
+	return parseRegistration(resp, "+CREG:")
+}
+
+func parseRegistration(resp, prefix string) (int, string, string, bool) {
+	line, ok := findLineWithPrefix(resp, prefix)
 	if !ok {
 		return 0, "", "", false
 	}
-	parts := strings.Split(line, ",")
-	if len(parts) < 2 {
+	payload := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+	parts := strings.Split(payload, ",")
+	if len(parts) == 0 {
 		return 0, "", "", false
 	}
-	statPart := strings.TrimSpace(parts[1])
+	statusIndex := 0
+	if len(parts) >= 2 {
+		statusIndex = 1
+	}
+	statPart := strings.TrimSpace(parts[statusIndex])
 	regStatus := 0
 	if _, err := fmt.Sscanf(statPart, "%d", &regStatus); err != nil {
 		return 0, "", "", false
 	}
 	lac := ""
 	cellID := ""
-	if len(parts) >= 4 {
-		lac = strings.Trim(strings.TrimSpace(parts[2]), "\"")
-		cellID = strings.Trim(strings.TrimSpace(parts[3]), "\"")
+	if len(parts) > statusIndex+2 {
+		lac = strings.Trim(strings.TrimSpace(parts[statusIndex+1]), "\"")
+		cellID = strings.Trim(strings.TrimSpace(parts[statusIndex+2]), "\"")
 	}
 	return regStatus, lac, cellID, true
 }
@@ -255,30 +264,27 @@ func parseServingCellLTEInfo(resp string) (ServingCellLTEInfo, bool) {
 		info.Band = "LTE BAND " + strings.Trim(band, "\"")
 	}
 
-	tail := parts[len(parts)-5:]
-	parsed := make([]int, 0, len(tail))
-	for _, part := range tail {
-		part = strings.TrimSpace(part)
-		var val int
-		if _, err := fmt.Sscanf(part, "%d", &val); err != nil {
-			return ServingCellLTEInfo{}, false
+	// Firmware variants place optional TAC and trailing CQI/TX-power fields
+	// differently. Locate the consecutive RSRP, RSRQ, RSSI and SINR tuple by
+	// value ranges instead of anchoring it to the end, where unknown values are
+	// commonly represented as "-".
+	for i := 12; i+3 < len(parts); i++ {
+		rsrp, rsrpErr := strconv.Atoi(strings.TrimSpace(parts[i]))
+		rsrq, rsrqErr := strconv.Atoi(strings.TrimSpace(parts[i+1]))
+		rssi, rssiErr := strconv.Atoi(strings.TrimSpace(parts[i+2]))
+		sinr, sinrErr := strconv.Atoi(strings.TrimSpace(parts[i+3]))
+		if rsrpErr != nil || rsrqErr != nil || rssiErr != nil || sinrErr != nil {
+			continue
 		}
-		parsed = append(parsed, val)
+		if rsrp < -140 || rsrp > -40 || rsrq < -30 || rsrq > 0 || rssi < -120 || rssi > 0 || sinr < -30 || sinr > 50 {
+			continue
+		}
+		info.RSRP = rsrp
+		info.RSRQ = rsrq
+		info.SINR = sinr
+		return info, true
 	}
-	if len(parsed) != 5 {
-		return ServingCellLTEInfo{}, false
-	}
-
-	info.RSRP = parsed[0]
-	info.RSRQ = parsed[1]
-	info.SINR = parsed[3]
-	if info.RSRP < -140 || info.RSRP > -40 {
-		return ServingCellLTEInfo{}, false
-	}
-	if info.RSRQ < -30 || info.RSRQ > 0 {
-		return ServingCellLTEInfo{}, false
-	}
-	return info, true
+	return ServingCellLTEInfo{}, false
 }
 
 func parseAPN(resp string) string {

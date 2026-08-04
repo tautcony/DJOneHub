@@ -10,6 +10,7 @@ VERSION=${1:-v0.1.3-preview}
 DMG_NAME="DJOneHub-macOS-universal-${VERSION}.dmg"
 STAGE="${ROOT_DIR}/dist/dmg-stage-universal"
 DMG="${ROOT_DIR}/dist/${DMG_NAME}"
+CHECKSUM="${DMG}.sha256"
 
 echo "==> 1/2 构建通用主程序（arm64 + x86_64，含原生 UI）"
 "${ROOT_DIR}/scripts/package-macos-universal.sh" "${VERSION}"
@@ -23,9 +24,11 @@ cp "${ROOT_DIR}/scripts/dmg/卸载 DJOneHub.command" "${STAGE}/卸载 DJOneHub.c
 cp "${ROOT_DIR}/scripts/dmg/使用说明.txt" "${STAGE}/使用说明.txt"
 chmod 755 "${STAGE}/安装 DJOneHub.command" "${STAGE}/卸载 DJOneHub.command"
 
-rm -f "${DMG}"
+rm -f "${DMG}" "${CHECKSUM}"
 hdiutil create -volname "DJOneHub" -srcfolder "${STAGE}" -ov -format UDZO "${DMG}"
 hdiutil verify "${DMG}"
+shasum -a 256 "${DMG}" > "${CHECKSUM}"
 
 echo
 echo "完成：${DMG}"
+echo "校验：${CHECKSUM}"

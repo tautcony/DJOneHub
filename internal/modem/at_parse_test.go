@@ -39,6 +39,29 @@ func TestParseServingCellLTE(t *testing.T) {
 	}
 }
 
+func TestParseRegistrationDomains(t *testing.T) {
+	tests := []struct {
+		name       string
+		response   string
+		prefix     string
+		wantStatus int
+		wantLAC    string
+		wantCellID string
+	}{
+		{name: "EPS roaming", response: "+CEREG: 0,5,\"00AF\",\"1234\",7", prefix: "+CEREG:", wantStatus: 5, wantLAC: "00AF", wantCellID: "1234"},
+		{name: "packet registered", response: "+CGREG: 0,1", prefix: "+CGREG:", wantStatus: 1},
+		{name: "status only", response: "+CREG: 1", prefix: "+CREG:", wantStatus: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			status, lac, cellID, ok := parseRegistration(tt.response, tt.prefix)
+			if !ok || status != tt.wantStatus || lac != tt.wantLAC || cellID != tt.wantCellID {
+				t.Fatalf("parseRegistration()=(%d,%q,%q,%v), want=(%d,%q,%q,true)", status, lac, cellID, ok, tt.wantStatus, tt.wantLAC, tt.wantCellID)
+			}
+		})
+	}
+}
+
 func TestParseQCCID(t *testing.T) {
 	tests := []struct {
 		name string
@@ -114,6 +137,17 @@ func TestParseServingCellLTEInfoIncludesRadio(t *testing.T) {
 		t.Fatal("parseServingCellLTEInfo() ok=false")
 	}
 	if info.RSRP != -75 || info.RSRQ != -8 || info.SINR != 11 || info.Duplex != "FDD" || info.Band != "LTE BAND 8" || info.Channel != 3740 {
+		t.Fatalf("parseServingCellLTEInfo()=%+v", info)
+	}
+}
+
+func TestParseServingCellLTEInfoAllowsUnknownTrailingField(t *testing.T) {
+	response := "\r\n+QENG: \"servingcell\",\"NOCONN\",\"LTE\",\"FDD\",460,11,AA092E,283,1552,3,5,5,E859,-92,-8,-61,19,-\r\n\r\nOK\r\n"
+	info, ok := parseServingCellLTEInfo(response)
+	if !ok {
+		t.Fatal("parseServingCellLTEInfo() ok=false")
+	}
+	if info.RSRP != -92 || info.RSRQ != -8 || info.SINR != 19 || info.Duplex != "FDD" || info.Band != "LTE BAND 3" || info.Channel != 1552 {
 		t.Fatalf("parseServingCellLTEInfo()=%+v", info)
 	}
 }

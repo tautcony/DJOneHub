@@ -68,15 +68,39 @@ func (m *Manager) QueryOperator() (string, error) {
 }
 
 func (m *Manager) QueryRegistration() (int, string, string, string, error) {
-	resp, err := m.ExecuteATSilent("AT+CREG?", 2*time.Second)
-	if err != nil {
-		return 0, "", "", "", err
+	var fallbackStatus int
+	var fallbackLAC, fallbackCellID string
+	found := false
+	var lastErr error
+	for _, query := range []struct {
+		command string
+		prefix  string
+	}{
+		{command: "AT+CEREG?", prefix: "+CEREG:"},
+		{command: "AT+CGREG?", prefix: "+CGREG:"},
+		{command: "AT+CREG?", prefix: "+CREG:"},
+	} {
+		resp, err := m.ExecuteATSilent(query.command, 2*time.Second)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		regStatus, lac, cellID, ok := parseRegistration(resp, query.prefix)
+		if !ok {
+			continue
+		}
+		if !found {
+			fallbackStatus, fallbackLAC, fallbackCellID = regStatus, lac, cellID
+			found = true
+		}
+		if regStatus == 1 || regStatus == 5 {
+			return regStatus, m.getRegStatusText(regStatus), lac, cellID, nil
+		}
 	}
-	regStatus, lac, cellID, ok := parseCREG(resp)
-	if !ok {
-		return 0, "", "", "", nil
+	if found {
+		return fallbackStatus, m.getRegStatusText(fallbackStatus), fallbackLAC, fallbackCellID, nil
 	}
-	return regStatus, m.getRegStatusText(regStatus), lac, cellID, nil
+	return 0, "", "", "", lastErr
 }
 
 func (m *Manager) QueryCSQ() (int, int, error) {

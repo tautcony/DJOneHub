@@ -6,8 +6,8 @@ VERSION=${1:-dev}
 PACKAGE_NAME="DJOneHub-macOS-arm64-${VERSION}"
 STAGE_ROOT="${ROOT_DIR}/dist/release"
 STAGE_DIR="${STAGE_ROOT}/${PACKAGE_NAME}"
-ARCHIVE="${STAGE_ROOT}/${PACKAGE_NAME}.zip"
-CHECKSUM="${ARCHIVE}.sha256"
+APP_DIR="${STAGE_DIR}/DJOneHub.app"
+APP_BINARY="${APP_DIR}/Contents/MacOS/djonehub"
 LIBUSB_VERSION=1.0.30
 LIBUSB_SHA256=fea36f34f9156400209595e300840767ab1a385ede1dc7ee893015aea9c6dbaf
 LIBUSB_URL="https://github.com/libusb/libusb/releases/download/v${LIBUSB_VERSION}/libusb-${LIBUSB_VERSION}.tar.bz2"
@@ -39,7 +39,7 @@ if ! command -v npm >/dev/null 2>&1; then
 fi
 
 rm -rf "${STAGE_DIR}"
-mkdir -p "${STAGE_DIR}/bin" "${STAGE_DIR}/lib" "${STAGE_DIR}/licenses"
+mkdir -p "${APP_DIR}/Contents/MacOS" "${APP_DIR}/Contents/Resources" "${APP_DIR}/Contents/lib" "${STAGE_DIR}/licenses"
 mkdir -p "${BUILD_ROOT}"
 
 if [ ! -f "${LIBUSB_ARCHIVE}" ]; then
@@ -104,35 +104,25 @@ PKG_CONFIG_PATH="${LIBUSB_SOURCE}" \
 MACOSX_DEPLOYMENT_TARGET=13.0 CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 go build \
   -p 2 \
   -trimpath -buildvcs=false -ldflags="-s -w" \
-  -o "${STAGE_DIR}/bin/djonehub-macos" ./cmd/djonehub
+  -o "${APP_BINARY}" ./cmd/djonehub
 
-cp "${LIBUSB_PREFIX}/lib/libusb-1.0.0.dylib" "${STAGE_DIR}/lib/libusb-1.0.0.dylib"
-cp "${ROOT_DIR}/packaging/djonehub" "${STAGE_DIR}/djonehub"
-mkdir -p "${STAGE_DIR}/web/dist"
-cp -R "${ROOT_DIR}/web/dist/." "${STAGE_DIR}/web/dist/"
-cp "${ROOT_DIR}/packaging/install" "${STAGE_DIR}/install"
-cp "${ROOT_DIR}/packaging/README.md" "${STAGE_DIR}/README.md"
+cp "${LIBUSB_PREFIX}/lib/libusb-1.0.0.dylib" "${APP_DIR}/Contents/lib/libusb-1.0.0.dylib"
+cp "${ROOT_DIR}/scripts/Info.plist" "${APP_DIR}/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${VERSION#v}" "${APP_DIR}/Contents/Info.plist"
+mkdir -p "${APP_DIR}/Contents/Resources/web/dist"
+cp -R "${ROOT_DIR}/web/dist/." "${APP_DIR}/Contents/Resources/web/dist/"
 cp "${ROOT_DIR}/LICENSE" "${STAGE_DIR}/LICENSE"
 cp "${LIBUSB_SOURCE}/COPYING" "${STAGE_DIR}/licenses/libusb-COPYING"
 cp "${ROOT_DIR}/packaging/THIRD_PARTY_NOTICES.md" "${STAGE_DIR}/THIRD_PARTY_NOTICES.md"
 
-chmod 755 "${STAGE_DIR}/djonehub" "${STAGE_DIR}/install" "${STAGE_DIR}/bin/djonehub-macos" "${STAGE_DIR}/lib/libusb-1.0.0.dylib"
-codesign --force --sign - "${STAGE_DIR}/lib/libusb-1.0.0.dylib"
-codesign --force --sign - "${STAGE_DIR}/bin/djonehub-macos"
+chmod 755 "${APP_BINARY}" "${APP_DIR}/Contents/lib/libusb-1.0.0.dylib"
+codesign --force --deep --sign - "${APP_DIR}"
 
-if otool -L "${STAGE_DIR}/bin/djonehub-macos" | grep -q '/opt/homebrew\|/usr/local\|/Cellar/'; then
+if otool -L "${APP_BINARY}" | grep -q '/opt/homebrew\|/usr/local\|/Cellar/'; then
   echo "Release binary still contains a package-manager dependency." >&2
   exit 1
 fi
 
 find "${STAGE_DIR}" -name '._*' -delete
-rm -f "${ARCHIVE}" "${CHECKSUM}"
-ditto -c -k --keepParent --norsrc --noextattr --noqtn --noacl "${STAGE_DIR}" "${ARCHIVE}"
-(
-  cd "${STAGE_ROOT}"
-  shasum -a 256 "$(basename -- "${ARCHIVE}")" >"$(basename -- "${CHECKSUM}")"
-)
 
 echo "Release directory: ${STAGE_DIR}"
-echo "Release archive:   ${ARCHIVE}"
-echo "Checksum:          ${CHECKSUM}"

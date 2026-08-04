@@ -11,9 +11,7 @@ import { AT_PRESETS, parseATResponse } from './services/at'
 import { useDeviceStore } from './stores/device'
 import type {
   CallStatus,
-  CellularPolicy,
   EsimOverview,
-  GPSStatus,
   NotificationDebugEvent,
   NotificationDebugInfo,
   NotificationDebugRequest,
@@ -21,6 +19,8 @@ import type {
   NotificationPreferences,
   OperationStatus,
   NetworkStatus,
+  NetworkTrafficRange,
+  NetworkTrafficUpdate,
   SMSMessage,
   VowifiStatus,
 } from './types'
@@ -38,7 +38,6 @@ const ACTIVE_VIEW_FALLBACK_INTERVALS: Partial<Record<ViewID, number>> = {
   sms: 30000,
   esim: 60000,
   network: 15000,
-  gps: 30000,
   vowifi: 30000,
 }
 
@@ -74,10 +73,6 @@ const esimOperation = computed(() =>
 )
 const esimReloadedOperationID = ref('')
 const calls = ref<CallStatus | null>(null)
-const gps = ref<GPSStatus | null>(null)
-let lastGPSRemoteError = ''
-const networkChecks = ref<Array<{ label: string; ok: boolean; summary: string; detail?: string }>>([])
-const cellularPolicy = ref<CellularPolicy | null>(null)
 const esimNotes = ref<Record<string, { label: string; phone: string; tags: string }>>({})
 const esimHealth = ref<Record<string, unknown> | null>(null)
 const noteICCID = ref('')
@@ -93,9 +88,19 @@ let activeFallbackTimer: number | undefined
 const network = ref<NetworkStatus | null>(null)
 const overviewNetwork = ref<NetworkStatus | null>(null)
 const networkMode = ref('')
-const networkTraffic = ref({ rxRate: 0, txRate: 0, rxBytes: 0, txBytes: 0 })
-let networkTrafficTimer: number | undefined
-let networkTrafficInFlight = false
+const networkTraffic = ref({
+  rxRate: 0,
+  txRate: 0,
+  rxBytes: 0,
+  txBytes: 0,
+  dailyAvailable: false,
+  sampledAt: '',
+  date: '',
+})
+type TrafficRange = 'day' | 'week' | 'month'
+const trafficHistory = ref<Array<{ at: number; rxRate: number; txRate: number }>>([])
+const trafficRangeData = ref<NetworkTrafficRange | null>(null)
+let trafficRangeRequest = 0
 let previousTrafficSample: { rx: number; tx: number; at: number } | undefined
 const vowifi = ref<VowifiStatus | null>(null)
 const vowifiOperationID = ref('')
@@ -118,7 +123,6 @@ const notifierNumber = ref('13800138000')
 const notifierSender = ref('10086')
 const notifierRecipient = ref('')
 const notifierBody = ref('DJOneHubNotifier debug message')
-const notifierCode = ref('482913')
 const notificationPermissions = ref<NotificationPermissionStatus | null>(null)
 const notificationPermissionBusy = ref(false)
 const notificationPreferences = ref<NotificationPreferences | null>(null)
@@ -127,6 +131,7 @@ const sensitiveStorageKey = 'djonehub.show-sensitive'
 const showSensitive = ref(localStorage.getItem(sensitiveStorageKey) === '1')
 const mobileNavOpen = ref(false)
 const mobileNavExpanded = ref<Record<NavGroupID, boolean>>({ main: true, voice: true, tools: true })
+const showNotificationDebug = computed(() => notificationPreferences.value?.show_debug !== false)
 
 const navGroups = computed<ShellNavGroup[]>(() => [
   {
@@ -137,7 +142,6 @@ const navGroups = computed<ShellNavGroup[]>(() => [
       { id: 'sms', label: t('nav.sms'), capability: 'sms_read' },
       { id: 'esim', label: t('nav.esim'), capability: 'esim' },
       { id: 'network', label: t('nav.network'), capability: 'network_status' },
-      { id: 'gps', label: t('nav.gps'), capability: 'gps' },
     ],
   },
   {
@@ -153,7 +157,7 @@ const navGroups = computed<ShellNavGroup[]>(() => [
     label: t('nav.groups.tools'),
     items: [
       { id: 'raw-at', label: t('nav.rawAt'), capability: 'raw_at' },
-      { id: 'notifications', label: t('nav.notifications') },
+      ...(showNotificationDebug.value ? [{ id: 'notifications', label: t('nav.notifications') }] : []),
       { id: 'settings', label: t('nav.settings') },
     ],
   },
@@ -296,11 +300,17 @@ function applyATPreset() {
   if (preset) rawATCommand.value = preset.command
 }
 
+async function updateSMS() {
+  const result = await api.smsRefresh()
+  const items = Array.isArray(result.items) ? result.items : []
+  smsItems.value = items
+  reconcileSentSMS(items)
+  syncSmsSelection()
+}
+
 async function loadSMS() {
   try {
-    const result = await api.smsRefresh()
-    smsItems.value = Array.isArray(result.items) ? result.items : []
-    syncSmsSelection()
+    await updateSMS()
     viewError.value = ''
   } catch (error) {
     viewError.value = errorText(error, 'sms.unableLoad')
@@ -311,9 +321,7 @@ async function loadSMS() {
 
 async function refreshSMS() {
   try {
-    const result = await api.smsRefresh()
-    smsItems.value = Array.isArray(result.items) ? result.items : []
-    syncSmsSelection()
+    await updateSMS()
     notifySuccess(t('sms.refreshed'))
     viewError.value = ''
   } catch (error) {
@@ -331,10 +339,6 @@ async function clearModuleSMS() {
   }
 }
 
-function formatSMSDate(value?: string) {
-  return value ? new Date(value).toLocaleString() : ''
-}
-
 function smsPeer(item: SMSMessage) {
   return item.sender || item.recipient || t('sms.unknownSender')
 }
@@ -343,18 +347,43 @@ function smsThreadKey(item: SMSMessage) {
   return item.sender || item.recipient || 'unknown'
 }
 
+function reconcileSentSMS(items: SMSMessage[]) {
+  smsSentItems.value = smsSentItems.value.filter((local) => {
+    const localTime = local.received_at ? Date.parse(local.received_at) : NaN
+    return !items.some((remote) => {
+      if (!remote.recipient || remote.recipient !== local.recipient || remote.body !== local.body) {
+        return false
+      }
+      const remoteTime = remote.received_at ? Date.parse(remote.received_at) : NaN
+      return Number.isFinite(localTime) && Number.isFinite(remoteTime)
+        ? Math.abs(remoteTime - localTime) < 60_000
+        : true
+    })
+  })
+}
+
+// smsOrderingKey resolves the ordering key of a message. The backend sorts by
+// recorded_at (device-local insertion time, one clock for both directions);
+// received_at stays a display attribute because the SMSC clock is not synced
+// with the device clock.
+function smsOrderingKey(item: SMSMessage): number {
+  const value = item.recorded_at ?? item.received_at
+  const parsed = value ? Date.parse(value) : NaN
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
 const smsThreads = computed(() => {
   const groups = new Map<string, { key: string; peer: string; items: SMSMessage[]; latest?: SMSMessage }>()
   for (const item of [...smsItems.value, ...smsSentItems.value]) {
     const key = smsThreadKey(item)
     const group = groups.get(key) || { key, peer: smsPeer(item), items: [] }
     group.items.push(item)
-    if (!group.latest || (item.received_at || '') > (group.latest.received_at || '')) group.latest = item
+    if (!group.latest || smsOrderingKey(item) > smsOrderingKey(group.latest)) group.latest = item
     groups.set(key, group)
   }
-  return [...groups.values()].sort((a, b) =>
-    (b.latest?.received_at || '').localeCompare(a.latest?.received_at || ''),
-  )
+  const threads = [...groups.values()].sort((a, b) => smsOrderingKey(b.latest!) - smsOrderingKey(a.latest!))
+  for (const thread of threads) thread.items.sort((a, b) => smsOrderingKey(b) - smsOrderingKey(a))
+  return threads
 })
 
 const filteredSmsThreads = computed(() => {
@@ -367,18 +396,22 @@ const filteredSmsThreads = computed(() => {
   )
 })
 
-const selectedSmsThread = computed(
-  () =>
-    smsComposeNew.value
-      ? undefined
-      : smsThreads.value.find((thread) => thread.key === selectedSmsPeer.value) || smsThreads.value[0],
+const selectedSmsThread = computed(() =>
+  smsComposeNew.value
+    ? undefined
+    : smsThreads.value.find((thread) => thread.key === selectedSmsPeer.value) || smsThreads.value[0],
 )
 
 function syncSmsSelection() {
   if (smsComposeNew.value) return
-  if (!selectedSmsThread.value) selectedSmsPeer.value = ''
-  else if (!smsThreads.value.some((thread) => thread.key === selectedSmsPeer.value))
-    selectedSmsPeer.value = smsThreads.value[0].key
+  const thread = smsThreads.value.find((item) => item.key === selectedSmsPeer.value) || smsThreads.value[0]
+  if (!thread) {
+    selectedSmsPeer.value = ''
+    smsTo.value = ''
+    return
+  }
+  selectedSmsPeer.value = thread.key
+  smsTo.value = thread.peer
 }
 
 function startNewSMS() {
@@ -386,16 +419,11 @@ function startNewSMS() {
   selectedSmsPeer.value = ''
   smsTo.value = ''
   smsBody.value = ''
+  smsOperationID.value = ''
 }
 
-async function copySMSCode(code?: string) {
-  if (!code) return
-  try {
-    await navigator.clipboard.writeText(code)
-    notifySuccess(t('sms.codeCopied'))
-  } catch {
-    notifyError('view', t('sms.codeCopyFailed'))
-  }
+function resetSMSOperation() {
+  smsOperationID.value = ''
 }
 
 async function loadEsim() {
@@ -440,61 +468,6 @@ async function rejectCall() {
     await loadView('calls')
   } catch (error) {
     viewError.value = errorText(error, 'calls.unableReject')
-  }
-}
-async function loadGPS() {
-  try {
-    const result = await api.gps()
-    gps.value = result
-    if (result.last_error && result.last_error !== lastGPSRemoteError) {
-      lastGPSRemoteError = result.last_error
-      notifyError('view', result.last_error)
-    } else if (!result.last_error) lastGPSRemoteError = ''
-    viewError.value = ''
-  } catch (error) {
-    notifyError('view', errorText(error, 'gps.unableLoad'))
-  } finally {
-    markViewLoaded('gps')
-  }
-}
-async function toggleGPS() {
-  try {
-    gps.value?.enabled ? (gps.value = await api.gpsStop()) : (gps.value = await api.gpsStart())
-  } catch (error) {
-    notifyError('view', errorText(error, 'gps.unableUpdate'))
-  }
-}
-async function refreshGPS() {
-  try {
-    gps.value = await api.gpsRefresh()
-  } catch (error) {
-    notifyError('view', errorText(error, 'gps.unableRefresh'))
-  }
-}
-async function runNetworkCheck(kind: '4g' | 'proxy') {
-  try {
-    const result = kind === '4g' ? await api.networkCheck4G() : await api.networkCheckProxy()
-    networkChecks.value = [
-      ...networkChecks.value.filter((item) => item.label !== kind),
-      { label: kind, ...result },
-    ]
-    notifySuccess(result.detail ? `${result.summary}: ${result.detail}` : result.summary)
-  } catch (error) {
-    notifyError('view', errorText(error, 'network.unableCheck'))
-  }
-}
-async function loadCellularPolicy() {
-  try {
-    cellularPolicy.value = await api.networkPolicy()
-  } catch (error) {
-    notifyError('view', errorText(error, 'network.unablePolicy'))
-  }
-}
-async function toggleCellularPolicy() {
-  try {
-    cellularPolicy.value = await api.setNetworkPolicy(!cellularPolicy.value?.force_off)
-  } catch (error) {
-    notifyError('view', errorText(error, 'network.unablePolicy'))
   }
 }
 function localProfileNote(iccid?: string) {
@@ -546,10 +519,6 @@ function isActiveView(view: ViewID) {
   return pageVisible.value && active.value === view
 }
 
-function isNetworkOverviewActive() {
-  return isActiveView('network') || isActiveView('overview')
-}
-
 function stopActiveFallbackPolling() {
   if (activeFallbackTimer !== undefined) window.clearInterval(activeFallbackTimer)
   activeFallbackTimer = undefined
@@ -577,10 +546,8 @@ function clearPendingViewRefreshes() {
 }
 
 function syncActiveRefreshers() {
-  stopNetworkTrafficPolling()
   stopActiveFallbackPolling()
   if (!pageVisible.value) return
-  if (isNetworkOverviewActive()) startNetworkTrafficPolling()
   if (!device.connected) startActiveFallbackPolling()
 }
 
@@ -619,8 +586,6 @@ function eventViews(eventType: string): ViewID[] {
       return ['sms']
     case 'esim.updated':
       return ['esim']
-    case 'gps.updated':
-      return ['gps']
     case 'network.updated':
       return ['network', 'overview']
     case 'vowifi.updated':
@@ -653,6 +618,10 @@ watch(
     }
     if (eventType === 'device.status.changed') {
       scheduleViewRefresh('overview')
+      return
+    }
+    if (eventType === 'network.traffic.updated') {
+      applyNetworkTraffic(device.lastEventData)
       return
     }
     if (eventType.startsWith('backend.')) {
@@ -738,40 +707,58 @@ async function loadOverviewNetwork() {
   }
 }
 
-async function loadNetworkTraffic() {
-  if (!isNetworkOverviewActive() || networkTrafficInFlight) return
-  networkTrafficInFlight = true
+async function loadOverviewTraffic() {
   try {
-    const sample = await api.networkTraffic()
-    if (!isNetworkOverviewActive()) return
-    const at = Date.now()
-    const previous = previousTrafficSample
-    const seconds = previous ? Math.max((at - previous.at) / 1000, 0.1) : 0
+    const result = await api.networkTrafficDaily()
     networkTraffic.value = {
-      rxBytes: sample.rx_bytes,
-      txBytes: sample.tx_bytes,
-      rxRate: previous ? Math.max(0, sample.rx_bytes - previous.rx) / seconds : 0,
-      txRate: previous ? Math.max(0, sample.tx_bytes - previous.tx) / seconds : 0,
+      ...networkTraffic.value,
+      rxBytes: result.rx_bytes,
+      txBytes: result.tx_bytes,
+      dailyAvailable: result.available,
+      sampledAt: result.sampled_at || '',
+      date: result.date,
     }
-    previousTrafficSample = { rx: sample.rx_bytes, tx: sample.tx_bytes, at }
-  } catch (error) {
-    notifyError('view', errorText(error, 'network.unableLoad'))
-  } finally {
-    networkTrafficInFlight = false
+  } catch {
+    networkTraffic.value = { ...networkTraffic.value, dailyAvailable: false }
   }
 }
 
-function stopNetworkTrafficPolling() {
-  if (networkTrafficTimer !== undefined) window.clearInterval(networkTrafficTimer)
-  networkTrafficTimer = undefined
-  previousTrafficSample = undefined
+async function loadTrafficRange(period: TrafficRange) {
+  const requestID = ++trafficRangeRequest
+  try {
+    const result = await api.networkTrafficRange(period)
+    if (requestID === trafficRangeRequest) trafficRangeData.value = result
+  } catch {
+    if (requestID === trafficRangeRequest) trafficRangeData.value = null
+  }
 }
 
-function startNetworkTrafficPolling() {
-  stopNetworkTrafficPolling()
-  if (!isNetworkOverviewActive()) return
-  void loadNetworkTraffic()
-  networkTrafficTimer = window.setInterval(() => void loadNetworkTraffic(), 1000)
+function applyNetworkTraffic(data: unknown) {
+  if (!data || typeof data !== 'object') return
+  const sample = data as Partial<NetworkTrafficUpdate>
+  if (typeof sample.rx_bytes !== 'number' || typeof sample.tx_bytes !== 'number') return
+  const parsedAt = typeof sample.sampled_at === 'string' ? Date.parse(sample.sampled_at) : NaN
+  const at = Number.isFinite(parsedAt) ? parsedAt : Date.now()
+  const previous = previousTrafficSample
+  const seconds = previous ? Math.max((at - previous.at) / 1000, 0.1) : 0
+  const dailyAvailable = sample.daily_available === true
+  const dailyRX = typeof sample.daily_rx_bytes === 'number' ? sample.daily_rx_bytes : sample.rx_bytes
+  const dailyTX = typeof sample.daily_tx_bytes === 'number' ? sample.daily_tx_bytes : sample.tx_bytes
+  networkTraffic.value = {
+    rxBytes: dailyAvailable ? dailyRX : sample.rx_bytes,
+    txBytes: dailyAvailable ? dailyTX : sample.tx_bytes,
+    rxRate: previous ? Math.max(0, sample.rx_bytes - previous.rx) / seconds : 0,
+    txRate: previous ? Math.max(0, sample.tx_bytes - previous.tx) / seconds : 0,
+    dailyAvailable,
+    sampledAt: sample.sampled_at || '',
+    date: dailyAvailable ? new Date(at).toLocaleDateString() : '',
+  }
+  const rxRate = previous ? Math.max(0, sample.rx_bytes - previous.rx) / seconds : 0
+  const txRate = previous ? Math.max(0, sample.tx_bytes - previous.tx) / seconds : 0
+  trafficHistory.value = [...trafficHistory.value, { at, rxRate, txRate }].filter(
+    (point) => point.at >= at - 30_000,
+  )
+  previousTrafficSample = { rx: sample.rx_bytes, tx: sample.tx_bytes, at }
 }
 
 async function loadVowifi() {
@@ -900,7 +887,6 @@ async function triggerNotifierDebug(action: string) {
     payload.sender = notifierSender.value.trim()
     payload.recipient = notifierRecipient.value.trim()
     payload.body = notifierBody.value
-    payload.code = notifierCode.value.trim()
   }
   try {
     const result = await api.notificationDebug(payload)
@@ -920,15 +906,12 @@ async function triggerNotifierDebug(action: string) {
 
 const viewLoaders: Partial<Record<ViewID, () => Promise<void>>> = {
   overview: async () => {
-    await Promise.all([device.refresh(), loadOverviewNetwork(), loadEsim()])
+    await Promise.all([device.refresh(), loadOverviewNetwork(), loadOverviewTraffic(), loadEsim()])
   },
   calls: loadCalls,
   sms: loadSMS,
   esim: loadEsim,
-  network: async () => {
-    await Promise.all([loadNetwork(), loadCellularPolicy()])
-  },
-  gps: loadGPS,
+  network: loadNetwork,
   vowifi: loadVowifi,
   notifications: loadNotifierDebug,
   settings: loadSettings,
@@ -985,8 +968,7 @@ function selectView(view: string) {
   viewError.value = ''
 }
 
-watch(active, (view, previous) => {
-  if (previous === 'network') stopNetworkTrafficPolling()
+watch(active, (view) => {
   syncActiveRefreshers()
   void loadView(view)
 })
@@ -1014,7 +996,13 @@ async function sendSMS() {
     smsOperationID.value = result.operation_id
     smsSentItems.value = [
       ...smsSentItems.value,
-      { index: -Date.now(), recipient, body, received_at: new Date().toISOString() },
+      {
+        index: -Date.now(),
+        recipient,
+        body,
+        received_at: new Date().toISOString(),
+        recorded_at: new Date().toISOString(),
+      },
     ]
     selectedSmsPeer.value = recipient
     smsComposeNew.value = false
@@ -1066,7 +1054,9 @@ async function rebootModule() {
 async function checkNetwork() {
   try {
     const result = await api.networkCheck()
-    notifySuccess(result.detail ? `${result.summary}: ${result.detail}` : result.summary)
+    const message = result.detail ? `${result.summary}: ${result.detail}` : result.summary
+    if (result.ok) notifySuccess(message)
+    else notifyError('view', message)
   } catch (error) {
     notifyError('view', errorText(error, 'network.unableCheck'))
   }
@@ -1103,20 +1093,22 @@ provide(viewContextKey, {
   loadView,
   loadedViews,
   networkTraffic,
+  trafficHistory,
+  trafficRangeData,
+  loadTrafficRange,
   overviewNetwork,
   showSensitive,
   stateLabel,
   stateTone,
   calls,
   rejectCall,
-  formatSMSDate,
   maskSensitive,
   clearModuleSMS,
-  copySMSCode,
   filteredSmsThreads,
   refreshSMS,
   selectedSmsPeer,
   selectedSmsThread,
+  resetSMSOperation,
   smsComposeNew,
   sendSMS,
   smsBody,
@@ -1146,21 +1138,14 @@ provide(viewContextKey, {
   openEsimDownload,
   openEsimSettings,
   saveProfileNote,
-  cellularPolicy,
   checkNetwork,
   loadNetwork,
   network,
-  networkChecks,
   networkMode,
   rebootModule,
-  runNetworkCheck,
   setNetworkMode,
-  toggleCellularPolicy,
   usbNetworkModeLabel,
   usbNetworkModeOptions,
-  gps,
-  refreshGPS,
-  toggleGPS,
   AT_PRESETS,
   applyATPreset,
   executeRawAT,
@@ -1177,7 +1162,6 @@ provide(viewContextKey, {
   newNotifierCall,
   notifierBody,
   notifierCallID,
-  notifierCode,
   notifierEvents,
   notifierInfo,
   notifierNumber,
@@ -1204,14 +1188,12 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   document.removeEventListener('visibilitychange', handleVisibilityChange)
   clearPendingViewRefreshes()
-  stopNetworkTrafficPolling()
   stopActiveFallbackPolling()
 })
 </script>
 
 <template>
   <AppShell
-    :brand-subtitle="t('brand.subtitle')"
     :nav-groups="navGroups"
     :active="active"
     :connected="device.connected"

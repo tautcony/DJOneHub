@@ -1,5 +1,7 @@
 # macOS Go 主进程与 Swift 原生触点收敛方案
 
+> GPS 地图、GPS 菜单栏图标、GPS 事件和相关命令已从当前产品移除。本方案后文保留的 GPS 内容属于历史设计记录，不代表当前生产范围。
+
 ## 1. 目标
 
 本方案将当前 `DJOneHubNotifier` 从独立常驻进程改为 Go 主程序内的 macOS 原生用户界面模块。
@@ -206,7 +208,6 @@ network.updated
   "data": {
     "sender": "10086",
     "body": "您的验证码是 482913",
-    "code": "482913",
     "received_at": "2026-08-02T10:00:00Z",
     "index": 7
   }
@@ -217,7 +218,7 @@ network.updated
 
 - `extras.Service.applyCalls` 在状态由非来电变为来电时发布 `call.incoming`。
 - 通话结束时根据最终状态发布 `call.missed` 或 `call.ended`。
-- 短信服务完成读取、长短信重组和验证码识别后发布 `sms.received`。
+- 短信服务完成读取和长短信重组后发布 `sms.received`。
 - 设备运行时进入离线/降级状态时发布 `device.offline`。
 - GPS 和网络服务在缓存状态变化后发布 `gps.updated`、`network.updated`。
 - WebSocket 和 macOS 原生 UI 均订阅同一个 EventBus，不各自实现轮询。

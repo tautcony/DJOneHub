@@ -16,21 +16,19 @@ enum DJOneHubNotifierCLI {
 
         // NotificationText preconditions mirror the legacy notifier.
         precondition(NotificationText.displayNumber("  ") == "未知号码")
-        let codeMessage = SMSMessageEvent(
+        let message = SMSMessageEvent(
             index: 7,
             sender: "10086",
             recipient: nil,
             body: "您的验证码是 482913",
-            code: "482913",
             receivedAt: Date()
         )
-        precondition(NotificationText.smsPreview(codeMessage) == "验证码 482913")
+        precondition(NotificationText.smsPreview(message) == "您的验证码是 482913")
         let longMessage = SMSMessageEvent(
             index: 8,
             sender: "10086",
             recipient: nil,
             body: "第一行\n第二行以及一段很长很长的短信正文",
-            code: nil,
             receivedAt: Date()
         )
         precondition(NotificationText.smsPreview(longMessage, limit: 8) == "第一行 第二行以…")

@@ -40,7 +40,8 @@ func TestCommandBackendReadOnlyStatus(t *testing.T) {
 		"AT+QCCID":                "AT+QCCID\r\n" + testfixtures.ICCID19 + "\r\nOK\r\n",
 		"AT+CNUM":                 "AT+CNUM\r\n+CNUM: \"\",\"" + testfixtures.MSISDN + "\",145\r\nOK\r\n",
 		"AT+CGMR":                 "AT+CGMR\r\nsynthetic-firmware-1\r\nOK\r\n",
-		"AT+CREG?":                "AT+CREG?\r\n+CREG: 0,1\r\nOK\r\n",
+		"AT+CEREG?":               "AT+CEREG?\r\n+CEREG: 0,5\r\nOK\r\n",
+		"AT+CREG?":                "AT+CREG?\r\n+CREG: 0,0\r\nOK\r\n",
 		"AT+COPS?":                "AT+COPS?\r\n+COPS: 0,0,\"TestNet\",7\r\nOK\r\n",
 		"AT+QNWINFO":              "AT+QNWINFO\r\n+QNWINFO: \"FDD LTE\",\"TestNet\",\"LTE BAND 3\",100\r\nOK\r\n",
 		"AT+CSQ":                  "AT+CSQ\r\n+CSQ: 20,99\r\nOK\r\n",
@@ -60,7 +61,7 @@ func TestCommandBackendReadOnlyStatus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !radio.Registered || radio.Operator != "TestNet" || radio.SignalDBM != -73 || radio.SignalRSRP != -75 || radio.SignalRSRQ != -8 || radio.SignalSINR != 11 {
+	if !radio.Registered || radio.Operator != "TestNet" || radio.RadioBand != "LTE BAND 3" || radio.SignalDBM != -73 || radio.SignalRSRP != -75 || radio.SignalRSRQ != -8 || radio.SignalSINR != 11 {
 		t.Fatalf("radio = %+v", radio)
 	}
 	sim, err := backend.SIM(context.Background())
@@ -75,6 +76,23 @@ func TestCommandBackendReadOnlyStatus(t *testing.T) {
 	}
 	if len(transport.commands) == 0 {
 		t.Fatal("expected read-only AT queries")
+	}
+}
+
+func TestCommandBackendRadioFallsBackAcrossRegistrationDomains(t *testing.T) {
+	transport := &fakeATTransport{responses: map[string]string{
+		"AT+CEREG?": "+CEREG: 0,0\r\nOK\r\n",
+		"AT+CGREG?": "+CGREG: 0,1\r\nOK\r\n",
+		"AT+CREG?":  "+CREG: 0,0\r\nOK\r\n",
+	}}
+	backend := NewCommandBackend(transport, device.Identity{StableID: "synthetic-device-1"})
+
+	radio, err := backend.Radio(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !radio.Registered {
+		t.Fatalf("radio = %+v, want registered from CGREG", radio)
 	}
 }
 
@@ -119,7 +137,7 @@ func TestCommandBackendNetworkModeAndInteractiveSMSCapability(t *testing.T) {
 	transport := &fakeInteractiveATTransport{fakeATTransport: fakeATTransport{responses: map[string]string{
 		"AT+CMGF?":           "+CMGF: 0\r\nOK\r\n",
 		`AT+QCFG="usbnet"?`:  `+QCFG: "usbnet",0\r\nOK\r\n`,
-		"AT+CREG?":           "+CREG: 0,1\r\nOK\r\n",
+		"AT+CEREG?":          "+CEREG: 0,1\r\nOK\r\n",
 		"AT+COPS?":           `+COPS: 0,0,"TestNet",7\r\nOK\r\n`,
 		"AT+QNWINFO":         `+QNWINFO: "FDD LTE","TestNet","LTE BAND 3",100\r\nOK\r\n`,
 		"AT+CSQ":             "+CSQ: 20,99\r\nOK\r\n",
@@ -128,7 +146,7 @@ func TestCommandBackendNetworkModeAndInteractiveSMSCapability(t *testing.T) {
 	}}}
 	backend := NewCommandBackend(transport, device.Identity{StableID: "synthetic-device-1"})
 	status, err := backend.Status(context.Background())
-	if err != nil || status["mode"] != "0" {
+	if err != nil || status["mode"] != "0" || status["radio_band"] != "LTE BAND 3" {
 		t.Fatalf("status=%+v err=%v", status, err)
 	}
 	if !backend.Capabilities(context.Background()).Has(device.CapabilitySMSSend) || !backend.Capabilities(context.Background()).Has(device.CapabilityNetworkControl) {

@@ -21,7 +21,6 @@ type Sink interface {
 	ShowSMS(message SMSMessageEvent)
 	ShowOffline(event DeviceOfflineEvent)
 	HideCall(call CallEvent)
-	UpdateGPS(status GPSUpdateEvent)
 	UpdateNetwork(state NetworkUpdateEvent)
 }
 
@@ -160,10 +159,6 @@ func (s *Service) handle(event runtime.Event) {
 			prompt := DeviceOfflineEvent{State: string(offline.State), Reason: offline.Reason, LastError: offline.LastError}
 			s.applyDeviceState(offline.State, &prompt)
 		}
-	case EventGPSUpdated:
-		if status, ok := event.Data.(GPSUpdateEvent); ok {
-			s.config.Sink.UpdateGPS(status)
-		}
 	case EventNetworkUpdated:
 		if state, ok := event.Data.(NetworkUpdateEvent); ok {
 			s.config.Sink.UpdateNetwork(state)
@@ -291,8 +286,7 @@ func (s *Service) Debug(request DebugRequest) ([]runtime.Event, error) {
 			Index:      9000,
 			Sender:     firstNonEmpty(request.Sender, "10086"),
 			Recipient:  strings.TrimSpace(request.Recipient),
-			Body:       firstNonEmpty(request.Body, "DJOneHubNotifier debug message; code 482913"),
-			Code:       firstNonEmpty(request.Code, "482913"),
+			Body:       firstNonEmpty(request.Body, "DJOneHubNotifier debug message"),
 			ReceivedAt: now,
 		}
 		return []runtime.Event{s.config.Events.Publish(EventSMSReceived, message)}, nil
@@ -309,16 +303,6 @@ func (s *Service) Debug(request DebugRequest) ([]runtime.Event, error) {
 		return events, nil
 	case DebugDeviceReady:
 		return []runtime.Event{s.config.Events.Publish(EventDeviceStatusChanged, device.Snapshot{State: device.StateReady})}, nil
-	case DebugGPSSearching:
-		return []runtime.Event{s.config.Events.Publish(EventGPSUpdated, GPSUpdateEvent{Enabled: true, LastChecked: now})}, nil
-	case DebugGPSFix:
-		return []runtime.Event{s.config.Events.Publish(EventGPSUpdated, GPSUpdateEvent{
-			Enabled:     true,
-			Fix:         &GPSFixEvent{UTC: "100000.000", Latitude: "31.2304", Longitude: "121.4737", HDOP: "1.1", Satellites: "12"},
-			LastChecked: now,
-		})}, nil
-	case DebugGPSDisabled:
-		return []runtime.Event{s.config.Events.Publish(EventGPSUpdated, GPSUpdateEvent{LastChecked: now})}, nil
 	case DebugNetworkConnected:
 		return []runtime.Event{s.config.Events.Publish(EventNetworkUpdated, NetworkUpdateEvent{
 			Mode: "usbnet", NetworkMode: "LTE", Registered: true, Operator: "DJOneHub Debug", SignalDBM: -71,
@@ -373,7 +357,7 @@ func ValidateCommand(command Command) error {
 		if command.CallID() == "" {
 			return fmt.Errorf("reject_call requires a call_id parameter")
 		}
-	case CommandOpenDashboard, CommandToggleGPSPanel, CommandOpenGPSPanel, CommandCloseGPSPanel:
+	case CommandOpenDashboard:
 		// No parameters are expected.
 	case CommandNotificationPermissionStatus:
 		if !ValidNotificationPermissionState(command.Param("state")) {

@@ -4,13 +4,44 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/iniwex5/vohive/internal/application/device"
 	"github.com/iniwex5/vohive/internal/application/operation"
 	"github.com/iniwex5/vohive/internal/backend"
 	domain "github.com/iniwex5/vohive/internal/domain/device"
 	"github.com/iniwex5/vohive/internal/runtime"
+	"github.com/iniwex5/vohive/internal/transport"
 )
+
+func TestTrafficDailyRangeUsesRollingWindows(t *testing.T) {
+	service := &Service{}
+	now := time.Date(2026, time.August, 4, 15, 30, 0, 0, time.Local)
+	tests := []struct {
+		period    string
+		startDate string
+		itemCount int
+	}{
+		{period: "day", startDate: "2026-08-04", itemCount: 1},
+		{period: "week", startDate: "2026-07-29", itemCount: 7},
+		{period: "month", startDate: "2026-07-06", itemCount: 30},
+	}
+
+	for _, test := range tests {
+		t.Run(test.period, func(t *testing.T) {
+			status, err := service.TrafficDailyRange(context.Background(), test.period, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if status.StartDate != test.startDate || status.EndDate != "2026-08-04" {
+				t.Fatalf("range = %s..%s, want %s..2026-08-04", status.StartDate, status.EndDate, test.startDate)
+			}
+			if len(status.Items) != test.itemCount {
+				t.Fatalf("item count = %d, want %d", len(status.Items), test.itemCount)
+			}
+		})
+	}
+}
 
 type fakeDiscovery struct{ candidate domain.Candidate }
 
@@ -25,7 +56,7 @@ func (f *fakeNetworkBackend) Identity(context.Context) (backend.Identity, error)
 	return backend.Identity{IMEI: "123456789012345"}, nil
 }
 func (f *fakeNetworkBackend) Radio(context.Context) (backend.RadioState, error) {
-	return backend.RadioState{}, nil
+	return backend.RadioState{NetworkMode: "LTE", RadioBand: "LTE BAND 3"}, nil
 }
 func (f *fakeNetworkBackend) SIM(context.Context) (backend.SIMState, error) {
 	return backend.SIMState{}, nil
@@ -55,7 +86,7 @@ func (f *fakeNetworkBackend) Status(context.Context) (map[string]any, error) {
 	if f.unavailable {
 		return nil, errors.New("network unavailable")
 	}
-	return map[string]any{"interface": "wwan0", "rx_bytes": uint64(1), "tx_bytes": uint64(2)}, nil
+	return map[string]any{"mode": "1", "network_mode": "LTE", "interface": "wwan0", "rx_bytes": uint64(1), "tx_bytes": uint64(2)}, nil
 }
 func (f *fakeNetworkBackend) SetMode(context.Context, string) error {
 	if f.unavailable {
@@ -64,7 +95,7 @@ func (f *fakeNetworkBackend) SetMode(context.Context, string) error {
 	return nil
 }
 func (f *fakeNetworkBackend) Traffic(context.Context) (map[string]any, error) {
-	return map[string]any{}, nil
+	return map[string]any{"rx_bytes": uint64(12), "tx_bytes": uint64(34)}, nil
 }
 func (f *fakeNetworkBackend) Check(context.Context) (map[string]any, error) {
 	if f.unavailable {
@@ -77,6 +108,23 @@ type fakeFactory struct{ backend *fakeNetworkBackend }
 
 func (f fakeFactory) Open(context.Context, domain.Candidate) (backend.ModemBackend, string, error) {
 	return f.backend, "fake QMI", nil
+}
+
+type fakeHostNetworkController struct{}
+
+func (fakeHostNetworkController) Status(context.Context, domain.Candidate) (transport.NetworkStatus, error) {
+	return transport.NetworkStatus{
+		Interface: "en13", Addresses: []string{"192.168.225.29/24"},
+		DefaultRoute: "en13 via 192.168.225.1", SystemDefaultRoute: "en0 via 192.168.0.1",
+		RXBytes: 56, TXBytes: 78,
+	}, nil
+}
+func (fakeHostNetworkController) SetMode(context.Context, domain.Candidate, string) error { return nil }
+func (fakeHostNetworkController) CheckConnectivity(context.Context, domain.Candidate) (transport.Connectivity, error) {
+	return transport.Connectivity{OK: true, Summary: "ECM internet access is available", Detail: "en13"}, nil
+}
+func (fakeHostNetworkController) NetworkTraffic(context.Context, domain.Candidate) (uint64, uint64, error) {
+	return 56, 78, nil
 }
 
 func TestNetworkServiceUsesFakeBackendAndReportsInjectedFailure(t *testing.T) {
@@ -101,5 +149,67 @@ func TestNetworkServiceUsesFakeBackendAndReportsInjectedFailure(t *testing.T) {
 	status, err := service.Status(context.Background())
 	if err != nil || status.Interface != "wwan0" {
 		t.Fatalf("status=%+v err=%v", status, err)
+	}
+}
+
+func TestNetworkServicePublishesTrafficUpdate(t *testing.T) {
+	r, err := runtime.New(runtime.Config{
+		Discovery: fakeDiscovery{candidate: domain.Candidate{Identity: domain.Identity{StableID: "fake-network"}}},
+		Backends:  fakeFactory{backend: &fakeNetworkBackend{}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Rescan(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(device.NewService(r), operation.NewManager(r.Events()), r, nil)
+	_, events, unsubscribe := r.Events().Subscribe(1)
+	defer unsubscribe()
+
+	service.publishTraffic(context.Background())
+	event := <-events
+	if event.Type != EventTrafficUpdated {
+		t.Fatalf("event type = %q", event.Type)
+	}
+	traffic, ok := event.Data.(TrafficUpdateEvent)
+	if !ok {
+		t.Fatalf("event data type = %T", event.Data)
+	}
+	if traffic.RXBytes != 12 || traffic.TXBytes != 34 || traffic.SampledAt.IsZero() {
+		t.Fatalf("traffic event = %+v", traffic)
+	}
+}
+
+func TestNetworkServiceMergesBackendModeWithHostNetworkState(t *testing.T) {
+	r, err := runtime.New(runtime.Config{
+		Discovery: fakeDiscovery{candidate: domain.Candidate{Identity: domain.Identity{StableID: "fake-network"}}},
+		Backends:  fakeFactory{backend: &fakeNetworkBackend{}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Rescan(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(device.NewService(r), operation.NewManager(r.Events()), r, fakeHostNetworkController{})
+
+	status, err := service.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Mode != "1" || status.NetworkMode != "LTE" || status.Interface != "en13" || status.DefaultRoute != "en13 via 192.168.225.1" || status.SystemDefaultRoute != "en0 via 192.168.0.1" {
+		t.Fatalf("merged status = %+v", status)
+	}
+	if len(status.Addresses) != 1 || status.Addresses[0] != "192.168.225.29/24" || status.RXBytes != 56 || status.TXBytes != 78 {
+		t.Fatalf("host status = %+v", status)
+	}
+	traffic, err := service.Traffic(context.Background())
+	if err != nil || traffic["rx_bytes"] != uint64(56) || traffic["tx_bytes"] != uint64(78) {
+		t.Fatalf("traffic = %+v, err = %v", traffic, err)
+	}
+	connectivity, err := service.Check(context.Background())
+	if err != nil || !connectivity.OK || connectivity.Detail != "en13" {
+		t.Fatalf("connectivity = %+v, err = %v", connectivity, err)
 	}
 }

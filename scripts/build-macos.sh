@@ -5,7 +5,7 @@ set -eu
 # first, then linked into the Go binary via cgo, then wrapped into a
 # DJOneHub.app test bundle (single process, single LaunchAgent).
 #
-# Distribution (ZIP/DMG) is handled by package-macos-arm64.sh / universal;
+# Distribution DMG builds are handled by build-dmg.sh / build-dmg-universal.sh;
 # this script is for local development.
 
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)

@@ -23,7 +23,6 @@
 | `call.missed` | 1 | `CallEvent` | `extras.applyCalls` 通话结束且未接（新增） |
 | `sms.received` | 1 | `SMSMessageEvent` | 短信服务增量发布：首次加载只建基线，之后仅对新增消息发布（新增） |
 | `sms.updated` | 1 | 既有 `{"count"}` 等 map 载荷 | 短信服务既有发布点（数量变化或首次加载时发布，避免轮询空转刷屏） |
-| `gps.updated` | 1 | `GPSUpdateEvent` | `extras` GPS 状态变化（enabled/fix/error 任一变化时发布，新增） |
 | `network.updated` | 1 | 既有 map 载荷；新发布点使用 `NetworkUpdateEvent` | 网络服务既有发布点；新的 15 秒 radio 轮询发布 `NetworkUpdateEvent` |
 
 ### 1.2 CallEvent（call.* 事件载荷）
@@ -55,46 +54,31 @@
   "sender": "10086",
   "recipient": "",
   "body": "您的验证码是 482913",
-  "code": "482913",
   "received_at": "2026-08-02T10:00:05Z"
 }
 ```
 
 去重键（与短信服务缓存键一致）：`sender \x00 recipient \x00 body \x00 received_at(RFC3339Nano)`，实现为 `SMSMessageEvent.DedupKey()`。
 
-### 1.4 GPSUpdateEvent（gps.updated 载荷）
-
-```json
-{
-  "enabled": true,
-  "fix": { "utc": "100000.000", "latitude": "31.2304", "longitude": "121.4737", "hdop": "1.1", "satellites": "12" },
-  "last_checked": "2026-08-02T10:00:00Z",
-  "last_error": ""
-}
-```
-
-`enabled=true` 且 `fix` 为空表示仍在搜索。经纬度/HDOP/卫星数为字符串，保留模组精度（与 `extras.GPSFix` 同值）。
-
-### 1.5 DeviceOfflineEvent（device.offline 载荷）
+### 1.4 DeviceOfflineEvent（device.offline 载荷）
 
 ```json
 { "state": "disconnected", "reason": "no managed device was discovered", "last_error": "..." }
 ```
 
-### 1.6 NetworkUpdateEvent（新发布点的 network.updated 载荷）
+### 1.5 NetworkUpdateEvent（新发布点的 network.updated 载荷）
 
 ```json
 { "mode": "usbnet", "network_mode": "LTE", "registered": true, "operator": "CHN-UNICOM", "signal_dbm": -83 }
 ```
 
-驱动 4G 菜单栏模型；既有发布点（`{"mode": ...}`、`CellularPolicy`）保持现状，后续逐步收敛。
+驱动 4G 菜单栏模型；网络模式发布点（`{"mode": ...}`）保持现状，后续逐步收敛。
 
 ## 2. 事件产生位置
 
 - `extras.Service.applyCalls`：状态由非来电变为来电（incoming/waiting）时发布 `call.incoming`；通话结束时按最终状态发布 `call.missed` 或 `call.ended`；状态/号码变化发布 `call.updated`（仅实际变化时发布，避免 3 秒轮询刷屏）。同一通话被新通话替换时先按结束处理归档。
-- 短信服务：3 秒轮询 `Refresh`（替代旧 notifier 的轮询），完成读取、长短信重组和验证码识别后对**新增消息**发布 `sms.received`；首次加载只建立进程内缓存基线，不发布。
+- 短信服务：3 秒轮询 `Refresh`（替代旧 notifier 的轮询），完成读取和长短信重组后对**新增消息**发布 `sms.received`；首次加载只建立进程内缓存基线，不发布。
 - 设备运行时：`transition` 进入 degraded/disconnected/absent 时发布 `device.offline`，载荷为 `domain.OfflineEvent`。
-- GPS 服务：enabled/fix/error 任一变化时发布 `gps.updated`（15 秒轮询 + 变化检测）。
 - 网络服务：15 秒 radio 轮询（替代旧 notifier 的蜂窝轮询）发布 `network.updated`（`NetworkUpdateEvent`，变化检测）。
 
 事件发布必须发生在服务状态更新完成之后，并且不能在持有服务互斥锁时阻塞等待 UI（发布点均在解锁后调用）。
@@ -107,9 +91,6 @@ Swift 只发送以下动作；Go 异步执行并发布结果事件：
 | --- | --- | --- |
 | `reject_call` | `call_id`（必填） | `call.reject.started` / `call.reject.succeeded` / `call.reject.failed` |
 | `open_dashboard` | 无 | `dashboard.opened` |
-| `toggle_gps_panel` | 无 | 无（纯 UI 状态） |
-| `open_gps_panel` | 无 | 无（纯 UI 状态） |
-| `close_gps_panel` | 无 | 无（纯 UI 状态） |
 
 命令 JSON：
 
@@ -147,10 +128,10 @@ Swift 只发送以下动作；Go 异步执行并发布结果事件：
 | 未接来电 | 历史中第一个 `missed && !seen` 的记录弹“未接来电” |
 | 短信去重 | 新短信只提醒一次；去重键为 `sender + recipient + body + received_at`（第 1.3 节） |
 | 离线提示 | 连续设备错误达到 5 次才显示一次离线提示；恢复后允许再次提示 |
-| GPS/4G | 状态变化转换为菜单栏模型更新，不弹普通通知 |
+| 4G | 状态变化转换为菜单栏模型更新，不弹普通通知 |
 | 通知显示方式 | 每类通知默认使用 `UserNotifications`；设置为 `custom` 时使用 AppKit 自绘面板。来电支持拒接，短信和离线提示在自绘模式下短暂显示 |
 
-以下行为保留在 Swift UI 层，不迁移：GPS 搜索动画（8 帧）与 120 秒搜索超时、MapKit 面板渲染和菜单栏图标。
+GPS 地图、GPS 菜单栏图标和搜星动画已移除，不属于当前桥接契约。
 
 ## 5. 版本策略
 
@@ -185,7 +166,7 @@ Go 侧桥接 `internal/platform/darwin/native`：
 ## 7. 测试
 
 - `contract_test.go`：逐条解码 `testdata/` fixture，验证封套（id/type/version/occurred_at）与载荷字段；命令 fixture 验证参数解析与校验。
-- `notification` 服务单测：启动基线、去重、离线阈值、GPS/4G 转发、命令校验。
+- `notification` 服务单测：启动基线、去重、离线阈值、4G 转发、命令校验。
 - `extras`/`sms` 事件发布测试：通话状态机到 `call.incoming/updated/ended/missed` 的映射、短信增量语义。
 - Swift `BridgeEventTests`：事件 DTO 解码（含小数秒时间戳）、格式化、命令编码。
 - 桥接测试：Sink 事件 JSON 转发、命令校验与分发。

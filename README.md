@@ -1,446 +1,252 @@
 # DJOneHub
 
-DJOneHub 是一款面向**大疆第一代 4G 模块**的第三方 macOS 管理工具。它通过 USB 与模块现有接口通信，让模块无需虚拟机即可在 Mac 上完成短信收发、eSIM Profile 管理、AT 指令调试和 USB 4G 上网。
+DJOneHub 是面向单个蜂窝模块的本地管理工具。它通过模块已有的 USB、串口、QMI 或 MBIM 接口，提供设备状态、短信、SIM/eSIM、网络诊断、原始 AT 指令和 VoWiFi 状态管理等能力。管理页面由 Vue 3 构建，后端由 Go 提供；默认只监听本机地址，数据和运行状态保存在本机。
 
-程序及管理页面均在本机运行，默认只监听 `127.0.0.1:7575`，不会主动把 SIM、短信或卡片资料上传到远程服务器。
+项目当前主要围绕大疆第一代 4G 模块及其 Quectel USB 身份开发。它是非官方第三方软件，与 DJI、Quectel、运营商或 eSIM 服务商不存在隶属、授权或合作关系。
 
-> [!IMPORTANT]
-> DJOneHub 是非官方第三方项目，与 DJI、Quectel、运营商及 eSIM 卡片厂商不存在隶属、授权或合作关系。
-
-## 功能概览
-
-| 功能 | 状态 | 说明 |
-| --- | --- | --- |
-| 模块自动识别 | 已实现 | 识别大疆第一代 4G 模块，并处理拔出、重新连接和换卡 |
-| 模块状态 | 已实现 | 显示运营商、信号、网络制式、SIM 状态和当前工作模式 |
-| 短信管理 | 已实现 | 接收、发送、自动轮询、验证码提取及模块旧短信清理 |
-| eSIM Profile | 已实现 | 读取、下载、启用、改名和删除兼容 eUICC 卡片中的 Profile |
-| Profile 号码资料 | 已实现 | 将手动填写的号码保存到模块通讯录，并按 ICCID 关联 Profile |
-| USB 4G 上网 | 已实现 | 切换 USB 网卡模式，让 macOS 使用 SIM 卡流量上网 |
-| 网络与流量 | 已实现 | 查看 USB 网卡、默认出口、代理连通性、实时速度和本次流量 |
-| AT 调试 | 已实现 | 在网页中直接向模块发送 AT 指令 |
-| 深浅色外观 | 已实现 | 支持浅色、深色和跟随系统 |
-| Intel Mac | 尚未发布 | 当前预览发行包仅提供 Apple Silicon 版本 |
-
-## 接入准备
+## 支持范围
 
 ### 硬件
 
-- 大疆第一代 4G 模块
-- 可正常使用的实体 SIM，或与当前实现兼容的实体 eUICC/eSIM 卡片
-- 支持数据传输的 USB-C 线缆
-- Apple Silicon Mac
+macOS 适配器当前识别以下 USB 身份：
 
-模块支持以下完整 USB 身份，程序会严格同时匹配 VID 和 PID：
-
-| USB 身份 | VID:PID | 用途 |
+| 设备 | VID:PID | 说明 |
 | --- | --- | --- |
-| 大疆原始 USB | `2ca3:4006` | 原始模块 USB 组合模式 |
-| 移远转换后 USB | `2c7c:0125` | 转换后的 Quectel USB 组合模式 |
+| DJI 4G 模块 | `2ca3:4006` | 大疆原始 USB 组合模式 |
+| Quectel 4G 模块 | `2c7c:0125` | 转换后的 Quectel USB 组合模式 |
 
-首页“网络”页面的“USB 设备身份”可以选择自动识别、DJI 或 Quectel。选择会保存到本机 DJOneHub 配置，并在下次启动时继续使用。程序还会显示实际检测到的 VID、PID 和 USB 位置；多个模块同时连接时，AT 接口只绑定到同一物理位置的设备。
+程序只管理一个物理设备。设备重新枚举或切换 USB 模式后，运行时会根据物理位置、USB 身份及调制解调器标识关联回同一设备；多个模块同时连接不属于当前产品边界。
 
-如果连接后 macOS 完全没有发现支持的 USB 设备，请优先确认线缆支持数据传输。
+### 平台
 
-### 系统
-
-- macOS 13 Ventura 或更新版本
-- 当前发行包支持 Apple Silicon，即 M1、M2、M3、M4 及后续 Apple 芯片
-- Intel Mac 版本尚未发布和真机验证
-
-发行包已经携带运行所需的 `libusb`。普通用户不需要安装 Homebrew、Go、Node.js 或其他开发环境。
-
-### 指示灯
-
-| 状态 | 常见含义 |
-| --- | --- |
-| 红色常亮 | 未插入 SIM 卡 |
-| 红色闪烁 | SIM 卡未被正常识别 |
-| 绿色常亮 | SIM 已识别，蜂窝信号通常较好 |
-| 绿色闪烁 | SIM 已识别，蜂窝信号可能较弱或仍在注册 |
-
-不同固件的灯光行为可能存在差异，最终应以网页中的 SIM、信号和网络注册状态为准。
-
-## 接入原理
-
-大疆第一代 4G 模块通过不同的 USB 组合模式向主机暴露管理接口或网络接口。DJOneHub 没有修改模块固件，而是根据模块现有 USB 接口实现本机通信。
-
-| 模式 | 页面名称 | 主要用途 |
+| 平台 | 当前状态 | 说明 |
 | --- | --- | --- |
-| 模式 0 | RMNET | 配合 QMI 工具、usb_ecm 或高通 GobiNet 使用 |
-| 模式 1 | ECM | 使用标准 CDC-ECM，通常配合 cdc_ether 驱动 |
-| 模式 2 | MBIM | 移动宽带接口模型，主要用于 Windows 8 及以上 |
-| 模式 3 | RNDIS | 通过 USB 承载 TCP/IP，让主机通过 USB 网卡上网 |
+| macOS 13+ Apple Silicon | 已提供发行包 | 当前硬件验证和主要用户流程集中在此平台 |
+| macOS Intel | 构建脚本支持，实机验证有限 | 请以具体 Release 的说明为准 |
+| Linux | 源码适配中 | 已有 USB/sysfs、网络和部分传输适配，不等同于完整发行支持 |
+| Windows | 实验性适配 | 当前主要用于验证统一运行时和构建路径，硬件能力仍受适配器覆盖范围限制 |
 
-切换模式时，模块会重新枚举 USB 接口，页面可能短暂显示设备断开。请等待系统重新识别，不要在 eSIM Profile 写入等关键操作过程中拔出模块或切换模式。
+后端会把实际可用能力发布给前端。某个平台或后端未实现的功能会显示为不支持，不应根据操作系统名称推断功能可用性。
 
-## 下载
+### 功能
 
-请前往项目的 **Releases** 页面，下载文件名中包含 `macOS-arm64` 的 ZIP 发行包。
+- 设备发现、连接生命周期、运营商、信号、注册状态和 SIM 状态
+- 短信读取、发送、长短信重组、验证码识别和模块短信存储清理
+- 兼容实体 eUICC/eSIM 卡片的 Profile 读取、下载、启用、改名和删除
+- USB 网络状态、接口地址、连通性、速度和当前会话流量统计
+- 原始 AT 指令调试
+- VoWiFi 状态查看，以及在平台和设备能力允许时执行启用、停用和重连
+- 浅色、深色和跟随系统的管理页面外观
 
-Release 页面还会提供同名的 `.sha256` 文件。它不是程序的一部分，也不是安装必需文件，仅用于确认 ZIP 是否下载完整、是否与发布者生成的文件一致。
+具体功能由设备、固件、SIM/eUICC、运营商网络和当前后端共同决定。eSIM Profile 写入、网络模式切换和原始 AT 指令都可能改变设备或卡片状态。
 
-GitHub 自动生成的 `Source code (zip)` 和 `Source code (tar.gz)` 是源码快照，适合开发者阅读和构建，不能替代已经打包好的 macOS 发行包。
+## 普通用户：安装发行包
 
-验证 ZIP 时，在下载目录执行：
+普通用户应从项目的 Releases 页面下载发行包。GitHub 自动生成的 `Source code (zip)` 和 `Source code (tar.gz)` 只是源码快照，不能替代已打包的应用。
 
-```sh
-shasum -a 256 DJOneHub-*.zip
-```
+当前 macOS 只保留 DMG 作为用户发行格式。DMG 内含一个 `DJOneHub.app`、一个安装脚本和一个卸载脚本。
 
-将输出与 `.sha256` 文件中的值比较即可。
-
-## 安装
-
-1. 完整解压下载的 ZIP，不要只从压缩包中拖出单个文件。
-2. 打开 macOS“终端”。
-3. 输入 `cd `，在 `cd` 后保留一个空格。
-4. 把解压得到的 DJOneHub 文件夹拖入终端窗口，然后按回车。
-5. 执行安装命令：
+下载 Release 提供的 DMG 后，可在终端执行以下命令校验文件：
 
 ```sh
-./install
+shasum -a 256 DJOneHub-macOS-*.dmg
 ```
 
-![在发行包目录执行安装命令](docs/images/install.png)
+将结果与 Release 提供的校验值比较。
 
-安装过程中，macOS 可能要求输入当前用户的管理员密码。输入密码时终端不会显示圆点或星号，这是正常现象。
+### DMG 安装
 
-程序主体会安装到：
+DMG 安装包内包含 `安装 DJOneHub.command` 和 `卸载 DJOneHub.command`。安装步骤如下：
+
+1. 打开 DMG，并将其中的发行目录保留在可访问的位置。
+2. 双击 `安装 DJOneHub.command`。
+3. 如果 macOS 阻止执行，请在“系统设置 → 隐私与安全性”中允许打开，然后再次双击。
+
+安装脚本会把 App 复制到：
 
 ```text
-/usr/local/libexec/djonehub
+~/Library/Application Support/DJOneHub/DJOneHub.app
 ```
 
-终端命令入口会创建在：
+随后注册唯一的 `~/Library/LaunchAgents/com.jamie.djonehub.plist`，由 macOS 在登录时启动 App 并保持 DJOneHub 运行。管理页面地址为 `http://127.0.0.1:7575`。日志写入：
 
 ```text
-/usr/local/bin/djonehub
+~/Library/Logs/DJOneHub/launchd.log
 ```
 
-安装完成后，无论终端当前位于哪个目录，都可以直接使用 `djonehub` 命令。
+卸载时双击 `卸载 DJOneHub.command`。该脚本会停止 LaunchAgent、删除用户级安装目录和开机启动配置；日志目录不会由卸载脚本删除。
 
-## 首次启动
+### macOS 安全提示
 
-1. 先将 SIM 或 eUICC 卡片插入模块。
-2. 使用支持数据传输的 USB-C 线连接模块与 Mac。
-3. 等待 macOS 完成 USB 设备枚举。
-4. 在终端中启动 DJOneHub：
+预览发行包可能使用临时签名，未经过 Apple Developer ID 公证。首次运行或双击 `.command` 文件被阻止时，请在“系统设置 → 隐私与安全性”中确认允许打开。
+
+如果 DMG 中的 App 或安装脚本仍提示文件已损坏，只对来自可信 Release、且已核对 SHA-256 的发行包执行：
 
 ```sh
-djonehub start
+xattr -dr com.apple.quarantine ./djonehub/DJOneHub.app ./安装\ DJOneHub.command ./卸载\ DJOneHub.command
 ```
 
-程序会自动打开本机管理页面：
+## 使用边界
 
-```text
-http://127.0.0.1:7575
-```
+### USB 与网络模式
 
-启动程序的终端需要保持运行。按 `Control+C` 可以停止程序。如果浏览器没有自动打开，可以执行：
+模块的 USB 组合模式切换会触发重新枚举，页面短暂显示设备断开属于预期现象。切换过程中不要拔出模块，也不要在 eSIM 写入或其他关键操作期间关闭程序。
 
-```sh
-djonehub open
-```
+USB 网络是否能正常上网还取决于 SIM 套餐、网络注册、APN、macOS 网络服务和运营商限制。页面中的流量只统计当前 DJOneHub 进程运行期间的本地观测值，不是运营商账单。
 
-## macOS 阻止打开时
+### 短信
 
-当前预览版没有使用 Apple Developer ID 公证签名。首次运行时，macOS 可能提示无法验证开发者或阻止程序启动。
-
-请先打开：
-
-```text
-系统设置 -> 隐私与安全性
-```
-
-在安全提示附近选择“仍要打开”，然后重新启动 DJOneHub。
-
-如果系统仍提示文件已损坏，可以回到解压后的发行包目录执行：
-
-```sh
-xattr -dr com.apple.quarantine ./djonehub ./bin ./lib
-./djonehub start
-```
-
-> [!CAUTION]
-> 只应对从本项目可信 Release 页面下载、并核对过 SHA-256 的文件执行移除隔离属性的操作。
-
-## 使用说明
-
-### 短信模式
-
-短信模式用于接收和发送短信、自动轮询新短信、提取常见验证码、管理 eSIM Profile 和发送 AT 指令。
-
-“清空模块旧短信”只清理模块内部 `ME` 存储中的旧短信，例如二手模块可能残留的历史短信。网页收件箱主要缓存在程序内存中，关闭程序后，本次运行期间读取的短信缓存会自动清除。
-
-发送国际短信时，请填写完整国际号码，区号和号码之间不需要空格：
+短信收发受网络注册、短信中心、套餐、漫游和模块固件影响。发送国际短信时使用完整国际号码，例如：
 
 ```text
 +86138XXXXXXXX
 +447700900XXX
 ```
 
-短信能否发送或接收，还取决于 SIM 套餐、漫游状态、运营商网络注册、短信中心配置和模块兼容性。
+“清理模块旧短信”只处理模块内部存储，不等于删除运营商侧或其他设备中的短信。
 
-### eSIM 与卡片管理
+### eSIM Profile
 
-该页面用于管理插在实体 SIM 卡槽中的兼容 eUICC/eSIM 卡片，不是用于管理 Mac 内置 eSIM。插入普通实体 SIM 时，可以忽略此页面。
+此功能管理插在模块实体卡槽中的兼容 eUICC/eSIM 卡片，不管理 Mac 内置 eSIM。Profile 下载、启用、改名和删除都会写入实体卡片；删除通常不可撤销。不同卡片即使遵循相同规范，也可能存在扩展能力差异，使用前应确认卡片和账户支持相关操作。
 
-当前支持：
+### 原始 AT
 
-- 读取 EID、固件、可用空间和已安装 Profile
-- 查看 Profile 名称、服务商、类型和 ICCID
-- 下载新的 Profile
-- 启用不同 Profile
-- 修改 Profile 名称
-- 删除 Profile
-- 检测卡片通讯录兼容性
-- 将号码资料保存到模块通讯录，并按 ICCID 关联
+AT 调试可以改变网络注册、PDP、USB 模式、短信存储和 SIM 状态。不了解作用的指令不要执行，不要直接使用来源不明的刷机或写入命令。
 
-![下载新的 eSIM Profile](docs/images/esim-download.png)
+## 开发者：从源码运行
 
-不同实体 eUICC 产品即使都遵循 SGP.22，也不代表每项扩展功能完全一致。目前只在手头的兼容卡片上完成过主要功能验证，其他产品需要自行测试。
+### 环境要求
 
-> [!WARNING]
-> 启用、下载、改名和删除 Profile 都会改动实体卡片。写入过程中不要拔出模块。删除 Profile 通常不可撤销。
+- Go `1.26.3` 或兼容版本，版本约束见 `go.mod`
+- Node.js 和 npm，用于构建 Vue 前端
+- macOS 本地构建还需要 Xcode Command Line Tools、`pkg-config` 和可用的 Apple 编译工具链
+- 构建 macOS 发行包时，需要从 GitHub 下载并校验 libusb 1.0.30 源码
 
-### 上网模式
-
-切换到上网模式前，需要插入包含可用流量的 SIM。模块通常会通过 DHCP 为 Mac 分配类似 `192.168.225.x` 的局域网地址，并完成蜂窝网络接入和转发。
-
-![上网模式下的实时速度和本次流量](docs/images/network-traffic.png)
-
-首页会显示当前下载、当前上传、本次下载、本次上传和本次总流量。本次总流量等于本次下载与本次上传之和，只统计当前 DJOneHub 进程运行期间的数据；刷新网页不会清零，关闭程序后，下次启动会从零重新统计。
-
-在 macOS 网络设置中可以找到模块对应的网络服务，本机实测名称为 `Baiwang`：
-
-![macOS 识别到 Baiwang USB 网络服务](docs/images/macos-network.png)
-
-如果切换到模块后代理失效，需要检查该网络服务的系统代理配置，或确认代理软件已启用 TUN/增强模式：
-
-![为 Baiwang 网络服务配置本地代理](docs/images/macos-proxy.png)
-
-页面流量数据仅用于观察当前会话，不等同于运营商账单。
-
-首页右上角的“工作模式”选择器可以直接切换模式 0～3。选择模式并确认后，程序会自动写入 `usbnet` 配置、重启模块并等待 USB 重新枚举，不需要进入 AT 调试页面手工执行命令。模式 2 和模式 3 的用途尚未确认，不建议日常使用。
-
-### AT 调试
-
-AT 调试页面允许直接向模块发送指令，例如：
-
-```text
-AT
-AT+CSQ
-AT+COPS?
-AT+CPIN?
-AT+CNUM
-```
-
-AT 指令可以改变网络注册、PDP、USB 模式、短信存储和 SIM 状态。不了解作用的指令不要直接执行，也不要照搬来源不明的刷机或写入命令。
-
-## 常用命令
-
-```text
-djonehub start          启动并自动打开管理网页
-djonehub start --demo   启动无硬件演示模式
-djonehub stop           停止正在运行的程序
-djonehub status         查看运行状态
-djonehub logs           查看实时日志（Control+C 退出日志）
-djonehub open           打开管理网页
-```
-
-## 本地开发启动
-
-先安装前端依赖：
+安装前端依赖：
 
 ```sh
 npm --prefix web install
 ```
 
-分别启动后端和前端：
+### 本地开发
+
+无硬件时，一键启动 Go 后端和 Vite 前端：
+
+```sh
+./scripts/dev.sh -demo
+```
+
+开发地址：
+
+```text
+前端：http://127.0.0.1:5176
+后端：http://127.0.0.1:7576
+```
+
+Vite 会把 `/api` 和 WebSocket 请求代理到后端。连接真实设备时去掉 `-demo`：
+
+```sh
+./scripts/dev.sh
+```
+
+也可以分别启动：
 
 ```sh
 ./scripts/dev-backend.sh -demo
 ./scripts/dev-web.sh
 ```
 
-后端默认监听 `127.0.0.1:7576`，前端开发页面为
-`http://127.0.0.1:5176`，前端会将 `/api` 和 WebSocket 请求代理到后端。
-没有硬件时使用 `-demo`；连接真实模块时去掉该参数。
-
-也可以一键启动两者：
-
-```sh
-./scripts/dev.sh -demo
-```
-
-开发脚本使用统一入口 `cmd/djonehub`，不会启动或依赖单独的 macOS 服务。
-
-最直接的停止方式，是回到启动 DJOneHub 的终端并按 `Control+C`。也可以在另一个终端中执行：
-
-```sh
-djonehub stop
-```
-
-建议先停止 DJOneHub，再拔出模块。如果直接拔出，程序会继续运行并等待设备重新连接。
-
-## 日志与本地数据
-
-日志保存在：
+后端命令行参数：
 
 ```text
-~/Library/Logs/DJOneHub/djonehub.log
+-listen 127.0.0.1:7576   HTTP 监听地址
+-web-dir web/dist         Vue 构建产物目录
+-demo                     不访问真实硬件
 ```
 
-运行状态和本地数据目录为：
+### 测试与构建
 
-```text
-~/Library/Application Support/DJOneHub
-```
-
-终端默认只显示启动、停止和错误摘要，底层 USB 日志写入日志文件。管理页面默认仅供本机访问，同一局域网内的其他设备不能直接访问。
-
-## 卸载
-
-先停止程序：
-
-```sh
-djonehub stop
-```
-
-删除命令入口和程序主体：
-
-```sh
-sudo rm -f /usr/local/bin/djonehub
-sudo rm -rf /usr/local/libexec/djonehub
-```
-
-如需一并删除日志和本地运行数据：
-
-```sh
-rm -rf "$HOME/Library/Logs/DJOneHub"
-rm -rf "$HOME/Library/Application Support/DJOneHub"
-```
-
-## 免安装运行
-
-如果不希望安装到 `/usr/local`，可以保留完整解压目录，并在该目录执行：
-
-```sh
-./djonehub start
-```
-
-## 从源码构建
-
-源码仓库面向开发者。普通用户应优先下载 Releases 中已经打包好的 ZIP。
-
-构建 Apple Silicon 发行包需要：
-
-- Apple Silicon Mac
-- macOS 13 或更新版本
-- Xcode Command Line Tools
-- Go 1.26.3 或兼容版本
-- `pkg-config`
-- 可访问 GitHub Release 的网络，用于下载并校验官方 libusb 1.0.30 源码
-
-运行测试：
+运行 Go 测试和前端校验：
 
 ```sh
 go test ./...
+npm --prefix web run typecheck
+npm --prefix web run lint
+npm --prefix web run build
 ```
 
-构建发行包：
+构建 macOS 本地测试 App：
 
 ```sh
-./scripts/package-macos-arm64.sh v0.1.0-preview
+./scripts/build-macos.sh
 ```
 
-生成的发行目录、ZIP 和 SHA-256 文件位于：
+构建 Apple Silicon DMG：
+
+```sh
+./scripts/build-dmg.sh v0.1.0-preview
+```
+
+构建 Intel + Apple Silicon 通用 DMG：
+
+```sh
+./scripts/build-dmg-universal.sh v0.1.0-preview
+```
+
+构建跨平台基础二进制：
+
+```sh
+./scripts/build-platforms.sh
+```
+
+产物位于 `dist/`；正式用户发行物是其中的 `.dmg` 文件及其 SHA-256 校验文件。`dist/release/` 下的 App staging 目录是 DMG 构建中间产物，不是独立安装格式。
+
+## 代码结构
 
 ```text
-dist/release/
+cmd/djonehub/          统一服务入口，托管 API 和 Vue 静态资源
+internal/domain/       设备、能力、错误和业务领域模型
+internal/application/  设备、短信、eSIM、网络、AT、VoWiFi 等用例服务
+internal/backend/      AT、QMI、MBIM 后端及统一能力契约
+internal/runtime/      单设备生命周期、事件和资源锁
+internal/platform/     Linux、macOS、Windows 平台适配器
+internal/api/http/     本地 HTTP/WebSocket API
+internal/storage/      SQLite 和本地配置存储
+pkg/mbim/              MBIM 协议实现
+pkg/smscodec/          SMS PDU 编解码和长短信重组
+web/                   Vue 3 + TypeScript + Vite 管理前端
+packaging/             macOS 发行包第三方声明
+scripts/               开发、测试和打包脚本
+third_party/           构建实际使用的本地第三方依赖
 ```
 
-## 常见问题
+API 使用 `/api/v1` 版本路径，异步操作通过 operation ID 和 WebSocket 事件更新。前端根据服务端能力快照展示功能，因此新增平台适配器时必须同时验证设备发现、传输、网络和能力声明，而不能只让代码通过编译。
 
-### 模块连接后没有反应
+更详细的目录说明见 [SOURCE_STRUCTURE.md](SOURCE_STRUCTURE.md)，平台说明见 [MACOS.md](MACOS.md)，接口约定见 [docs/native-bridge-contract.md](docs/native-bridge-contract.md) 及 `openspec/specs/`。
 
-最常见原因是 USB-C 线只能充电、不能传输数据。请先更换确认支持数据传输的线，再检查接口和模块供电状态。
+## 日志、本地数据与隐私
 
-### 切换模式后设备短暂消失
+macOS 默认路径：
 
-模式切换会触发 USB 重新枚举，短暂断开通常不是故障。等待几秒，让页面重新识别模块。如果长时间没有恢复，可以停止 DJOneHub，重新插拔模块后再次启动。
+```text
+~/Library/Logs/DJOneHub/djonehub.log
+~/Library/Application Support/DJOneHub/
+```
 
-### 换卡后仍显示旧信息
+短信缓存、Profile 备注、通知偏好和运行状态属于本地数据。提交 Issue、日志或截图前，应隐藏手机号、EID、ICCID、IMSI、短信正文和验证码等敏感信息。
 
-模块重新读取卡片和注册网络需要一定时间。如果刷新后仍未更新，可以停止程序，拔出模块并换卡，重新连接后再启动。切换 eSIM Profile 后也可能需要重启模块才能更新状态。
+卸载请使用 DMG 内的 `卸载 DJOneHub.command`。如需手动删除日志，请先确认不再需要：
 
-### SIM 在手机中可用，但模块不能收发短信
+```sh
+rm -rf "$HOME/Library/Logs/DJOneHub"
+```
 
-手机与模块可能使用不同的运营商配置、MBN、IMS、VoLTE 或漫游能力。SIM 能在手机注册，不代表一定兼容模块固件。请先检查运营商、网络注册、信号、短信中心和套餐限制。
+## 许可证与第三方声明
 
-### 上网模式下代理失效
-
-macOS 的代理配置与网络服务相关。切换到 USB 网卡后，可能需要为 `Baiwang` 网络服务重新配置系统代理，或确认代理软件启用了 TUN/增强模式并监听正确端口。
-
-### 能否从 iPhone 或 iPad 运行
-
-不能直接运行。当前程序依赖 macOS、libusb、终端和本地网页服务。iOS/iPadOS 的 USB 权限和应用沙盒不同，需要单独开发并签名原生应用。
-
-### 能否用于其他型号的 4G 模块
-
-不能保证。当前 USB 识别、接口选择和模式切换主要围绕大疆第一代 4G 模块实现。即使内部使用相近芯片，不同硬件的 USB 组合、端点和固件指令也可能不同。
-
-## 当前限制
-
-- 当前发行包只支持 Apple Silicon，Intel 版本尚未发布和真机验证。
-- 模式 2 和模式 3 尚未确定稳定用途。
-- 不同 SIM、eUICC、运营商、漫游环境和模块固件的兼容性可能不同。
-- 流量统计仅供参考，不等同于运营商账单。
-- 当前使用临时签名，尚未经过 Apple Developer ID 公证。
-- 管理页面默认仅供本机访问。
-
-## 安全与资费提示
-
-- 使用蜂窝数据前，请确认套餐、漫游资费和流量上限。
-- 使用境外 SIM 或 eSIM 时，不要在资费不明确的情况下切换上网模式。
-- 下载、启用或删除 Profile 前，确认卡片来源合法且账户允许相关操作。
-- 不要公开 EID、ICCID、IMSI、完整手机号、短信验证码和日志中的个人信息。
-- 发布问题截图或日志前，请先隐藏上述敏感字段。
-- 请遵守所在地法律、运营商协议和 eSIM 服务条款。
-
-## 项目来源与声明
-
-DJOneHub 是在研究大疆第一代 4G 模块和原 VoHive 项目的基础上继续开发的 macOS 工具。仓库包含基于原 VoHive 代码演进而来的部分，以及为 macOS USB 通信、设备热插拔、本机网页管理、短信、eSIM、网络诊断和发行打包新增或修改的实现。
-
-本项目不代表 DJI、Quectel、任何运营商或 eSIM 卡片厂商。相关商标和产品名称归各自权利人所有。
-
-上游作者署名、来源和第三方组件说明见：
-
-- [LICENSE](LICENSE)
-- [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
-- 各 `third_party` 目录内随附的许可证与声明
-
-## 许可证
-
-本仓库公开源代码，但由于项目包含基于原 VoHive 演进的代码，不能擅自改用 MIT、Apache-2.0 等其他许可证。项目继续遵循 [PolyForm Noncommercial License 1.0.0](LICENSE)，仅允许许可证定义的非商业用途。
-
-必须保留的上游声明：
+本项目遵循 [PolyForm Noncommercial License 1.0.0](LICENSE)。仓库包含基于 VoHive 演进的代码，必须保留上游声明：
 
 ```text
 Required Notice: Copyright iniwex5 (https://github.com/iniwex5/vohive)
 ```
 
-随发行包提供的 libusb 1.0.30 使用 GNU Lesser General Public License v2.1 or later；其他第三方组件分别遵循其自身许可证。详情见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
-
-如需将本项目或其衍生版本用于商业用途，请先自行取得相关权利人的许可。
-
-## 致谢
-
-- 原 VoHive 项目及作者 iniwex5
-- libusb 及项目所使用的各开源组件贡献者
-- 大疆第一代 4G 模块相关研究、测试和资料分享者
-
-## 结束语
-
-如果 DJOneHub 对你有帮助，欢迎通过 Issue 分享兼容性结果、问题日志或改进建议。提交截图和日志前，请务必隐藏手机号、EID、ICCID、IMSI 和短信验证码等隐私信息。
+第三方依赖和随发行包提供的 libusb 许可证见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 及各 `third_party` 目录。商业使用、再分发和衍生版本请先确认对应许可证和权利人的授权要求。

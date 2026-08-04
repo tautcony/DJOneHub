@@ -20,12 +20,12 @@ public final class NotifierPanel {
             backing: .buffered,
             defer: false
         )
-        panel.level = .floating
+        panel.level = .statusBar
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
         panel.hidesOnDeactivate = false
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient, .ignoresCycle]
         panel.isMovableByWindowBackground = true
         contentView.translatesAutoresizingMaskIntoConstraints = false
         contentView.wantsLayer = true
@@ -79,14 +79,15 @@ public final class NotifierPanel {
             hostingView.widthAnchor.constraint(equalToConstant: cardSize.width),
             hostingView.heightAnchor.constraint(equalToConstant: cardSize.height),
         ])
-        position(size: cardSize)
-        panel.orderFrontRegardless()
         panel.setFrame(
             NSRect(origin: panel.frame.origin, size: cardSize),
             display: false
         )
+        position(size: cardSize)
         contentView.layoutSubtreeIfNeeded()
         panel.invalidateShadow()
+        panel.alphaValue = 1
+        panel.orderFrontRegardless()
 
         if !content.isCall {
             let work = DispatchWorkItem { [weak self] in

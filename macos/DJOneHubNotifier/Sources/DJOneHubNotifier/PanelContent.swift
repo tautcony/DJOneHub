@@ -3,7 +3,7 @@ import Foundation
 public enum PanelContent: Equatable {
     case idle
     case incoming(number: String, startedAt: Date, state: String, rejecting: Bool)
-    case sms(sender: String, preview: String, code: String?)
+    case sms(sender: String, preview: String)
     case missed(number: String, startedAt: Date)
     case error(message: String)
 
@@ -33,9 +33,6 @@ public enum NotificationText {
     }
 
     public static func smsPreview(_ message: SMSMessageEvent, limit: Int = 48) -> String {
-        if let code = message.code, !code.isEmpty {
-            return "验证码 \(code)"
-        }
         let singleLine = message.body
             .replacingOccurrences(of: "\r", with: " ")
             .replacingOccurrences(of: "\n", with: " ")

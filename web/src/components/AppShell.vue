@@ -8,7 +8,6 @@ import {
   CreditCardOutlined,
   DashboardOutlined,
   DownOutlined,
-  EnvironmentOutlined,
   GlobalOutlined,
   MailOutlined,
   MenuOutlined,
@@ -32,7 +31,6 @@ export interface ShellNavGroup {
 }
 
 const props = defineProps<{
-  brandSubtitle: string
   navGroups: ShellNavGroup[]
   active: string
   connected: boolean
@@ -59,7 +57,6 @@ const iconMap: Record<string, Component> = {
   sms: MailOutlined,
   esim: CreditCardOutlined,
   network: GlobalOutlined,
-  gps: EnvironmentOutlined,
   calls: PhoneOutlined,
   vowifi: WifiOutlined,
   'raw-at': CodeOutlined,
@@ -84,7 +81,6 @@ function navIcon(id: string) {
         <span class="brand-mark" aria-hidden="true"><ApiOutlined /></span>
         <div class="brand-copy">
           <strong>DJOneHub</strong>
-          <small>{{ props.brandSubtitle }}</small>
         </div>
       </div>
 

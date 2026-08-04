@@ -9,8 +9,8 @@ import (
 	"sync"
 )
 
-// JSONStore is intentionally small: local configuration and operation metadata
-// are persisted as one recoverable document, without introducing a database.
+// JSONStore is retained for legacy migration and focused compatibility tests.
+// Runtime application state is stored in SQLiteStore.
 type JSONStore struct { mu sync.Mutex; path string }
 
 func NewJSONStore(path string) *JSONStore { return &JSONStore{path: path} }

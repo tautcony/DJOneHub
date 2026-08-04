@@ -25,42 +25,19 @@ public struct SMSMessageEvent: Codable, Equatable, Sendable {
     public let sender: String?
     public let recipient: String?
     public let body: String
-    public let code: String?
     public let receivedAt: Date
 
-    public init(index: Int, sender: String?, recipient: String?, body: String, code: String?, receivedAt: Date) {
+    public init(index: Int, sender: String?, recipient: String?, body: String, receivedAt: Date) {
         self.index = index
         self.sender = sender
         self.recipient = recipient
         self.body = body
-        self.code = code
         self.receivedAt = receivedAt
     }
 
     enum CodingKeys: String, CodingKey {
-        case index, sender, recipient, body, code
+        case index, sender, recipient, body
         case receivedAt = "received_at"
-    }
-}
-
-struct GPSFixEvent: Codable, Equatable, Sendable {
-    let utc: String
-    let latitude: String
-    let longitude: String
-    let hdop: String
-    let satellites: String
-}
-
-struct GPSUpdateEvent: Codable, Equatable, Sendable {
-    let enabled: Bool
-    let fix: GPSFixEvent?
-    let lastChecked: Date
-    let lastError: String?
-
-    enum CodingKeys: String, CodingKey {
-        case enabled, fix
-        case lastChecked = "last_checked"
-        case lastError = "last_error"
     }
 }
 
@@ -132,9 +109,6 @@ struct Command: Codable, Equatable, Sendable {
 
     static let rejectCall = "reject_call"
     static let openDashboard = "open_dashboard"
-    static let toggleGPSPanel = "toggle_gps_panel"
-    static let openGPSPanel = "open_gps_panel"
-    static let closeGPSPanel = "close_gps_panel"
     static let notificationPermissionStatus = "notification_permission_status"
 }
 
@@ -146,7 +120,6 @@ enum BridgeEventType {
     static let callEnded = "call.ended"
     static let callMissed = "call.missed"
     static let smsReceived = "sms.received"
-    static let gpsUpdated = "gps.updated"
     static let networkUpdated = "network.updated"
     static let callRejectStarted = "call.reject.started"
     static let callRejectSucceeded = "call.reject.succeeded"

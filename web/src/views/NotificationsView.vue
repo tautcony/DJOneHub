@@ -3,7 +3,6 @@ import { useI18n } from 'vue-i18n'
 import {
   BellOutlined,
   CheckOutlined,
-  EnvironmentOutlined,
   MessageOutlined,
   PhoneOutlined,
   ReloadOutlined,
@@ -22,7 +21,6 @@ const {
   newNotifierCall,
   notifierBody,
   notifierCallID,
-  notifierCode,
   notifierEvents,
   notifierInfo,
   notifierNumber,
@@ -67,17 +65,17 @@ const {
             ><PhoneOutlined />{{ t('notifications.missed') }}</a-button
           ><a-button @click="newNotifierCall"><ReloadOutlined />{{ t('notifications.newCall') }}</a-button>
         </div></Panel
-      ><Panel :eyebrow="t('notifications.sms')" :title="t('notifications.sms')"
-        ><div class="notifier-fields notifier-sms-fields">
-          <a-form-item :label="t('notifications.sender')"
-            ><a-input v-model:value="notifierSender" /></a-form-item
-          ><a-form-item :label="t('notifications.recipient')"
-            ><a-input v-model:value="notifierRecipient" /></a-form-item
-          ><a-form-item :label="t('notifications.message')"
-            ><a-textarea v-model:value="notifierBody" :rows="3" /></a-form-item
-          ><a-form-item :label="t('notifications.code')"
-            ><a-input v-model:value="notifierCode"
-          /></a-form-item>
+      ><Panel :eyebrow="t('notifications.sms')" :title="t('notifications.sms')">
+        <div class="notifier-fields notifier-sms-fields">
+          <a-form-item :label="t('notifications.sender')">
+            <a-input v-model:value="notifierSender" />
+          </a-form-item>
+          <a-form-item :label="t('notifications.recipient')">
+            <a-input v-model:value="notifierRecipient" />
+          </a-form-item>
+          <a-form-item :label="t('notifications.message')">
+            <a-textarea v-model:value="notifierBody" :rows="3" />
+          </a-form-item>
         </div>
         <div class="panel-actions notifier-actions">
           <a-button type="primary" @click="triggerNotifierDebug('sms_received')"
@@ -90,16 +88,6 @@ const {
             ><StopOutlined />{{ t('notifications.offline') }}</a-button
           ><a-button @click="triggerNotifierDebug('device_ready')"
             ><CheckOutlined />{{ t('notifications.ready') }}</a-button
-          >
-        </div></Panel
-      ><Panel :eyebrow="t('notifications.gps')" :title="t('notifications.gps')"
-        ><div class="panel-actions notifier-actions notifier-state-actions">
-          <a-button @click="triggerNotifierDebug('gps_searching')"
-            ><EnvironmentOutlined />{{ t('notifications.searching') }}</a-button
-          ><a-button type="primary" @click="triggerNotifierDebug('gps_fix')"
-            ><EnvironmentOutlined />{{ t('notifications.fix') }}</a-button
-          ><a-button @click="triggerNotifierDebug('gps_disabled')"
-            ><StopOutlined />{{ t('notifications.disabled') }}</a-button
           >
         </div></Panel
       ><Panel :eyebrow="t('notifications.network')" :title="t('notifications.network')"

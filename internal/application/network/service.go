@@ -3,6 +3,7 @@ package network
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	domain "github.com/iniwex5/vohive/internal/domain/device"
 	derrors "github.com/iniwex5/vohive/internal/domain/errors"
 	"github.com/iniwex5/vohive/internal/runtime"
+	"github.com/iniwex5/vohive/internal/storage"
 	"github.com/iniwex5/vohive/internal/transport"
 )
 
@@ -21,19 +23,203 @@ type Service struct {
 	ops        *operation.Manager
 	runtime    *runtime.Runtime
 	controller transport.NetworkController
+	store      *storage.SQLiteStore
 
 	mu            sync.Mutex
 	lastPublished *notification.NetworkUpdateEvent
+	iccid         string
+	iccidChecked  time.Time
 }
 
-func NewService(devices *device.Service, ops *operation.Manager, runtime *runtime.Runtime, controller transport.NetworkController) *Service {
-	return &Service{devices: devices, ops: ops, runtime: runtime, controller: controller}
+const EventTrafficUpdated = "network.traffic.updated"
+
+type TrafficUpdateEvent struct {
+	RXBytes        uint64    `json:"rx_bytes"`
+	TXBytes        uint64    `json:"tx_bytes"`
+	DailyRXBytes   uint64    `json:"daily_rx_bytes"`
+	DailyTXBytes   uint64    `json:"daily_tx_bytes"`
+	DailyAvailable bool      `json:"daily_available"`
+	SampledAt      time.Time `json:"sampled_at"`
+}
+
+type TrafficDailyStatus struct {
+	Date      string    `json:"date"`
+	RXBytes   uint64    `json:"rx_bytes"`
+	TXBytes   uint64    `json:"tx_bytes"`
+	SampledAt time.Time `json:"sampled_at,omitempty"`
+	Available bool      `json:"available"`
+}
+
+type TrafficDailyPoint struct {
+	Date    string `json:"date"`
+	RXBytes uint64 `json:"rx_bytes"`
+	TXBytes uint64 `json:"tx_bytes"`
+}
+
+type TrafficRangeStatus struct {
+	Range     string              `json:"range"`
+	StartDate string              `json:"start_date"`
+	EndDate   string              `json:"end_date"`
+	Items     []TrafficDailyPoint `json:"items"`
+	Available bool                `json:"available"`
+}
+
+func NewService(devices *device.Service, ops *operation.Manager, runtime *runtime.Runtime, controller transport.NetworkController, store ...*storage.SQLiteStore) *Service {
+	service := &Service{devices: devices, ops: ops, runtime: runtime, controller: controller}
+	if len(store) > 0 {
+		service.store = store[0]
+	}
+	return service
 }
 
 // Start runs the periodic radio refresh that drives the 4G menu bar model,
 // replacing the legacy notifier's 15-second cellular polling.
 func (s *Service) Start(ctx context.Context) {
 	go s.poller(ctx)
+	go s.trafficPoller(ctx)
+}
+
+func (s *Service) trafficPoller(ctx context.Context) {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.publishTraffic(ctx)
+		}
+	}
+}
+
+func (s *Service) publishTraffic(ctx context.Context) {
+	value, err := s.Traffic(ctx)
+	if err != nil {
+		return
+	}
+	sampledAt := time.Now().UTC()
+	rxBytes := uint64Value(value["rx_bytes"])
+	txBytes := uint64Value(value["tx_bytes"])
+	event := TrafficUpdateEvent{RXBytes: rxBytes, TXBytes: txBytes, SampledAt: sampledAt}
+	if s.store != nil {
+		if iccid, iccidErr := s.currentICCID(ctx); iccidErr == nil && iccid != "" {
+			if daily, dailyErr := s.store.RecordTrafficSample(iccid, sampledAt, rxBytes, txBytes); dailyErr == nil {
+				event.DailyRXBytes = daily.RXBytes
+				event.DailyTXBytes = daily.TXBytes
+				event.DailyAvailable = true
+			}
+		}
+	}
+	s.ops.Publish(EventTrafficUpdated, event)
+}
+
+func (s *Service) currentICCID(ctx context.Context) (string, error) {
+	s.mu.Lock()
+	if s.iccid != "" && time.Since(s.iccidChecked) < 15*time.Second {
+		iccid := s.iccid
+		s.mu.Unlock()
+		return iccid, nil
+	}
+	s.mu.Unlock()
+
+	b, err := s.devices.RequireCapability(domain.CapabilityNetworkStatus, "network_traffic_iccid")
+	if err != nil {
+		return "", err
+	}
+	sim, err := b.SIM(ctx)
+	if err != nil {
+		return "", err
+	}
+	iccid := strings.TrimSpace(sim.ICCID)
+	if iccid == "" {
+		identity, identityErr := b.Identity(ctx)
+		if identityErr != nil {
+			return "", identityErr
+		}
+		iccid = strings.TrimSpace(identity.ICCID)
+	}
+	s.mu.Lock()
+	s.iccid, s.iccidChecked = iccid, time.Now()
+	s.mu.Unlock()
+	return iccid, nil
+}
+
+func (s *Service) TrafficDaily(ctx context.Context, date time.Time) (TrafficDailyStatus, error) {
+	if date.IsZero() {
+		date = time.Now()
+	}
+	status := TrafficDailyStatus{Date: date.Local().Format("2006-01-02")}
+	if s.store == nil {
+		return status, nil
+	}
+	iccid, err := s.currentICCID(ctx)
+	if err != nil {
+		return status, err
+	}
+	if iccid == "" {
+		return status, nil
+	}
+	record, found, err := s.store.TrafficDaily(iccid, status.Date)
+	if err != nil {
+		return status, err
+	}
+	if !found {
+		return status, nil
+	}
+	status.RXBytes, status.TXBytes = record.RXBytes, record.TXBytes
+	status.SampledAt, status.Available = record.LastSampledAt, true
+	return status, nil
+}
+
+func (s *Service) TrafficDailyRange(ctx context.Context, period string, now time.Time) (TrafficRangeStatus, error) {
+	if now.IsZero() {
+		now = time.Now()
+	}
+	now = now.In(time.Local)
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
+	start, end := today, today
+	switch period {
+	case "day":
+	case "week":
+		start = today.AddDate(0, 0, -6)
+	case "month":
+		start = today.AddDate(0, 0, -29)
+	default:
+		return TrafficRangeStatus{}, fmt.Errorf("unsupported traffic range %q", period)
+	}
+	status := TrafficRangeStatus{
+		Range: period, StartDate: start.Format("2006-01-02"), EndDate: end.Format("2006-01-02"),
+		Items: []TrafficDailyPoint{},
+	}
+	for date := start; !date.After(end); date = date.AddDate(0, 0, 1) {
+		status.Items = append(status.Items, TrafficDailyPoint{Date: date.Format("2006-01-02")})
+	}
+	if s.store == nil {
+		return status, nil
+	}
+	iccid, err := s.currentICCID(ctx)
+	if err != nil {
+		return status, err
+	}
+	if iccid == "" {
+		return status, nil
+	}
+	records, err := s.store.ListTrafficDaily(iccid, status.StartDate, status.EndDate)
+	if err != nil {
+		return status, err
+	}
+	byDate := make(map[string]storage.TrafficDailyRecord, len(records))
+	for _, record := range records {
+		byDate[record.UsageDate] = record
+	}
+	for index := range status.Items {
+		if record, ok := byDate[status.Items[index].Date]; ok {
+			status.Items[index].RXBytes = record.RXBytes
+			status.Items[index].TXBytes = record.TXBytes
+			status.Available = true
+		}
+	}
+	return status, nil
 }
 
 func (s *Service) poller(ctx context.Context) {
@@ -80,21 +266,47 @@ func (s *Service) Status(ctx context.Context) (transport.NetworkStatus, error) {
 	if err != nil {
 		return transport.NetworkStatus{}, err
 	}
+	var status transport.NetworkStatus
+	hasBackendStatus := false
 	if port, ok := b.(backend.NetworkPort); ok {
 		value, err := port.Status(ctx)
 		if err != nil {
 			return transport.NetworkStatus{}, err
 		}
-		return mapStatus(value), nil
+		status = mapStatus(value)
+		hasBackendStatus = true
+	}
+	if status.NetworkMode == "" || status.RadioBand == "" {
+		if radio, radioErr := b.Radio(ctx); radioErr == nil {
+			if status.NetworkMode == "" {
+				status.NetworkMode = radio.NetworkMode
+			}
+			if status.RadioBand == "" {
+				status.RadioBand = radio.RadioBand
+			}
+		}
 	}
 	candidate, err := s.runtime.Candidate()
 	if err != nil {
+		if hasBackendStatus {
+			return status, nil
+		}
 		return transport.NetworkStatus{}, err
 	}
-	if s.controller == nil {
-		return transport.NetworkStatus{}, fmt.Errorf("network controller is unavailable")
+	if s.controller != nil {
+		platformStatus, platformErr := s.controller.Status(ctx, candidate)
+		if platformErr == nil {
+			mergeHostStatus(&status, platformStatus)
+			return status, nil
+		}
+		if hasBackendStatus {
+			return status, nil
+		}
 	}
-	return s.controller.Status(ctx, candidate)
+	if hasBackendStatus {
+		return status, nil
+	}
+	return transport.NetworkStatus{}, fmt.Errorf("network controller is unavailable")
 }
 
 func (s *Service) SetMode(ctx context.Context, mode string) (string, error) {
@@ -139,6 +351,11 @@ func (s *Service) Check(ctx context.Context) (transport.Connectivity, error) {
 	if err != nil {
 		return transport.Connectivity{}, err
 	}
+	if candidate, candidateErr := s.runtime.Candidate(); candidateErr == nil && s.controller != nil {
+		if value, platformErr := s.controller.CheckConnectivity(ctx, candidate); platformErr == nil {
+			return value, nil
+		}
+	}
 	if port, ok := b.(backend.NetworkPort); ok {
 		value, err := port.Check(ctx)
 		if err != nil {
@@ -165,21 +382,23 @@ func (s *Service) Traffic(ctx context.Context) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	candidate, err := s.runtime.Candidate()
+	if err == nil && s.controller != nil {
+		if reader, ok := s.controller.(transport.NetworkTrafficReader); ok {
+			rxBytes, txBytes, trafficErr := reader.NetworkTraffic(ctx, candidate)
+			if trafficErr == nil {
+				return map[string]any{"rx_bytes": rxBytes, "tx_bytes": txBytes}, nil
+			}
+		}
+		status, platformErr := s.controller.Status(ctx, candidate)
+		if platformErr == nil {
+			return map[string]any{"rx_bytes": status.RXBytes, "tx_bytes": status.TXBytes}, nil
+		}
+	}
 	if port, ok := b.(backend.NetworkPort); ok {
 		return port.Traffic(ctx)
 	}
-	candidate, err := s.runtime.Candidate()
-	if err != nil {
-		return nil, err
-	}
-	if s.controller == nil {
-		return nil, fmt.Errorf("network controller is unavailable")
-	}
-	status, err := s.controller.Status(ctx, candidate)
-	if err != nil {
-		return nil, err
-	}
-	return map[string]any{"rx_bytes": status.RXBytes, "tx_bytes": status.TXBytes}, nil
+	return nil, fmt.Errorf("network controller is unavailable")
 }
 
 func (s *Service) Diagnostics(ctx context.Context) (map[string]any, error) {
@@ -227,56 +446,44 @@ func (s *Service) backendRaw(ctx context.Context) (backend.RawATBackend, bool) {
 	return raw, ok
 }
 
-func (s *Service) CheckRoute(ctx context.Context, kind string) (transport.Connectivity, error) {
-	adapter, ok := s.controller.(transport.NetworkDiagnostics)
-	if !ok {
-		return transport.Connectivity{}, derrors.CapabilityMissing("network_diagnostics", "network_route_check", "the platform does not expose route checks")
-	}
-	candidate, err := s.runtime.Candidate()
-	if err != nil {
-		return transport.Connectivity{}, err
-	}
-	return adapter.CheckRoute(ctx, candidate, kind)
-}
-
-func (s *Service) CellularPolicy(ctx context.Context) (transport.CellularPolicy, error) {
-	adapter, ok := s.controller.(transport.NetworkDiagnostics)
-	if !ok {
-		return transport.CellularPolicy{}, derrors.CapabilityMissing("network_policy", "network_policy", "the platform does not expose cellular policy control")
-	}
-	candidate, err := s.runtime.Candidate()
-	if err != nil {
-		return transport.CellularPolicy{}, err
-	}
-	return adapter.CellularPolicy(ctx, candidate)
-}
-
-func (s *Service) SetCellularPolicy(ctx context.Context, forceOff bool) (transport.CellularPolicy, error) {
-	adapter, ok := s.controller.(transport.NetworkDiagnostics)
-	if !ok {
-		return transport.CellularPolicy{}, derrors.CapabilityMissing("network_policy", "network_policy", "the platform does not expose cellular policy control")
-	}
-	candidate, err := s.runtime.Candidate()
-	if err != nil {
-		return transport.CellularPolicy{}, err
-	}
-	value, err := adapter.SetCellularPolicy(ctx, candidate, forceOff)
-	if err == nil {
-		s.ops.Publish("network.updated", value)
-	}
-	return value, err
-}
-
 func mapStatus(value map[string]any) transport.NetworkStatus {
 	return transport.NetworkStatus{
-		Mode:         stringValue(value["mode"]),
-		NetworkMode:  stringValue(value["network_mode"]),
-		Interface:    stringValue(value["interface"]),
-		DefaultRoute: stringValue(value["default_route"]),
-		Addresses:    stringSlice(value["addresses"]),
-		RXBytes:      uint64Value(value["rx_bytes"]),
-		TXBytes:      uint64Value(value["tx_bytes"]),
+		Mode:               stringValue(value["mode"]),
+		NetworkMode:        stringValue(value["network_mode"]),
+		RadioBand:          stringValue(value["radio_band"]),
+		Interface:          stringValue(value["interface"]),
+		DefaultRoute:       stringValue(value["default_route"]),
+		SystemDefaultRoute: stringValue(value["system_default_route"]),
+		Addresses:          stringSlice(value["addresses"]),
+		RXBytes:            uint64Value(value["rx_bytes"]),
+		TXBytes:            uint64Value(value["tx_bytes"]),
 	}
+}
+
+func mergeHostStatus(status *transport.NetworkStatus, host transport.NetworkStatus) {
+	if status.Mode == "" {
+		status.Mode = host.Mode
+	}
+	if status.NetworkMode == "" {
+		status.NetworkMode = host.NetworkMode
+	}
+	if status.RadioBand == "" {
+		status.RadioBand = host.RadioBand
+	}
+	if host.Interface != "" {
+		status.Interface = host.Interface
+	}
+	if host.Addresses != nil {
+		status.Addresses = append([]string(nil), host.Addresses...)
+	}
+	if host.DefaultRoute != "" {
+		status.DefaultRoute = host.DefaultRoute
+	}
+	if host.SystemDefaultRoute != "" {
+		status.SystemDefaultRoute = host.SystemDefaultRoute
+	}
+	status.RXBytes = host.RXBytes
+	status.TXBytes = host.TXBytes
 }
 
 func stringValue(value any) string {

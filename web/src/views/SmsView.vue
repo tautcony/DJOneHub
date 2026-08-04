@@ -1,25 +1,23 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { CopyOutlined, SendOutlined } from '@ant-design/icons-vue'
+import { SendOutlined } from '@ant-design/icons-vue'
 import EmptyState from '../components/EmptyState.vue'
 import LoadingState from '../components/LoadingState.vue'
-import OperationStatusView from '../components/OperationStatus.vue'
 import StatusLight from '../components/StatusLight.vue'
+import { formatDateTime } from '../utils/date'
 import { useViewContext } from './context'
 
 const { t } = useI18n()
 const {
-  copySMSCode,
   device,
   filteredSmsThreads,
-  formatSMSDate,
   loadedViews,
-  maskSensitive,
-  smsComposeNew,
+  resetSMSOperation,
   selectedSmsPeer,
   selectedSmsThread,
   smsBody,
+  smsComposeNew,
   smsOperation,
   smsQuery,
   smsTo,
@@ -28,12 +26,33 @@ const {
 
 const deviceReady = computed(() => device.snapshot?.state === 'ready' && !device.error)
 const selectedPeer = computed(() => selectedSmsThread.value?.peer || '')
+const chronologicalMessages = computed(() =>
+  selectedSmsThread.value ? [...selectedSmsThread.value.items].reverse() : [],
+)
+const canSend = computed(() => device.has('sms_send') && !!smsTo.value.trim() && !!smsBody.value.trim())
+const operationLabel = computed(() => {
+  if (!smsOperation.value) return ''
+  if (smsOperation.value.state === 'succeeded') return t('sms.sent')
+  if (smsOperation.value.state === 'failed' || smsOperation.value.state === 'cancelled') {
+    return t('sms.sendFailed')
+  }
+  return t('sms.sending')
+})
+const operationTone = computed(() => {
+  if (!smsOperation.value) return 'neutral'
+  if (smsOperation.value.state === 'succeeded') return 'success'
+  if (smsOperation.value.state === 'failed' || smsOperation.value.state === 'cancelled') {
+    return 'danger'
+  }
+  return 'info'
+})
 
 function selectThread(thread: { key: string; peer: string }) {
   smsComposeNew.value = false
   selectedSmsPeer.value = thread.key
   smsTo.value = thread.peer
   smsBody.value = ''
+  resetSMSOperation()
 }
 
 function initials(value: string) {
@@ -41,54 +60,57 @@ function initials(value: string) {
 }
 
 function threadDate(value?: string) {
-  return value ? formatSMSDate(value) : ''
+  return formatDateTime(value)
 }
 </script>
 
 <template>
   <section class="sms-workbench">
-    <section class="sms-thread-pane">
+    <aside class="sms-thread-pane">
+      <div class="sms-list-heading">
+        <div>
+          <h2>{{ t('sms.conversationList') }}</h2>
+          <span>{{ filteredSmsThreads.length }} {{ t('sms.conversations') }}</span>
+        </div>
+      </div>
+
       <a-input-search
         v-model:value="smsQuery"
         class="sms-search"
         allow-clear
         :placeholder="t('sms.search')"
       />
-      <div class="sms-thread-toolbar">
-        <span>{{ filteredSmsThreads.length }} {{ t('sms.conversations') }}</span>
-        <span>{{ t('sms.latestFirst') }}</span>
-      </div>
+
       <LoadingState v-if="!loadedViews.sms" />
       <div v-else class="sms-thread-list">
         <button
           v-for="thread in filteredSmsThreads"
           :key="thread.key"
           type="button"
-          :class="[
-            'sms-thread-item',
-            { active: !smsComposeNew && selectedSmsThread?.key === thread.key },
-          ]"
+          :class="['sms-thread-item', { active: !smsComposeNew && selectedSmsThread?.key === thread.key }]"
           @click="selectThread(thread)"
         >
           <span class="sms-avatar">{{ initials(thread.peer) }}</span>
-          <span class="sms-thread-copy"
-            ><strong>{{ maskSensitive(thread.peer) }}</strong
-            ><small>{{ thread.latest?.body || t('sms.backendContent') }}</small></span
-          >
-          <time>{{ threadDate(thread.latest?.received_at) }}</time>
+          <span class="sms-thread-copy">
+            <span class="sms-thread-line">
+              <strong>{{ thread.peer }}</strong>
+              <time>{{ threadDate(thread.latest?.received_at) }}</time>
+            </span>
+            <small>{{ thread.latest?.body || t('sms.backendContent') }}</small>
+          </span>
         </button>
+
         <EmptyState
           v-if="!filteredSmsThreads.length"
           :title="smsQuery ? t('sms.noSearchResults') : t('sms.noMessages')"
           :detail="t('sms.emptyDetail')"
         />
       </div>
-    </section>
+    </aside>
 
     <section class="sms-chat-pane">
       <header class="sms-chat-heading">
         <div v-if="smsComposeNew" class="sms-chat-identity">
-          <span class="sms-avatar sms-avatar-large">+</span>
           <div>
             <h2>{{ t('sms.newMessage') }}</h2>
             <p>{{ t('sms.newMessageDetail') }}</p>
@@ -97,15 +119,11 @@ function threadDate(value?: string) {
         <div v-else-if="selectedSmsThread" class="sms-chat-identity">
           <span class="sms-avatar sms-avatar-large">{{ initials(selectedPeer) }}</span>
           <div>
-            <h2>{{ maskSensitive(selectedPeer) }}</h2>
-            <p>
-              {{ selectedSmsThread.items.length }} {{ t('sms.messagesCount') }} ·
-              {{ t('sms.conversationEyebrow') }}
-            </p>
+            <h2>{{ selectedPeer }}</h2>
+            <p>{{ selectedSmsThread.items.length }} {{ t('sms.messagesCount') }}</p>
           </div>
         </div>
         <div v-else class="sms-chat-identity">
-          <span class="sms-avatar sms-avatar-large">?</span>
           <div>
             <h2>{{ t('sms.selectConversation') }}</h2>
             <p>{{ t('sms.chatEmptyDetail') }}</p>
@@ -118,89 +136,61 @@ function threadDate(value?: string) {
         />
       </header>
 
-      <a-form
-        v-if="smsComposeNew"
-        class="sms-new-message"
-        layout="vertical"
-        @submit.prevent="sendSMS"
-      >
-        <a-form-item :label="t('sms.recipient')">
-          <a-input v-model:value="smsTo" autofocus :placeholder="t('sms.recipientPlaceholder')" />
-        </a-form-item>
-        <a-form-item :label="t('sms.message')">
-          <a-textarea
-            v-model:value="smsBody"
-            :placeholder="t('sms.messagePlaceholder')"
-            :rows="7"
-          />
-        </a-form-item>
-        <div class="sms-new-message-footer">
-          <span>{{ smsBody.length }} / 160 {{ t('sms.characters') }}</span>
-          <a-button
-            type="primary"
-            html-type="submit"
-            :disabled="!device.has('sms_send') || !smsTo.trim() || !smsBody.trim()"
-          >
-            <SendOutlined />{{ t('common.send') }}
-          </a-button>
-        </div>
-        <OperationStatusView :operation="smsOperation" :label="t('sms.sendStatus')" />
-      </a-form>
+      <div v-if="smsComposeNew" class="sms-recipient-bar">
+        <label for="sms-recipient">{{ t('sms.recipient') }}</label>
+        <a-input
+          id="sms-recipient"
+          v-model:value="smsTo"
+          autofocus
+          :placeholder="t('sms.recipientPlaceholder')"
+        />
+      </div>
 
-      <div v-else-if="selectedSmsThread" class="sms-message-stream">
-        <div class="sms-date-divider">
-          <span>{{ t('sms.conversationHistory') }}</span>
-        </div>
+      <div v-if="selectedSmsThread" class="sms-message-stream">
         <div
-          v-for="item in [...selectedSmsThread.items].reverse()"
+          v-for="item in chronologicalMessages"
           :key="item.sender + ':' + item.received_at + ':' + item.index"
           :class="['sms-message-row', { outgoing: !item.sender && !!item.recipient }]"
         >
-          <div class="sms-message-meta">
-            <strong>{{ item.sender ? maskSensitive(item.sender) : t('sms.you') }}</strong
-            ><time>{{ threadDate(item.received_at) }}</time>
-          </div>
           <div class="sms-bubble">
             <p>{{ item.body || t('sms.backendContent') }}</p>
-            <a-button
-              v-if="item.code"
-              type="link"
-              size="small"
-              class="link-button sms-code"
-              @click="copySMSCode(item.code)"
-              ><CopyOutlined />{{ t('sms.code', { code: item.code }) }}</a-button
-            >
           </div>
+          <time>{{ threadDate(item.received_at) }}</time>
         </div>
       </div>
+
+      <div v-else-if="smsComposeNew" class="sms-compose-empty">
+        <p>{{ t('sms.composePrompt') }}</p>
+      </div>
+
       <EmptyState
-        v-else-if="!smsComposeNew"
+        v-else
         class="sms-chat-empty"
         :title="t('sms.selectConversation')"
         :detail="t('sms.chatEmptyDetail')"
       />
 
-      <a-form
-        v-if="selectedSmsThread && !smsComposeNew"
-        class="sms-composer"
-        @submit.prevent="sendSMS"
-      >
-        <div class="sms-composer-footer">
-          <span class="sms-composer-count">{{ smsBody.length }} / 160 {{ t('sms.characters') }}</span>
-          <div class="sms-reply-row">
-            <a-input
-              v-model:value="smsBody"
-              :placeholder="t('sms.replyPlaceholder')"
+      <form v-if="selectedSmsThread || smsComposeNew" class="sms-composer" @submit.prevent="sendSMS">
+        <a-textarea
+          v-model:value="smsBody"
+          :auto-size="{ minRows: 2, maxRows: 5 }"
+          :placeholder="smsComposeNew ? t('sms.messagePlaceholder') : t('sms.replyPlaceholder')"
+        />
+        <div class="sms-composer-actions">
+          <div class="sms-composer-meta">
+            <span>{{ smsBody.length }} {{ t('sms.characters') }}</span>
+            <StatusLight
+              v-if="smsOperation"
+              :tone="operationTone"
+              :pulse="smsOperation.state === 'running' || smsOperation.state === 'pending'"
+              :label="operationLabel"
             />
-            <a-button
-            type="primary"
-            html-type="submit"
-            :disabled="!device.has('sms_send') || !smsTo.trim() || !smsBody.trim()"
-            ><SendOutlined />{{ t('common.send') }}</a-button>
           </div>
+          <a-button type="primary" html-type="submit" :disabled="!canSend">
+            <SendOutlined />{{ t('common.send') }}
+          </a-button>
         </div>
-        <OperationStatusView :operation="smsOperation" :label="t('sms.sendStatus')" />
-      </a-form>
+      </form>
     </section>
   </section>
 </template>

@@ -106,7 +106,7 @@ func TestBridgeSinkEventsForwardedAsJSON(t *testing.T) {
 
 	call := notification.CallEvent{ID: "call-1", Direction: "incoming", State: "incoming", Number: "18900007376", StartedAt: time.Now().UTC()}
 	bridge.ShowCall(call)
-	bridge.ShowSMS(notification.SMSMessageEvent{Index: 7, Sender: "10086", Body: "验证码", Code: "482913", ReceivedAt: time.Now().UTC()})
+	bridge.ShowSMS(notification.SMSMessageEvent{Index: 7, Sender: "10086", Body: "短信内容", ReceivedAt: time.Now().UTC()})
 
 	events := waitForEvents(t, driver, 2)
 	if events[0]["type"] != notification.EventCallIncoming {

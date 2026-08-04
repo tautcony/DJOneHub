@@ -24,7 +24,7 @@ func (f *contractLegacy) GetSignalInfo(context.Context) (*SignalInfo, error) {
 	return &SignalInfo{RSSI: -70}, nil
 }
 func (f *contractLegacy) GetServingSystem(context.Context) (*ServingSystem, error) {
-	return &ServingSystem{RegStatus: 1, Operator: "TestNet", NetworkMode: "LTE"}, nil
+	return &ServingSystem{RegStatus: 1, Operator: "TestNet", NetworkMode: "LTE", RadioBand: "LTE BAND 3"}, nil
 }
 func (f *contractLegacy) IsSimInserted(context.Context) (bool, error) { return true, nil }
 func (f *contractLegacy) GetNativeMCCMNC(context.Context) (string, string, error) {
@@ -57,6 +57,10 @@ func TestBusinessAdapterExposesCommonContractAndLegacyPorts(t *testing.T) {
 	events := make(chan BackendEvent, 1)
 	legacy := &contractLegacy{events: events}
 	adapter := Adapt(legacy)
+	radio, err := adapter.Radio(context.Background())
+	if err != nil || radio.RadioBand != "LTE BAND 3" {
+		t.Fatalf("radio=%+v err=%v", radio, err)
+	}
 
 	identity, err := adapter.Identity(context.Background())
 	if err != nil || identity.IMEI != "123456789012345" {
@@ -67,7 +71,7 @@ func TestBusinessAdapterExposesCommonContractAndLegacyPorts(t *testing.T) {
 		t.Fatalf("capabilities=%v", adapter.Capabilities(context.Background()))
 	}
 	message, err := adapter.ReadSMS(context.Background(), 7)
-	if err != nil || message.Body != "code 123456" || message.Code != "" {
+	if err != nil || message.Body != "code 123456" {
 		t.Fatalf("message=%+v err=%v", message, err)
 	}
 	got, err := adapter.Events(context.Background())

@@ -1,9 +1,8 @@
 #!/bin/zsh
 
 # Builds the native UI static library that the Go main process links via cgo,
-# then runs the dev CLI self-test. The DJOneHubNotifier.app assembly from the
-# legacy two-process layout is gone; see docs/MACOS_GO_NATIVE_BRIDGE_PLAN.md
-# phase 4 for the unified DJOneHub.app packaging.
+# then runs the development CLI self-test. The resulting static library is
+# linked into the unified DJOneHub.app by the macOS packaging scripts.
 
 set -eu
 

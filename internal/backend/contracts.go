@@ -19,6 +19,7 @@ type RadioState struct {
 	Registered  bool   `json:"registered"`
 	Operator    string `json:"operator,omitempty"`
 	NetworkMode string `json:"network_mode,omitempty"`
+	RadioBand   string `json:"radio_band,omitempty"`
 	SignalDBM   int    `json:"signal_dbm,omitempty"`
 	SignalRSRP  int    `json:"signal_rsrp,omitempty"`
 	SignalRSRQ  int    `json:"signal_rsrq,omitempty"`
@@ -33,15 +34,25 @@ type SIMState struct {
 }
 
 type SMSMessage struct {
-	Index      int       `json:"index"`
-	Sender     string    `json:"sender,omitempty"`
-	Recipient  string    `json:"recipient,omitempty"`
-	Body       string    `json:"body"`
-	Code       string    `json:"code,omitempty"`
+	Index     int    `json:"index"`
+	Sender    string `json:"sender,omitempty"`
+	Recipient string `json:"recipient,omitempty"`
+	Body      string `json:"body"`
+	// ReceivedAt is the network-side time: the SMSC timestamp embedded in the
+	// deliver PDU for incoming messages, the local send time for outgoing.
+	// It is a display attribute and must not be used for ordering, because
+	// the SMSC clock and the device clock are not synchronized.
 	ReceivedAt time.Time `json:"received_at,omitempty"`
-	ConcatRef  int       `json:"concat_ref,omitempty"`
-	PartNumber int       `json:"part_number,omitempty"`
-	TotalParts int       `json:"total_parts,omitempty"`
+	// RecordedAt is the single-clock ordering key: the device-local time the
+	// message was first recorded. Both directions share this clock, so sorting
+	// by it never interleaves sent and received messages out of order.
+	RecordedAt time.Time `json:"recorded_at,omitempty"`
+	// ICCID is the SIM identity the message was recorded under; an empty
+	// string when the SIM state was unavailable at record time.
+	ICCID      string `json:"iccid,omitempty"`
+	ConcatRef  int    `json:"concat_ref,omitempty"`
+	PartNumber int    `json:"part_number,omitempty"`
+	TotalParts int    `json:"total_parts,omitempty"`
 }
 
 type SMSPort interface {

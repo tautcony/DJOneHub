@@ -10,8 +10,8 @@ struct NotifierView: View {
             switch content {
             case let .incoming(number, startedAt, state, rejecting):
                 incomingView(number: number, startedAt: startedAt, state: state, rejecting: rejecting)
-            case let .sms(sender, preview, code):
-                smsView(sender: sender, preview: preview, code: code)
+            case let .sms(sender, preview):
+                smsView(sender: sender, preview: preview)
             case let .missed(number, startedAt):
                 missedView(number: number, startedAt: startedAt)
             case let .error(message):
@@ -94,10 +94,10 @@ struct NotifierView: View {
         .buttonStyle(.plain)
     }
 
-    private func smsView(sender: String, preview: String, code: String?) -> some View {
+    private func smsView(sender: String, preview: String) -> some View {
         Button(action: onOpen) {
             HStack(spacing: 9) {
-                Image(systemName: code == nil ? "message.fill" : "number.square.fill")
+                Image(systemName: "message.fill")
                     .font(.system(size: 17, weight: .semibold))
                     .frame(width: 34, height: 34)
                     .background(Color.green.opacity(0.16))

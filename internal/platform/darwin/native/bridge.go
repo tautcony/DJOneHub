@@ -246,10 +246,6 @@ func (b *Bridge) HideCall(call notification.CallEvent) {
 	b.sendEvent(notification.EventCallEnded, call)
 }
 
-func (b *Bridge) UpdateGPS(status notification.GPSUpdateEvent) {
-	b.sendEvent(notification.EventGPSUpdated, status)
-}
-
 func (b *Bridge) UpdateNetwork(state notification.NetworkUpdateEvent) {
 	b.sendEvent(notification.EventNetworkUpdated, state)
 }

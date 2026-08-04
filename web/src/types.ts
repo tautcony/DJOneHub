@@ -20,6 +20,7 @@ export interface DeviceStatus {
     registered: boolean
     operator?: string
     network_mode?: string
+    radio_band?: string
     signal_dbm?: number
     signal_rsrp?: number
     signal_rsrq?: number
@@ -42,8 +43,9 @@ export interface SMSMessage {
   sender?: string
   recipient?: string
   body: string
-  code?: string
   received_at?: string
+  recorded_at?: string
+  iccid?: string
   concat_ref?: number
   part_number?: number
   total_parts?: number
@@ -71,11 +73,38 @@ export interface EsimOverview {
 export interface NetworkStatus {
   mode?: string
   network_mode?: string
+  radio_band?: string
   interface?: string
   addresses?: string[]
   default_route?: string
+  system_default_route?: string
   rx_bytes: number
   tx_bytes: number
+}
+
+export interface NetworkTrafficUpdate {
+  rx_bytes: number
+  tx_bytes: number
+  daily_rx_bytes: number
+  daily_tx_bytes: number
+  daily_available: boolean
+  sampled_at: string
+}
+
+export interface NetworkTrafficDaily {
+  date: string
+  rx_bytes: number
+  tx_bytes: number
+  sampled_at?: string
+  available: boolean
+}
+
+export interface NetworkTrafficRange {
+  range: 'day' | 'week' | 'month'
+  start_date: string
+  end_date: string
+  items: Array<{ date: string; rx_bytes: number; tx_bytes: number }>
+  available: boolean
 }
 
 export interface VowifiStatus {
@@ -95,6 +124,7 @@ export interface CallRecord {
   updated_at: string
   ended_at?: string
   missed: boolean
+  iccid?: string
 }
 export interface CallStatus {
   active?: CallRecord | null
@@ -103,27 +133,6 @@ export interface CallStatus {
   poll_interval_s: number
   last_poll: string
   last_poll_error?: string
-}
-export interface GPSFix {
-  utc: string
-  latitude: string
-  longitude: string
-  hdop: string
-  altitude: string
-  fix: string
-  satellites: string
-  timestamp: string
-}
-export interface GPSStatus {
-  enabled: boolean
-  last_fix?: GPSFix
-  last_checked: string
-  last_error?: string
-  poll_interval_s: number
-}
-export interface CellularPolicy {
-  force_off: boolean
-  services?: string[]
 }
 export interface Envelope {
   id: number
@@ -150,7 +159,6 @@ export interface NotificationDebugRequest {
   sender?: string
   recipient?: string
   body?: string
-  code?: string
 }
 export interface NotificationDebugResponse {
   action: string
@@ -174,6 +182,7 @@ export interface NotificationPreferences {
   missed_call: NotificationPresentationMode
   sms: NotificationPresentationMode
   device_offline: NotificationPresentationMode
+  show_debug: boolean
 }
 export interface NotificationPreferencesResponse {
   native_ui: boolean

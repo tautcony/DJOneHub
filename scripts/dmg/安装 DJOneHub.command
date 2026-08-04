@@ -3,7 +3,8 @@ set -eu
 cd "$(dirname "$0")"
 
 DEST="$HOME/Library/Application Support/DJOneHub"
-RUNTIME="$DEST/runtime"
+APP_SOURCE="$(pwd)/djonehub/DJOneHub.app"
+APP_DEST="$DEST/DJOneHub.app"
 AGENTS="$HOME/Library/LaunchAgents"
 UID_NUM=$(id -u)
 
@@ -11,18 +12,20 @@ echo "DJOneHub 一键安装"
 echo "安装目录：$DEST"
 echo
 
-# 1. 停止旧服务（含已合并的独立通知助手，兼容升级路径）
+# 1. 验证安装源并停止已有服务
+if [[ ! -x "$APP_SOURCE/Contents/MacOS/djonehub" || ! -f "$APP_SOURCE/Contents/Info.plist" ]]; then
+  echo "安装失败：DMG 内容不完整，请重新下载并完整打开 DMG。" >&2
+  exit 1
+fi
 launchctl bootout "gui/$UID_NUM/com.jamie.djonehub" >/dev/null 2>&1 || true
-launchctl bootout "gui/$UID_NUM/com.jamie.djonehub-notifier" >/dev/null 2>&1 || true
-rm -f "$AGENTS/com.jamie.djonehub-notifier.plist" "$HOME/Library/LaunchAgents/com.jamie.djonehub-notifier.plist"
 
-# 2. 复制主程序与运行库
-rm -rf "$RUNTIME"
-mkdir -p "$RUNTIME"
-ditto --norsrc --noextattr --noqtn --noacl ./djonehub "$RUNTIME"
-chmod 755 "$RUNTIME/djonehub" "$RUNTIME/bin/djonehub-macos" "$RUNTIME/lib/libusb-1.0.0.dylib"
+# 2. 复制统一 App bundle
+rm -rf "$APP_DEST"
+mkdir -p "$DEST"
+ditto --norsrc --noextattr --noqtn --noacl "$APP_SOURCE" "$APP_DEST"
+chmod 755 "$APP_DEST/Contents/MacOS/djonehub" "$APP_DEST/Contents/lib/libusb-1.0.0.dylib"
 
-# 3. 注册开机自启（单一 LaunchAgent，交互式进程以承载菜单栏与悬浮卡片）
+# 3. 注册单一 LaunchAgent
 mkdir -p "$AGENTS" "$HOME/Library/Logs/DJOneHub"
 cat > "$AGENTS/com.jamie.djonehub.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -33,9 +36,11 @@ cat > "$AGENTS/com.jamie.djonehub.plist" <<EOF
   <string>com.jamie.djonehub</string>
   <key>ProgramArguments</key>
   <array>
-    <string>$RUNTIME/bin/djonehub-macos</string>
+    <string>$APP_DEST/Contents/MacOS/djonehub</string>
     <string>-listen</string>
     <string>127.0.0.1:7575</string>
+    <string>-web-dir</string>
+    <string>$APP_DEST/Contents/Resources/web/dist</string>
   </array>
   <key>RunAtLoad</key>
   <true/>
@@ -50,7 +55,7 @@ cat > "$AGENTS/com.jamie.djonehub.plist" <<EOF
   <key>StandardErrorPath</key>
   <string>$HOME/Library/Logs/DJOneHub/launchd.log</string>
   <key>WorkingDirectory</key>
-  <string>$RUNTIME</string>
+  <string>$APP_DEST/Contents</string>
 </dict>
 </plist>
 EOF
@@ -70,6 +75,6 @@ if [ "$ok" = 1 ]; then
 else
   echo "，未能就绪，请查看 $HOME/Library/Logs/DJOneHub/launchd.log"
 fi
-echo "安装完成：开机自动启动；4G/GPS/提醒等设置请在管理页面调整。"
+echo "安装完成：开机自动启动；请在管理页面调整设备和通知设置。"
 echo
 sleep 1

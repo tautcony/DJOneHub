@@ -83,8 +83,13 @@ func (b *CommandBackend) Identity(ctx context.Context) (Identity, error) {
 
 func (b *CommandBackend) Radio(ctx context.Context) (RadioState, error) {
 	out := RadioState{}
-	if value, err := b.command(ctx, "AT+CREG?", 3*time.Second); err == nil {
-		out.Registered = registrationStatus(value)
+	// LTE/5G registration is reported by CEREG, while older devices may only
+	// expose CGREG or CREG. Treat registration in any supported domain as online.
+	for _, command := range []string{"AT+CEREG?", "AT+CGREG?", "AT+CREG?"} {
+		if value, err := b.command(ctx, command, 3*time.Second); err == nil && registrationStatus(value) {
+			out.Registered = true
+			break
+		}
 	}
 	if value, err := b.command(ctx, "AT+COPS?", 3*time.Second); err == nil {
 		out.Operator = quotedField(value)
@@ -93,6 +98,9 @@ func (b *CommandBackend) Radio(ctx context.Context) (RadioState, error) {
 		fields := quotedFields(value)
 		if len(fields) > 0 {
 			out.NetworkMode = fields[0]
+		}
+		if len(fields) > 2 {
+			out.RadioBand = fields[2]
 		}
 	}
 	if value, err := b.command(ctx, "AT+CSQ", 3*time.Second); err == nil {
@@ -104,6 +112,9 @@ func (b *CommandBackend) Radio(ctx context.Context) (RadioState, error) {
 	}
 	if value, err := b.command(ctx, `AT+QENG="servingcell"`, 3*time.Second); err == nil {
 		if cell, ok := modem.ParseServingCellLTEInfo(value); ok {
+			if out.RadioBand == "" {
+				out.RadioBand = cell.Band
+			}
 			out.SignalRSRP = cell.RSRP
 			out.SignalRSRQ = cell.RSRQ
 			out.SignalSINR = cell.SINR
@@ -285,7 +296,6 @@ func (b *CommandBackend) Capabilities(context.Context) device.CapabilitySet {
 		device.CapabilityNetworkStatus:  "AT usbnet and radio status queries",
 		device.CapabilityNetworkControl: "AT usbnet mode control",
 		device.CapabilityCallMonitor:    "AT+CLCC voice call monitor",
-		device.CapabilityGPS:            "Quectel QGPS location commands",
 	}
 	if _, ok := b.transport.(ATInteractiveTransport); ok {
 		caps[device.CapabilitySMSSend] = "AT+CMGS interactive PDU submission"
@@ -361,6 +371,7 @@ func (b *CommandBackend) Status(ctx context.Context) (map[string]any, error) {
 	result := map[string]any{"mode": mode}
 	if radio, radioErr := b.Radio(ctx); radioErr == nil {
 		result["network_mode"] = radio.NetworkMode
+		result["radio_band"] = radio.RadioBand
 		result["registered"] = radio.Registered
 		result["signal_dbm"] = radio.SignalDBM
 	}
@@ -576,7 +587,7 @@ func quotedFields(value string) []string {
 }
 
 func registrationStatus(value string) bool {
-	match := regexp.MustCompile(`\+CREG:\s*\d+\s*,?\s*(\d+)`).FindStringSubmatch(value)
+	match := regexp.MustCompile(`\+(?:CE|CG|C)REG:\s*\d+\s*,?\s*(\d+)`).FindStringSubmatch(strings.ToUpper(value))
 	if len(match) != 2 {
 		return false
 	}

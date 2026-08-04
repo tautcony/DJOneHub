@@ -33,36 +33,13 @@ final class BridgeEventTests: XCTestCase {
 
     func testSMSReceivedEventDecodes() {
         let json = """
-        {"id": 46, "type": "sms.received", "version": 1, "occurred_at": "2026-08-02T10:00:05Z", "data": {"index": 7, "sender": "10086", "body": "您的验证码是 482913", "code": "482913", "received_at": "2026-08-02T10:00:05Z"}}
+        {"id": 46, "type": "sms.received", "version": 1, "occurred_at": "2026-08-02T10:00:05Z", "data": {"index": 7, "sender": "10086", "body": "您的验证码是 482913", "received_at": "2026-08-02T10:00:05Z"}}
         """
         let event = try! XCTUnwrap(BridgeEvent.parse(json))
         let message = try! XCTUnwrap(event.decode(SMSMessageEvent.self))
         XCTAssertEqual(message.index, 7)
         XCTAssertEqual(message.sender, "10086")
         XCTAssertEqual(message.body, "您的验证码是 482913")
-        XCTAssertEqual(message.code, "482913")
-    }
-
-    func testGPSUpdatedEventDecodesWithFix() {
-        let json = """
-        {"id": 47, "type": "gps.updated", "version": 1, "occurred_at": "2026-08-02T10:00:00Z", "data": {"enabled": true, "fix": {"utc": "100000.000", "latitude": "31.2304", "longitude": "121.4737", "hdop": "1.1", "satellites": "12"}, "last_checked": "2026-08-02T10:00:00Z"}}
-        """
-        let event = try! XCTUnwrap(BridgeEvent.parse(json))
-        let status = try! XCTUnwrap(event.decode(GPSUpdateEvent.self))
-        XCTAssertTrue(status.enabled)
-        let fix = try! XCTUnwrap(status.fix)
-        XCTAssertEqual(fix.latitude, "31.2304")
-        XCTAssertEqual(fix.satellites, "12")
-    }
-
-    func testGPSUpdatedSearchingDecodesWithoutFix() {
-        let json = """
-        {"id": 48, "type": "gps.updated", "version": 1, "occurred_at": "2026-08-02T10:00:15Z", "data": {"enabled": true, "last_checked": "2026-08-02T10:00:15Z"}}
-        """
-        let event = try! XCTUnwrap(BridgeEvent.parse(json))
-        let status = try! XCTUnwrap(event.decode(GPSUpdateEvent.self))
-        XCTAssertTrue(status.enabled)
-        XCTAssertNil(status.fix)
     }
 
     func testNetworkUpdatedEventDecodes() {
@@ -120,10 +97,10 @@ final class BridgeEventTests: XCTestCase {
         XCTAssertEqual(NotificationText.displayNumber("  "), "未知号码")
         XCTAssertEqual(NotificationText.displayNumber("10086"), "10086")
 
-        let code = SMSMessageEvent(index: 1, sender: "10086", recipient: nil, body: "您的验证码是 482913", code: "482913", receivedAt: Date())
-        XCTAssertEqual(NotificationText.smsPreview(code), "验证码 482913")
+        let message = SMSMessageEvent(index: 1, sender: "10086", recipient: nil, body: "您的验证码是 482913", receivedAt: Date())
+        XCTAssertEqual(NotificationText.smsPreview(message), "您的验证码是 482913")
 
-        let long = SMSMessageEvent(index: 2, sender: "10086", recipient: nil, body: "第一行\n第二行以及一段很长很长的短信正文", code: nil, receivedAt: Date())
+        let long = SMSMessageEvent(index: 2, sender: "10086", recipient: nil, body: "第一行\n第二行以及一段很长很长的短信正文", receivedAt: Date())
         XCTAssertEqual(NotificationText.smsPreview(long, limit: 8), "第一行 第二行以…")
     }
 

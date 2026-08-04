@@ -39,7 +39,6 @@ func Adapt(legacy DeviceBackend) *BusinessAdapter {
 	if _, ok := legacy.(RawATBackend); ok {
 		a.caps[device.CapabilityRawAT] = ""
 		a.caps[device.CapabilityCallMonitor] = "AT voice call commands"
-		a.caps[device.CapabilityGPS] = "Quectel GPS commands"
 	}
 	if _, ok := legacy.(Rebooter); ok {
 		a.caps[device.CapabilityDeviceControl] = "backend device control"
@@ -89,7 +88,7 @@ func (a *BusinessAdapter) Radio(ctx context.Context) (RadioState, error) {
 		return RadioState{}, err
 	}
 	signal, _ := provider.GetSignalInfo(ctx)
-	out := RadioState{Registered: serving.RegStatus == 1 || serving.RegStatus == 5, Operator: serving.Operator, NetworkMode: serving.NetworkMode}
+	out := RadioState{Registered: serving.RegStatus == 1 || serving.RegStatus == 5, Operator: serving.Operator, NetworkMode: serving.NetworkMode, RadioBand: serving.RadioBand}
 	if signal != nil {
 		out.SignalDBM, out.SignalRSRP, out.SignalRSRQ, out.SignalSINR = signal.RSSI, signal.RSRP, signal.RSRQ, signal.SINR
 	}

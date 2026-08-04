@@ -6,7 +6,6 @@ export type ViewID =
   | 'sms'
   | 'esim'
   | 'network'
-  | 'gps'
   | 'raw-at'
   | 'vowifi'
   | 'notifications'
@@ -18,7 +17,6 @@ export const viewPaths: Record<ViewID, string> = {
   sms: '/sms',
   esim: '/esim',
   network: '/network',
-  gps: '/gps',
   'raw-at': '/raw-at',
   vowifi: '/vowifi',
   notifications: '/notifications',
