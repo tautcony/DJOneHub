@@ -70,13 +70,13 @@ func (s *Service) Status(ctx context.Context) (Status, error) {
 	if err != nil {
 		return out, err
 	}
-	out.Radio, err = b.Radio(ctx)
-	if err != nil {
-		return out, err
+	// 单项能力查询失败(如无 SIM 时 AT 返回 +CME ERROR: 10)不使整个状态失效:
+	// 设备身份仍然有效,前端仍可展示已检测到的模组,错误记入 LastError 提示。
+	if out.Radio, err = b.Radio(ctx); err != nil {
+		out.Snapshot.LastError = err.Error()
 	}
-	out.SIM, err = b.SIM(ctx)
-	if err != nil {
-		return out, err
+	if out.SIM, err = b.SIM(ctx); err != nil && out.Snapshot.LastError == "" {
+		out.Snapshot.LastError = err.Error()
 	}
 	return out, nil
 }

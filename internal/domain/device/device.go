@@ -140,6 +140,7 @@ type Identity struct {
 type Candidate struct {
 	Identity         Identity          `json:"identity"`
 	ATPort           string            `json:"at_port,omitempty"`
+	ATPorts          []string          `json:"at_ports,omitempty"`
 	ControlPath      string            `json:"control_path,omitempty"`
 	NetworkInterface string            `json:"network_interface,omitempty"`
 	Metadata         map[string]string `json:"metadata,omitempty"`
