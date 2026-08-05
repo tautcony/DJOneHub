@@ -255,6 +255,10 @@ func (a *App) Start(ctx context.Context) {
 		// A failed policy subscription must not take the device services down.
 		_ = err
 	}
+	// The initial runtime scan may publish before the notification subscriber
+	// is ready. Send the current snapshot explicitly so the native status item
+	// always has a state, including when no device or SIM is present.
+	a.NativeUI.UpdateDeviceStatus(a.Runtime.Snapshot())
 }
 
 func (a *App) Stop() {

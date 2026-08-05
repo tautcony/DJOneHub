@@ -25,7 +25,6 @@ DJOneHub 的 macOS 用户发行入口只有 DMG。DMG 包含一个带原生 UI �
 - Go 1.26.3 或兼容版本
 - Node.js 和 npm
 - Xcode Command Line Tools
-- `pkg-config`
 - 可访问 GitHub Release 的网络，用于下载并校验 libusb 1.0.30
 
 Apple Silicon DMG：
@@ -50,6 +49,8 @@ dist/DJOneHub-macOS-universal-<version>.dmg.sha256
 ```
 
 `scripts/build-macos.sh` 按架构完成 App、依赖、DMG 和 SHA-256 校验文件的全部构建；`scripts/build-macos-dev.sh` 只生成本地开发测试 App。
+
+libusb 源码包会缓存到 `dist/cache/libusb/`，后续构建会复用并校验本地缓存。需要强制重新下载时，在命令末尾添加 `--redownload`。
 
 ## 本地开发
 

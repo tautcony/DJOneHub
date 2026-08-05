@@ -69,10 +69,10 @@
 ### 1.5 NetworkUpdateEvent（新发布点的 network.updated 载荷）
 
 ```json
-{ "mode": "usbnet", "network_mode": "LTE", "registered": true, "operator": "CHN-UNICOM", "signal_dbm": -83 }
+{ "mode": "usbnet", "network_mode": "LTE", "registered": true, "operator": "CHN-UNICOM", "signal_dbm": -83, "sim_inserted": true, "sim_known": true }
 ```
 
-驱动 4G 菜单栏模型；网络模式发布点（`{"mode": ...}`）保持现状，后续逐步收敛。
+驱动常驻设备状态栏模型，包括设备连接、SIM 卡插入状态和 4G 网络状态；网络模式发布点（`{"mode": ...}`）保持现状，后续逐步收敛。
 
 ## 2. 事件产生位置
 

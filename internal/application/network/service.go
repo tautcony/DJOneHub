@@ -246,10 +246,18 @@ func (s *Service) publishRadioState(ctx context.Context) {
 		return
 	}
 	radio, err := b.Radio(ctx)
-	if err != nil {
+	sim, simErr := b.SIM(ctx)
+	if err != nil && simErr != nil {
 		return
 	}
-	state := notification.NetworkUpdateEvent{NetworkMode: radio.NetworkMode, Registered: radio.Registered, Operator: radio.Operator, SignalDBM: radio.SignalDBM}
+	state := notification.NetworkUpdateEvent{
+		NetworkMode: radio.NetworkMode,
+		Registered:  radio.Registered,
+		SIMInserted: sim.Inserted,
+		SIMKnown:    simErr == nil,
+		Operator:    radio.Operator,
+		SignalDBM:   radio.SignalDBM,
+	}
 	s.mu.Lock()
 	changed := s.lastPublished == nil || *s.lastPublished != state
 	if changed {

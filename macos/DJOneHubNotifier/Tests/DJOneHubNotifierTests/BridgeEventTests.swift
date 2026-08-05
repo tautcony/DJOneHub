@@ -44,13 +44,26 @@ final class BridgeEventTests: XCTestCase {
 
     func testNetworkUpdatedEventDecodes() {
         let json = """
-        {"id": 49, "type": "network.updated", "version": 1, "occurred_at": "2026-08-02T10:00:10Z", "data": {"network_mode": "LTE", "registered": true, "operator": "CHN-UNICOM", "signal_dbm": -83}}
+        {"id": 49, "type": "network.updated", "version": 1, "occurred_at": "2026-08-02T10:00:10Z", "data": {"network_mode": "LTE", "registered": true, "operator": "CHN-UNICOM", "signal_dbm": -83, "sim_inserted": false, "sim_known": true}}
         """
         let event = try! XCTUnwrap(BridgeEvent.parse(json))
         let state = try! XCTUnwrap(event.decode(NetworkUpdateEvent.self))
         XCTAssertTrue(state.registered)
         XCTAssertEqual(state.networkMode, "LTE")
         XCTAssertEqual(state.signalDBM, -83)
+        XCTAssertEqual(state.simInserted, false)
+        XCTAssertEqual(state.simKnown, true)
+    }
+
+    func testDeviceStatusEventDecodes() {
+        let json = """
+        {"id": 51, "type": "device.status.changed", "version": 1, "occurred_at": "2026-08-02T10:00:10Z", "data": {"state": "ready", "identity": {"stable_id": "usb-1", "manufacturer": "Quectel", "product": "EC25"}, "backend": "at"}}
+        """
+        let event = try! XCTUnwrap(BridgeEvent.parse(json))
+        let status = try! XCTUnwrap(event.decode(DeviceStatusEvent.self))
+        XCTAssertEqual(status.state, "ready")
+        XCTAssertEqual(status.identity?.manufacturer, "Quectel")
+        XCTAssertEqual(status.backend, "at")
     }
 
     func testDeviceOfflineEventDecodes() {

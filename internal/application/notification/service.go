@@ -15,6 +15,7 @@ import (
 // macOS native bridge implements it; tests use a recording fake. HideCall
 // carries the ended call so the sink can correlate it with the card shown.
 type Sink interface {
+	UpdateDeviceStatus(snapshot device.Snapshot)
 	ShowCall(call CallEvent)
 	UpdateCall(call CallEvent)
 	ShowMissedCall(call CallEvent)
@@ -152,6 +153,7 @@ func (s *Service) handle(event runtime.Event) {
 		}
 	case EventDeviceStatusChanged:
 		if snapshot, ok := event.Data.(device.Snapshot); ok {
+			s.config.Sink.UpdateDeviceStatus(snapshot)
 			s.applyDeviceState(snapshot.State, nil)
 		}
 	case EventDeviceOffline:

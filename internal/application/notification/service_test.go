@@ -12,6 +12,7 @@ import (
 
 type recordingSink struct {
 	mu        sync.Mutex
+	statuses  []device.Snapshot
 	shownCall []CallEvent
 	updated   []CallEvent
 	missed    []CallEvent
@@ -19,6 +20,10 @@ type recordingSink struct {
 	offline   []DeviceOfflineEvent
 	network   []NetworkUpdateEvent
 	hidden    int
+}
+
+func (s *recordingSink) UpdateDeviceStatus(snapshot device.Snapshot) {
+	s.record(func() { s.statuses = append(s.statuses, snapshot) })
 }
 
 func (s *recordingSink) ShowCall(call CallEvent) {

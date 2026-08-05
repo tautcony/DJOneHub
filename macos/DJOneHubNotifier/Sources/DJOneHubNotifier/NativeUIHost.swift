@@ -82,8 +82,7 @@ final class NativeUIHost {
     }
 
     private func deliver(_ event: BridgeEvent) {
-        guard let coordinator else { return }
-        guard ready else {
+        guard ready, let coordinator else {
             pendingEvents.append(event)
             return
         }
@@ -115,8 +114,9 @@ final class NativeUIHost {
     }
 }
 
-// UIAppDelegate owns system notifications and the cellular menu bar status
-// item. It is driven entirely by bridge events: no polling, no HTTP, no dedup.
+// UIAppDelegate owns system notifications and the persistent DJOneHub menu bar
+// status item. It is driven entirely by bridge events: no polling, no HTTP,
+// no dedup.
 @MainActor
 final class UIAppDelegate: NSObject, NSApplicationDelegate, @MainActor UNUserNotificationCenterDelegate {
     private let notificationService = NativeNotificationService()
@@ -124,7 +124,9 @@ final class UIAppDelegate: NSObject, NSApplicationDelegate, @MainActor UNUserNot
     private var notificationPreferences = NotificationPreferences.system
     private var webURL: URL?
 
-    private var cellularStatusItem: NSStatusItem?
+    private var statusItem: NSStatusItem?
+    private var deviceStatus = DeviceStatusEvent(state: "absent", identity: nil, backend: nil, lastError: nil)
+    private var networkStatus = NetworkUpdateEvent(mode: nil, networkMode: nil, registered: false, operatorName: nil, signalDBM: nil, simInserted: nil, simKnown: nil)
     private var activeCallID: String?
     private var activeCallNumber: String?
     private var activeCall: CallEvent?
@@ -148,6 +150,7 @@ final class UIAppDelegate: NSObject, NSApplicationDelegate, @MainActor UNUserNot
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        installStatusItem()
         notificationService.configure(delegate: self) { status in
             NativeUIHost.shared.sendCommand(
                 Command.notificationPermissionStatus,
@@ -158,7 +161,7 @@ final class UIAppDelegate: NSObject, NSApplicationDelegate, @MainActor UNUserNot
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        removeCellularStatusItem()
+        removeStatusItem()
         panel.hide()
     }
 
@@ -166,6 +169,10 @@ final class UIAppDelegate: NSObject, NSApplicationDelegate, @MainActor UNUserNot
 
     func handleEvent(_ event: BridgeEvent) {
         switch event.type {
+        case BridgeEventType.deviceStatusChanged:
+            if let status = event.decode(DeviceStatusEvent.self) {
+                applyDeviceStatus(status)
+            }
         case BridgeEventType.callIncoming:
             guard let call = event.decode(CallEvent.self) else { return }
             activeCallID = call.id
@@ -394,42 +401,106 @@ final class UIAppDelegate: NSObject, NSApplicationDelegate, @MainActor UNUserNot
     }
 
     private func applyNetwork(_ state: NetworkUpdateEvent) {
-        guard state.registered,
-              Self.isCellularNetwork(state.networkMode),
-              let signalDBM = state.signalDBM
-        else {
-            removeCellularStatusItem()
-            return
+        networkStatus = state
+        updateStatusItem()
+    }
+
+    private func applyDeviceStatus(_ status: DeviceStatusEvent) {
+        deviceStatus = status
+        updateStatusItem()
+    }
+
+    private func installStatusItem() {
+        guard statusItem == nil else { return }
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        item.button?.target = self
+        item.button?.action = #selector(handleStatusItemClick)
+        item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
+        statusItem = item
+        updateStatusItem()
+    }
+
+    private func updateStatusItem() {
+        guard let button = statusItem?.button else { return }
+        button.image = Self.statusImage(device: deviceStatus, network: networkStatus)
+        button.toolTip = statusSummary()
+        button.setAccessibilityLabel("DJOneHub：\(statusSummary())")
+    }
+
+    private func statusSummary() -> String {
+        switch deviceStatus.state {
+        case "ready":
+            if networkStatus.simKnown == true, networkStatus.simInserted != true {
+                return "设备已连接，未插入 SIM 卡"
+            }
+            if networkStatus.registered {
+                let mode = networkStatus.networkMode?.isEmpty == false ? networkStatus.networkMode! : "移动网络"
+                let operatorName = networkStatus.operatorName?.isEmpty == false ? " · \(networkStatus.operatorName!)" : ""
+                return "\(mode) 已注册\(operatorName)"
+            }
+            return "设备已连接，等待网络注册"
+        case "connecting", "initializing", "discovered":
+            return "正在连接设备"
+        case "degraded":
+            return "设备连接异常"
+        case "disconnected", "absent":
+            return "未检测到设备"
+        default:
+            return "设备状态未知"
         }
-        showCellularStatusItem(signalLevel: Self.cellularSignalLevel(signalDBM))
     }
 
-    private func showCellularStatusItem(signalLevel: Int) {
-        if cellularStatusItem == nil {
-            cellularStatusItem = NSStatusBar.system.statusItem(withLength: 42)
-            cellularStatusItem?.button?.target = self
-            cellularStatusItem?.button?.action = #selector(openDJOneHubFromCellularMenuBar)
+    private func removeStatusItem() {
+        guard let statusItem else { return }
+        NSStatusBar.system.removeStatusItem(statusItem)
+        self.statusItem = nil
+    }
+
+    @objc private func handleStatusItemClick(_ sender: NSStatusBarButton) {
+        if NSApp.currentEvent?.type == .rightMouseUp {
+            showStatusMenu(from: sender)
+        } else {
+            openDashboard()
         }
-        cellularStatusItem?.button?.image = Self.cellularStatusImage(signalLevel: signalLevel)
-        cellularStatusItem?.button?.toolTip = "DJOneHub 4G 正在接管网络；点击打开控制面板"
     }
 
-    private func removeCellularStatusItem() {
-        guard let cellularStatusItem else { return }
-        NSStatusBar.system.removeStatusItem(cellularStatusItem)
-        self.cellularStatusItem = nil
+    private func showStatusMenu(from button: NSStatusBarButton) {
+        let menu = NSMenu()
+        let status = NSMenuItem(title: statusSummary(), action: nil, keyEquivalent: "")
+        status.isEnabled = false
+        menu.addItem(status)
+
+        let card = NSMenuItem(title: simSummary(), action: nil, keyEquivalent: "")
+        card.isEnabled = false
+        menu.addItem(card)
+        menu.addItem(.separator())
+
+        let open = NSMenuItem(title: "打开 DJOneHub", action: #selector(openDashboardFromMenu), keyEquivalent: "")
+        open.target = self
+        menu.addItem(open)
+
+        let quit = NSMenuItem(title: "退出 DJOneHub", action: #selector(quitFromMenu), keyEquivalent: "q")
+        quit.target = self
+        menu.addItem(quit)
+
+        menu.popUp(positioning: nil, at: NSPoint(x: button.bounds.midX, y: button.bounds.minY), in: button)
     }
 
-    @objc private func openDJOneHubFromCellularMenuBar() {
+    private func simSummary() -> String {
+        guard deviceStatus.state == "ready" else { return "SIM 卡：设备不可用" }
+        guard networkStatus.simKnown == true else { return "SIM 卡：状态未知" }
+        return networkStatus.simInserted == true ? "SIM 卡：已插入" : "SIM 卡：未插入"
+    }
+
+    @objc private func openDashboardFromMenu() {
         openDashboard()
     }
 
-    // MARK: - Drawing helpers (unchanged from the legacy notifier)
-
-    private static func isCellularNetwork(_ mode: String?) -> Bool {
-        let normalized = mode?.uppercased() ?? ""
-        return normalized.contains("LTE") || normalized.contains("4G")
+    @objc private func quitFromMenu() {
+        NativeUIHost.shared.stop()
     }
+
+    // MARK: - Drawing helpers (unchanged from the legacy notifier)
 
     private static func cellularSignalLevel(_ dbm: Int) -> Int {
         if dbm >= -60 { return 4 }
@@ -466,6 +537,68 @@ final class UIAppDelegate: NSObject, NSApplicationDelegate, @MainActor UNUserNot
         image.unlockFocus()
         image.isTemplate = true
         image.accessibilityDescription = "DJOneHub 4G 信号 \(signalLevel) 格"
+        return image
+    }
+
+    private static func statusImage(device: DeviceStatusEvent, network: NetworkUpdateEvent) -> NSImage {
+        if device.state == "ready", network.simKnown == true, network.simInserted != true {
+            return simStatusImage(inserted: false)
+        }
+        if device.state == "ready" {
+            let signalLevel = network.registered && network.signalDBM != nil
+                ? cellularSignalLevel(network.signalDBM!)
+                : 0
+            return cellularStatusImage(signalLevel: signalLevel)
+        }
+        return deviceStatusImage(state: device.state)
+    }
+
+    private static func deviceStatusImage(state: String) -> NSImage {
+        let image = NSImage(size: NSSize(width: 22, height: 18))
+        image.lockFocus()
+        let color = NSColor.black
+        color.setStroke()
+        let body = NSBezierPath(roundedRect: NSRect(x: 3, y: 2, width: 16, height: 14), xRadius: 2, yRadius: 2)
+        body.lineWidth = 1.6
+        body.stroke()
+        NSBezierPath(roundedRect: NSRect(x: 6, y: 5, width: 10, height: 2), xRadius: 1, yRadius: 1).fill()
+        NSBezierPath(roundedRect: NSRect(x: 6, y: 9, width: 7, height: 2), xRadius: 1, yRadius: 1).fill()
+        if state != "connecting" && state != "initializing" && state != "discovered" {
+            let slash = NSBezierPath()
+            slash.move(to: NSPoint(x: 3, y: 2))
+            slash.line(to: NSPoint(x: 19, y: 16))
+            slash.lineWidth = 1.8
+            slash.stroke()
+        }
+        image.unlockFocus()
+        image.isTemplate = true
+        image.accessibilityDescription = state == "degraded" ? "设备连接异常" : "未检测到设备"
+        return image
+    }
+
+    private static func simStatusImage(inserted: Bool) -> NSImage {
+        let image = NSImage(size: NSSize(width: 22, height: 18))
+        image.lockFocus()
+        NSColor.black.setStroke()
+        let body = NSBezierPath()
+        body.move(to: NSPoint(x: 5, y: 2))
+        body.line(to: NSPoint(x: 15, y: 2))
+        body.line(to: NSPoint(x: 19, y: 6))
+        body.line(to: NSPoint(x: 19, y: 16))
+        body.line(to: NSPoint(x: 5, y: 16))
+        body.close()
+        body.lineWidth = 1.6
+        body.stroke()
+        if !inserted {
+            let slash = NSBezierPath()
+            slash.move(to: NSPoint(x: 4, y: 2))
+            slash.line(to: NSPoint(x: 19, y: 17))
+            slash.lineWidth = 1.8
+            slash.stroke()
+        }
+        image.unlockFocus()
+        image.isTemplate = true
+        image.accessibilityDescription = inserted ? "SIM 卡已插入" : "未插入 SIM 卡"
         return image
     }
 

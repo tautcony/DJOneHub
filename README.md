@@ -109,7 +109,7 @@ AT 调试可以改变网络注册、PDP、USB 模式、短信存储和 SIM 状�
 
 - Go `1.26.3` 或兼容版本，版本约束见 `go.mod`
 - Node.js 和 npm，用于构建 Vue 前端
-- macOS 本地构建还需要 Xcode Command Line Tools、`pkg-config` 和可用的 Apple 编译工具链
+- macOS 本地构建还需要 Xcode Command Line Tools 和可用的 Apple 编译工具链
 - 构建 macOS 发行包时，需要从 GitHub 下载并校验 libusb 1.0.30 源码
 
 安装前端依赖：
@@ -182,6 +182,8 @@ npm --prefix web run build
 ```sh
 ./scripts/build-macos.sh universal v0.1.0-preview
 ```
+
+libusb 源码包会缓存到 `dist/cache/libusb/`。需要强制重新下载时，在命令末尾添加 `--redownload`。
 
 构建跨平台基础二进制：
 

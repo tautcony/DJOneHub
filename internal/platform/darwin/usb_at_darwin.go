@@ -3,8 +3,6 @@
 package darwin
 
 /*
-#cgo CFLAGS: -I/opt/homebrew/include -I/usr/local/include
-#cgo LDFLAGS: -L/opt/homebrew/lib -L/usr/local/lib -lusb-1.0
 #include <libusb-1.0/libusb.h>
 */
 import "C"

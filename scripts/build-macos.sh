@@ -6,17 +6,28 @@ set -eu
 
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 ARCH=${1:-arm64}
-VERSION=${2:-v0.1.5-preview}
+VERSION=v0.1.5-preview
+REDOWNLOAD=0
+case "${2:-}" in
+--redownload) REDOWNLOAD=1 ;;
+"") ;;
+*) VERSION=$2 ;;
+esac
+case "${3:-}" in
+--redownload) REDOWNLOAD=1 ;;
+"") ;;
+*) printf '%s\n' "Usage: $0 <arm64|universal> [version] [--redownload]" >&2; exit 2 ;;
+esac
 case "${ARCH}" in
 arm64|universal) ;;
-*) echo "Usage: $0 <arm64|universal> [version]" >&2; exit 2 ;;
+*) echo "Usage: $0 <arm64|universal> [version] [--redownload]" >&2; exit 2 ;;
 esac
 
 if [ "${ARCH}" = "arm64" ] && [ "$(uname -m)" != "arm64" ]; then
 	printf '%s\n' "The arm64 package must be built on Apple Silicon." >&2
 	exit 1
 fi
-for command in go curl pkg-config npm swift clang codesign hdiutil; do
+for command in go curl npm swift clang codesign hdiutil; do
 	if ! command -v "${command}" >/dev/null 2>&1; then
 		printf '%s\n' "${command} is required to build the macOS package." >&2
 		exit 1
@@ -28,6 +39,11 @@ if [ "${ARCH}" = "universal" ] && ! command -v lipo >/dev/null 2>&1; then
 fi
 
 DIST_DIR="${ROOT_DIR}/dist"
+LIBUSB_VERSION=1.0.30
+LIBUSB_SHA256=fea36f34f9156400209595e300840767ab1a385ede1dc7ee893015aea9c6dbaf
+LIBUSB_URL="https://github.com/libusb/libusb/releases/download/v${LIBUSB_VERSION}/libusb-${LIBUSB_VERSION}.tar.bz2"
+LIBUSB_CACHE_DIR="${DIST_DIR}/cache/libusb"
+LIBUSB_ARCHIVE="${LIBUSB_CACHE_DIR}/libusb-${LIBUSB_VERSION}.tar.bz2"
 PACKAGE_NAME="DJOneHub-macOS-${ARCH}-${VERSION}"
 STAGE_DIR="${DIST_DIR}/release/${PACKAGE_NAME}"
 APP_DIR="${STAGE_DIR}/DJOneHub.app"
@@ -35,22 +51,23 @@ APP_BINARY="${APP_DIR}/Contents/MacOS/djonehub"
 DMG_STAGE="${DIST_DIR}/dmg-stage-${ARCH}"
 DMG="${DIST_DIR}/${PACKAGE_NAME}.dmg"
 CHECKSUM="${DMG}.sha256"
-LIBUSB_VERSION=1.0.30
-LIBUSB_SHA256=fea36f34f9156400209595e300840767ab1a385ede1dc7ee893015aea9c6dbaf
-LIBUSB_URL="https://github.com/libusb/libusb/releases/download/v${LIBUSB_VERSION}/libusb-${LIBUSB_VERSION}.tar.bz2"
 BUILD_ROOT="${TMPDIR:-/tmp}/djonehub-macos-${ARCH}"
-LIBUSB_ARCHIVE="${BUILD_ROOT}/libusb-${LIBUSB_VERSION}.tar.bz2"
 LIBUSB_SOURCE="${BUILD_ROOT}/libusb-source"
+LIBUSB_INCLUDE="${BUILD_ROOT}/libusb-include"
 
 rm -rf "${STAGE_DIR}" "${DMG_STAGE}" "${BUILD_ROOT}"
-mkdir -p "${APP_DIR}/Contents/MacOS" "${APP_DIR}/Contents/Resources" "${APP_DIR}/Contents/lib" "${STAGE_DIR}/licenses" "${BUILD_ROOT}"
+mkdir -p "${APP_DIR}/Contents/MacOS" "${APP_DIR}/Contents/Resources" "${APP_DIR}/Contents/lib" "${STAGE_DIR}/licenses" "${BUILD_ROOT}" "${LIBUSB_CACHE_DIR}"
 
-if [ ! -f "${LIBUSB_ARCHIVE}" ]; then
-	curl -fL "${LIBUSB_URL}" -o "${LIBUSB_ARCHIVE}"
+if [ "${REDOWNLOAD}" -eq 1 ] || [ ! -f "${LIBUSB_ARCHIVE}" ]; then
+	printf '%s\n' "Downloading libusb ${LIBUSB_VERSION}..."
+	curl -fL "${LIBUSB_URL}" -o "${LIBUSB_ARCHIVE}.tmp"
+	mv "${LIBUSB_ARCHIVE}.tmp" "${LIBUSB_ARCHIVE}"
+else
+	printf '%s\n' "Using cached libusb archive: ${LIBUSB_ARCHIVE}"
 fi
 ACTUAL_SHA256=$(shasum -a 256 "${LIBUSB_ARCHIVE}" | awk '{print $1}')
 if [ "${ACTUAL_SHA256}" != "${LIBUSB_SHA256}" ]; then
-	printf '%s\n' "libusb source checksum mismatch." >&2
+	printf '%s\n' "libusb source checksum mismatch; use --redownload to fetch it again." >&2
 	exit 1
 fi
 
@@ -63,6 +80,8 @@ tar -xjf "${LIBUSB_ARCHIVE}" -C "${LIBUSB_SOURCE}" --strip-components=1
 		--disable-static --enable-shared --disable-dependency-tracking >/dev/null
 	sed -i '' 's/#define HAVE_PIPE2 1/\/\* #undef HAVE_PIPE2 \*\//' config.h
 )
+mkdir -p "${LIBUSB_INCLUDE}/libusb-1.0"
+ln -s "${LIBUSB_SOURCE}/libusb/libusb.h" "${LIBUSB_INCLUDE}/libusb-1.0/libusb.h"
 
 LIBUSB_SOURCES="\
 libusb/core.c \
@@ -106,7 +125,8 @@ if [ "${ARCH}" = "arm64" ]; then
 		swift build --disable-sandbox -c release
 	)
 	GOCACHE="${BUILD_ROOT}/go-cache"; rm -rf "${GOCACHE}"; mkdir -p "${GOCACHE}"
-	GOCACHE="${GOCACHE}" PKG_CONFIG_PATH="${LIBUSB_SOURCE}" \
+	GOCACHE="${GOCACHE}" CGO_CFLAGS="-I${LIBUSB_INCLUDE}" \
+		CGO_LDFLAGS="-L${LIBUSB_ARM}/lib -lusb-1.0" \
 		MACOSX_DEPLOYMENT_TARGET=13.0 CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 \
 		go build -p 2 -trimpath -buildvcs=false -ldflags="-s -w" -o "${APP_BINARY}" ./cmd/djonehub
 	cp "${LIBUSB_ARM}/lib/libusb-1.0.0.dylib" "${APP_DIR}/Contents/lib/libusb-1.0.0.dylib"
@@ -117,24 +137,6 @@ else
 	build_libusb x86_64 "${LIBUSB_X86}"
 	lipo -create "${LIBUSB_ARM}/lib/libusb-1.0.0.dylib" "${LIBUSB_X86}/lib/libusb-1.0.0.dylib" \
 		-output "${APP_DIR}/Contents/lib/libusb-1.0.0.dylib"
-
-	PC_SHIM="${BUILD_ROOT}/pc-shim"
-	mkdir -p "${PC_SHIM}"
-	cat > "${PC_SHIM}/pkg-config" <<EOF
-#!/bin/sh
-case "\$*" in
-  *libusb-1.0*)
-    out=""
-    if [ "\${PKG_ARCH:-arm64}" = "x86_64" ] || [ "\${PKG_ARCH:-arm64}" = "amd64" ]; then libdir="${LIBUSB_X86}/lib"; else libdir="${LIBUSB_ARM}/lib"; fi
-    case "\$*" in *--cflags*) out="-I${LIBUSB_SOURCE}/libusb \$out" ;; esac
-    case "\$*" in *--libs*) out="-L\${libdir} -lusb-1.0 \$out" ;; esac
-    [ -n "\$out" ] && echo "\$out"
-    exit 0
-    ;;
-esac
-exec /usr/bin/pkg-config "\$@"
-EOF
-	chmod 755 "${PC_SHIM}/pkg-config"
 
 	NOTIFIER_SRC="${ROOT_DIR}/macos/DJOneHubNotifier"
 	SWIFT_CACHE="${BUILD_ROOT}/swift-cache"
@@ -157,8 +159,9 @@ EOF
 		arch=$1
 		cache="${BUILD_ROOT}/go-cache-${arch}"
 		rm -rf "${cache}"; mkdir -p "${cache}"
-		PATH="${PC_SHIM}:$PATH" PKG_ARCH="${arch}" GOCACHE="${cache}" \
-			PKG_CONFIG_PATH="" MACOSX_DEPLOYMENT_TARGET=13.0 CGO_ENABLED=1 GOOS=darwin GOARCH="${arch}" \
+		if [ "${arch}" = "arm64" ]; then libdir="${LIBUSB_ARM}/lib"; else libdir="${LIBUSB_X86}/lib"; fi
+		CGO_CFLAGS="-I${LIBUSB_INCLUDE}" CGO_LDFLAGS="-L${libdir} -lusb-1.0" GOCACHE="${cache}" \
+			MACOSX_DEPLOYMENT_TARGET=13.0 CGO_ENABLED=1 GOOS=darwin GOARCH="${arch}" \
 			go build -p 2 -trimpath -buildvcs=false -ldflags="-s -w" \
 			-o "${BUILD_ROOT}/djonehub-${arch}" ./cmd/djonehub
 	}

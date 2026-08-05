@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/iniwex5/vohive/internal/application/notification"
+	"github.com/iniwex5/vohive/internal/domain/device"
 	"github.com/iniwex5/vohive/internal/runtime"
 )
 
@@ -221,6 +222,10 @@ func (b *Bridge) Send(eventType string, data any) {
 }
 
 // Sink implementation: policy-approved prompts forwarded to the UI.
+
+func (b *Bridge) UpdateDeviceStatus(snapshot device.Snapshot) {
+	b.sendEvent(notification.EventDeviceStatusChanged, snapshot)
+}
 
 func (b *Bridge) ShowCall(call notification.CallEvent) {
 	b.sendEvent(notification.EventCallIncoming, call)

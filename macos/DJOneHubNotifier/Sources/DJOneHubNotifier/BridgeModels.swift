@@ -53,18 +53,40 @@ struct DeviceOfflineEvent: Codable, Equatable, Sendable {
 }
 
 struct NetworkUpdateEvent: Codable, Equatable, Sendable {
-    let mode: String?
-    let networkMode: String?
-    let registered: Bool
-    let operatorName: String?
-    let signalDBM: Int?
+	let mode: String?
+	let networkMode: String?
+	let registered: Bool
+	let operatorName: String?
+	let signalDBM: Int?
+	let simInserted: Bool?
+	let simKnown: Bool?
 
-    enum CodingKeys: String, CodingKey {
-        case mode, registered
-        case networkMode = "network_mode"
-        case operatorName = "operator"
-        case signalDBM = "signal_dbm"
-    }
+	enum CodingKeys: String, CodingKey {
+		case mode, registered, simInserted = "sim_inserted", simKnown = "sim_known"
+		case networkMode = "network_mode"
+		case operatorName = "operator"
+		case signalDBM = "signal_dbm"
+	}
+}
+
+struct DeviceStatusEvent: Codable, Equatable, Sendable {
+	let state: String
+	let identity: DeviceIdentityEvent?
+	let backend: String?
+	let lastError: String?
+}
+
+struct DeviceIdentityEvent: Codable, Equatable, Sendable {
+	let stableID: String?
+	let manufacturer: String?
+	let product: String?
+	let serialNumber: String?
+
+	enum CodingKeys: String, CodingKey {
+		case stableID = "stable_id"
+		case manufacturer, product
+		case serialNumber = "serial_number"
+	}
 }
 
 struct RejectResult: Codable, Equatable, Sendable {
@@ -113,7 +135,8 @@ struct Command: Codable, Equatable, Sendable {
 }
 
 enum BridgeEventType {
-    static let snapshot = "snapshot"
+	static let snapshot = "snapshot"
+	static let deviceStatusChanged = "device.status.changed"
     static let deviceOffline = "device.offline"
     static let callIncoming = "call.incoming"
     static let callUpdated = "call.updated"

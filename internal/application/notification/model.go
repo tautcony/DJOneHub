@@ -237,6 +237,8 @@ type NetworkUpdateEvent struct {
 	Mode        string `json:"mode,omitempty"`
 	NetworkMode string `json:"network_mode,omitempty"`
 	Registered  bool   `json:"registered"`
+	SIMInserted bool   `json:"sim_inserted"`
+	SIMKnown    bool   `json:"sim_known,omitempty"`
 	Operator    string `json:"operator,omitempty"`
 	SignalDBM   int    `json:"signal_dbm,omitempty"`
 }
