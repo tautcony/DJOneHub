@@ -505,6 +505,82 @@ button:disabled { cursor: not-allowed; }
 
 }
 
+.firmware-view { display: grid; gap: 18px; }
+.firmware-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+.firmware-status-grid { display: grid; gap: 20px; }
+.firmware-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 22px; margin: 0; }
+.firmware-fields > div { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 10px; align-items: baseline; min-width: 0; padding: 11px 0; border-bottom: 1px solid #f0f0f0; }
+.firmware-fields dt { color: var(--ui-text-secondary); font-size: 12px; }
+.firmware-fields dd { min-width: 0; margin: 0; color: var(--ui-text); font-size: 13px; overflow-wrap: anywhere; }
+.firmware-wrap { white-space: pre-wrap; }
+.firmware-usb-config { display: grid; gap: 10px; }
+.firmware-usb-config-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.firmware-usb-config-heading small { color: var(--ui-text-tertiary); font-size: 11px; }
+.firmware-subheading { color: var(--ui-text); font-size: 13px; font-weight: 600; }
+.firmware-usb-config-strip { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.firmware-usb-config-item { display: inline-flex; align-items: center; gap: 6px; min-width: 64px; padding: 6px 8px; border: 1px solid var(--ui-border); border-radius: 6px; color: var(--ui-text-secondary); cursor: help; font-size: 11px; outline: 0; }
+.firmware-usb-config-item:hover, .firmware-usb-config-item:focus-visible { border-color: var(--ui-border-strong); box-shadow: 0 0 0 2px rgb(0 0 0 / 6%); }
+.firmware-usb-config-item strong { color: var(--ui-text); font-weight: 600; }
+.firmware-usb-config-dot { width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; background: var(--ui-border-strong); }
+.firmware-usb-config-item.enabled .firmware-usb-config-dot { background: var(--ui-success); }
+.firmware-usb-config-item.disabled .firmware-usb-config-dot { background: var(--ui-text-tertiary); }
+.firmware-adb-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-bottom: 14px; padding: 12px 0; border-block: 1px solid #f0f0f0; }
+.firmware-adb-status { display: flex; min-width: 0; align-items: center; gap: 10px; }
+.firmware-adb-status + .firmware-adb-status { padding-left: 18px; border-left: 1px solid #f0f0f0; }
+.firmware-adb-status-copy { display: grid; min-width: 0; gap: 3px; }
+.firmware-adb-status-copy > span { color: var(--ui-text-tertiary); font-size: 11px; }
+.firmware-adb-status-copy strong { color: var(--ui-text); font-size: 13px; font-weight: 600; }
+.firmware-adb-status-copy small { color: var(--ui-text-tertiary); font-size: 10px; overflow-wrap: anywhere; }
+.firmware-adb-device-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 14px; }
+.firmware-adb-device-controls .ant-select { min-width: 220px; flex: 1 1 220px; }
+.firmware-shell { min-width: 0; }
+.firmware-shell-terminal { box-sizing: border-box; width: 100%; height: 390px; padding: 10px; overflow: hidden; border: 1px solid #303438; border-radius: 6px; background: #111315; }
+.firmware-shell-terminal .xterm { height: 100%; }
+.firmware-shell-terminal .xterm-viewport { scrollbar-color: #555 #111315; }
+.firmware-shell-status { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; color: var(--ui-text-secondary); font-size: 12px; }
+.status-indicator { display: flex; align-items: center; gap: 8px; color: var(--ui-text-secondary); font-size: 12px; }
+.status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ui-border-strong); }
+.status-dot.live { background: var(--ui-success); box-shadow: 0 0 0 3px rgb(82 196 26 / 12%); }
+.firmware-note { margin: 14px 0; color: var(--ui-text-secondary); font-size: 12px; line-height: 1.6; }
+.firmware-actions { flex-wrap: wrap; }
+.firmware-form { display: grid; gap: 2px; }
+.firmware-directory-button { display: inline-grid; width: 28px; height: 28px; place-items: center; padding: 0; border: 0; border-radius: 4px; color: var(--ui-text-secondary); background: transparent; cursor: pointer; }
+.firmware-directory-button:hover, .firmware-directory-button:focus-visible { color: var(--ui-text); background: var(--ui-surface-muted); outline: 0; }
+.firmware-directory-button:disabled { color: var(--ui-text-tertiary); cursor: not-allowed; }
+.firmware-usb-presets { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
+.firmware-preset { display: grid; gap: 4px; min-width: 0; padding: 12px; border: 1px solid var(--ui-border); border-radius: 7px; color: var(--ui-text); text-align: left; background: var(--ui-surface); }
+.firmware-preset:hover, .firmware-preset.active { border-color: #d9ad27; background: #fffbe8; }
+.firmware-preset strong { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.firmware-preset span { color: var(--ui-text-tertiary); font: 11px/1.2 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.firmware-usb-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.firmware-operation { display: grid; gap: 10px; }
+.firmware-operation-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 14px; color: var(--ui-text-secondary); font-size: 12px; }
+.firmware-operation-heading strong { min-width: 0; color: var(--ui-text); overflow-wrap: anywhere; }
+.firmware-operation-terminal { box-sizing: border-box; width: 100%; height: 390px; padding: 10px; overflow: hidden; border: 1px solid #303438; border-radius: 6px; background: #111315; }
+.firmware-operation-terminal .xterm { height: 100%; }
+.firmware-operation-terminal .xterm-viewport { scrollbar-color: #555 #111315; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
+@media (max-width: 920px) {
+  .firmware-columns { grid-template-columns: 1fr; }
+  .firmware-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 560px) {
+  .firmware-fields { grid-template-columns: 1fr; }
+  .firmware-fields > div { grid-template-columns: 96px minmax(0, 1fr); }
+  .firmware-usb-presets, .firmware-usb-fields { grid-template-columns: 1fr; }
+  .firmware-usb-config-heading { align-items: flex-start; flex-direction: column; gap: 3px; }
+  .firmware-adb-summary { grid-template-columns: 1fr; gap: 10px; }
+  .firmware-adb-status + .firmware-adb-status { padding-top: 10px; padding-left: 0; border-top: 1px solid #f0f0f0; border-left: 0; }
+  .firmware-adb-device-controls { align-items: stretch; }
+  .firmware-adb-device-controls .ant-select { min-width: 100%; }
+  .firmware-adb-device-controls .ant-btn { flex: 1 1 auto; }
+  .firmware-usb-config-strip { gap: 6px; }
+  .firmware-usb-config-item { flex: 1 1 auto; }
+  .firmware-actions .ant-btn { flex: 1 1 auto; }
+}
+
 /* Messages workspace: conversation navigation, thread history, and a stable composer. */
 .sms-workbench { display: grid; grid-template-columns: minmax(280px, 34%) minmax(0, 1fr); height: clamp(620px, calc(100vh - 210px), 780px); min-height: 620px; overflow: hidden; border: 1px solid var(--ui-border); border-radius: 8px; background: var(--ui-surface); box-shadow: var(--ui-shadow-soft); }
 .sms-thread-pane, .sms-chat-pane { min-width: 0; min-height: 0; }

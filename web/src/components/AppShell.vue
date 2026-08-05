@@ -2,6 +2,7 @@
 import type { Component } from 'vue'
 import {
   ApiOutlined,
+  CloudDownloadOutlined,
   BellOutlined,
   CloseOutlined,
   CodeOutlined,
@@ -62,6 +63,7 @@ const iconMap: Record<string, Component> = {
   'raw-at': CodeOutlined,
   notifications: BellOutlined,
   settings: SettingOutlined,
+  firmware: CloudDownloadOutlined,
 }
 
 function navIcon(id: string) {

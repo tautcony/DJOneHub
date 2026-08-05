@@ -38,6 +38,12 @@ export interface OperationStatus {
   error?: { code: string; message: string; retryable: boolean; details?: Record<string, unknown> }
 }
 
+export interface OperationLog {
+  operation_id: string
+  type: string
+  message: string
+}
+
 export interface SMSMessage {
   index: number
   sender?: string
@@ -112,6 +118,37 @@ export interface VowifiStatus {
   state?: string
   reason?: string
   [key: string]: unknown
+}
+
+export interface FirmwareStatus {
+  available: boolean
+  manufacturer?: string
+  model?: string
+  firmware?: string
+  adb_key_serial?: string
+  usb_config?: string
+  usb_config_fields?: Array<{ index: number; key: string; value: string }>
+  usb_id?: string
+  usb_vid?: string
+  usb_pid?: string
+  mode: 'normal' | 'adb' | 'edl' | 'unknown' | string
+  mode_reason?: string
+  adb: {
+    enabled: boolean
+    enabled_known: boolean
+    server_available: boolean
+    connected: boolean
+    serial?: string
+    state?: string
+    error?: string
+    devices?: Array<{ serial: string; state: string; online: boolean }>
+  }
+  backup: {
+    available: boolean
+    command?: string
+    script?: string
+    default_dir?: string
+  }
 }
 
 export interface CallRecord {

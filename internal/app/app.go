@@ -11,6 +11,7 @@ import (
 	"github.com/iniwex5/vohive/internal/application/device"
 	"github.com/iniwex5/vohive/internal/application/esim"
 	"github.com/iniwex5/vohive/internal/application/extras"
+	"github.com/iniwex5/vohive/internal/application/firmware"
 	"github.com/iniwex5/vohive/internal/application/network"
 	"github.com/iniwex5/vohive/internal/application/notification"
 	"github.com/iniwex5/vohive/internal/application/operation"
@@ -50,6 +51,7 @@ type App struct {
 	RawAT        *rawat.Service
 	VoWiFi       *vowifi.Service
 	Extras       *extras.Service
+	Firmware     *firmware.Service
 	Notification *notification.Service
 	NativeUI     *native.Bridge
 	HTTP         *httpapi.Server
@@ -124,6 +126,13 @@ func newApp(r *runtime.Runtime, err error, platformAdapter transport.NetworkCont
 	esimService := esim.NewService(devices, ops, r)
 	networkService := network.NewService(devices, ops, r, platformAdapter, database)
 	rawATService := rawat.NewService(devices, r)
+	firmwareConfig := firmware.ConfigFromEnvironment()
+	if detector, ok := platformAdapter.(interface {
+		DetectEDL(context.Context) (bool, error)
+	}); ok {
+		firmwareConfig.DetectEDL = detector.DetectEDL
+	}
+	firmwareService := firmware.NewService(rawATService, ops, r, firmwareConfig)
 	platformDependencies := vowifi.PlatformDependencies{Network: platformAdapter}
 	if tunnel, ok := platformAdapter.(transport.PacketTunnel); ok {
 		platformDependencies.Tunnel = tunnel
@@ -173,6 +182,7 @@ func newApp(r *runtime.Runtime, err error, platformAdapter transport.NetworkCont
 		RawAT:        rawATService,
 		VoWiFi:       vowifiService,
 		Extras:       extraService,
+		Firmware:     firmwareService,
 		Notification: notifications,
 		NativeUI:     bridge,
 		Store:        database,
@@ -185,6 +195,7 @@ func newApp(r *runtime.Runtime, err error, platformAdapter transport.NetworkCont
 			RawAT:                         rawATService,
 			VoWiFi:                        vowifiService,
 			Extras:                        extraService,
+			Firmware:                      firmwareService,
 			Operations:                    ops,
 			Runtime:                       r,
 			NotificationUIAvailable:       bridge.HasUI,

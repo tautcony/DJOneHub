@@ -30,6 +30,37 @@ func New() *Adapter {
 	}), networkInterfaces: make(map[string]string)}
 }
 
+// DetectEDL reports whether a Qualcomm emergency download device is present.
+// EDL has no AT channel, so it must be detected directly from the USB tree.
+func (a *Adapter) DetectEDL(ctx context.Context) (bool, error) {
+	command := exec.CommandContext(ctx, "ioreg", "-r", "-c", "IOUSBHostDevice", "-l", "-w", "0")
+	output, err := command.Output()
+	if err != nil {
+		return false, fmt.Errorf("inspect USB devices for EDL mode: %w", err)
+	}
+	return containsUSBIdentity(string(output), 0x05c6, 0x9008), nil
+}
+
+func containsUSBIdentity(output string, vendorID, productID int) bool {
+	starts := regexp.MustCompile(`(?m)^\+-o .*<class IOUSBHostDevice`).FindAllStringIndex(output, -1)
+	if len(starts) == 0 {
+		starts = [][]int{{0, 0}}
+	}
+	for index, start := range starts {
+		end := len(output)
+		if index+1 < len(starts) {
+			end = starts[index+1][0]
+		}
+		block := output[start[0]:end]
+		vendor, vendorOK := intProperty(block, "idVendor")
+		product, productOK := intProperty(block, "idProduct")
+		if vendorOK && productOK && vendor == vendorID && product == productID {
+			return true
+		}
+	}
+	return false
+}
+
 type usbIdentity struct {
 	vendorID  int
 	productID int

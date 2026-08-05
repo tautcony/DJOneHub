@@ -3,6 +3,8 @@ package operation
 import (
 	"context"
 	stdErrors "errors"
+	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -29,6 +31,12 @@ type Status struct {
 	Error      *derrors.Error `json:"error,omitempty"`
 	StartedAt  time.Time      `json:"started_at,omitempty"`
 	FinishedAt time.Time      `json:"finished_at,omitempty"`
+}
+
+type Log struct {
+	OperationID string `json:"operation_id"`
+	Type        string `json:"type"`
+	Message     string `json:"message"`
 }
 
 type Task func(context.Context, func(int, string)) error
@@ -61,6 +69,7 @@ func (m *Manager) Start(ctx context.Context, kind string, task Task) string {
 	m.cancels[id] = cancel
 	m.mu.Unlock()
 	m.publish(*status)
+	log.Printf("operation started id=%s type=%s", id, kind)
 	go m.run(child, status, task)
 	return id
 }
@@ -85,15 +94,18 @@ func (m *Manager) run(ctx context.Context, status *Status, task Task) {
 	m.mu.Unlock()
 	if err != nil {
 		if ctx.Err() != nil {
+			log.Printf("operation cancelled id=%s type=%s error=%v", status.ID, status.Type, err)
 			m.update(status.ID, func(s *Status) {
 				s.State = Cancelled
 				s.Message = "operation cancelled"
 				s.FinishedAt = time.Now().UTC()
 			})
 		} else {
+			log.Printf("operation failed id=%s type=%s error=%v", status.ID, status.Type, err)
 			m.update(status.ID, func(s *Status) { s.State = Failed; s.Error = normalizeError(err); s.FinishedAt = time.Now().UTC() })
 		}
 	} else {
+		log.Printf("operation succeeded id=%s type=%s", status.ID, status.Type)
 		m.update(status.ID, func(s *Status) { s.State = Succeeded; s.Progress = 100; s.FinishedAt = time.Now().UTC() })
 	}
 	m.mu.RLock()
@@ -116,6 +128,17 @@ func (m *Manager) Events() *runtime.EventBus { return m.bus }
 
 func (m *Manager) Publish(eventType string, data any) {
 	m.bus.Publish(eventType, data)
+}
+
+func (m *Manager) Log(id, message string) {
+	if strings.TrimSpace(message) == "" {
+		return
+	}
+	status, ok := m.Get(id)
+	if !ok {
+		return
+	}
+	m.bus.Publish("operation.log", Log{OperationID: id, Type: status.Type, Message: message})
 }
 
 func (m *Manager) Cancel(id string) bool {

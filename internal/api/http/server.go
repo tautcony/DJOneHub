@@ -8,13 +8,17 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	nethttp "net/http"
 	"strings"
 	"time"
 
+	"github.com/gorilla/websocket"
+
 	"github.com/iniwex5/vohive/internal/application/device"
 	"github.com/iniwex5/vohive/internal/application/esim"
 	"github.com/iniwex5/vohive/internal/application/extras"
+	"github.com/iniwex5/vohive/internal/application/firmware"
 	"github.com/iniwex5/vohive/internal/application/network"
 	"github.com/iniwex5/vohive/internal/application/notification"
 	"github.com/iniwex5/vohive/internal/application/operation"
@@ -42,6 +46,7 @@ type Config struct {
 	RawAT                         *rawat.Service
 	VoWiFi                        *vowifi.Service
 	Extras                        *extras.Service
+	Firmware                      *firmware.Service
 	Operations                    *operation.Manager
 	Runtime                       *runtime.Runtime
 	Auth                          Authenticator
@@ -82,6 +87,15 @@ func (s *Server) Handler() nethttp.Handler {
 	mux.HandleFunc("/api/v1/network/traffic/range", s.networkTrafficRange)
 	mux.HandleFunc("/api/v1/network/diagnostics", s.networkDiagnostics)
 	mux.HandleFunc("/api/v1/device/actions/raw-at", s.rawAT)
+	mux.HandleFunc("/api/v1/firmware", s.firmwareStatus)
+	mux.HandleFunc("/api/v1/firmware/actions/adb/unlock", s.firmwareADBUnlock)
+	mux.HandleFunc("/api/v1/firmware/actions/adb/mode", s.firmwareADBMode)
+	mux.HandleFunc("/api/v1/firmware/actions/adb/shell/ws", s.firmwareADBShellWS)
+	mux.HandleFunc("/api/v1/firmware/actions/usb-id", s.firmwareUSBID)
+	mux.HandleFunc("/api/v1/firmware/actions/mode", s.firmwareMode)
+	mux.HandleFunc("/api/v1/firmware/actions/backup", s.firmwareBackup)
+	mux.HandleFunc("/api/v1/firmware/actions/backup/select-directory", s.firmwareBackupSelectDirectory)
+	mux.HandleFunc("/api/v1/firmware/actions/backup/select-edl-directory", s.firmwareBackupSelectEDLDirectory)
 	mux.HandleFunc("/api/v1/vowifi", s.vowifiStatus)
 	mux.HandleFunc("/api/v1/vowifi/actions/enable", s.vowifiEnable)
 	mux.HandleFunc("/api/v1/vowifi/actions/disable", s.vowifiDisable)
@@ -99,7 +113,7 @@ func (s *Server) Handler() nethttp.Handler {
 	mux.HandleFunc("/api/v1/operations/", s.operationStatus)
 	mux.HandleFunc("/api/v1/openapi.json", s.openapi)
 	mux.HandleFunc("/api/v1/events/ws", s.websocket)
-	return mux
+	return logRequests(mux)
 }
 
 func (s *Server) protected(w nethttp.ResponseWriter, r *nethttp.Request) bool {
@@ -513,6 +527,208 @@ func (s *Server) rawAT(w nethttp.ResponseWriter, r *nethttp.Request) {
 	writeJSON(w, nethttp.StatusOK, map[string]string{"response": result})
 }
 
+func (s *Server) firmwareStatus(w nethttp.ResponseWriter, r *nethttp.Request) {
+	if !s.requireMethod(w, r, nethttp.MethodGet) || !s.protected(w, r) {
+		return
+	}
+	if s.config.Firmware == nil {
+		writeError(w, derrors.New(derrors.CapabilityNotSupported, "firmware management is unavailable", false, nil))
+		return
+	}
+	value, err := s.config.Firmware.Status(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, nethttp.StatusOK, value)
+}
+
+func (s *Server) firmwareADBUnlock(w nethttp.ResponseWriter, r *nethttp.Request) {
+	if !s.commandOnly(w, r) {
+		return
+	}
+	if s.config.Firmware == nil {
+		writeError(w, derrors.New(derrors.CapabilityNotSupported, "firmware management is unavailable", false, nil))
+		return
+	}
+	id, err := s.config.Firmware.StartUnlock(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, nethttp.StatusAccepted, map[string]string{"operation_id": id})
+}
+
+type firmwareADBModeRequest struct {
+	Enabled bool `json:"enabled"`
+}
+
+func (s *Server) firmwareADBMode(w nethttp.ResponseWriter, r *nethttp.Request) {
+	var value firmwareADBModeRequest
+	if !s.commandJSON(w, r, &value) {
+		return
+	}
+	if s.config.Firmware == nil {
+		writeError(w, derrors.New(derrors.CapabilityNotSupported, "firmware management is unavailable", false, nil))
+		return
+	}
+	id, err := s.config.Firmware.StartADBMode(r.Context(), value.Enabled)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, nethttp.StatusAccepted, map[string]string{"operation_id": id})
+}
+
+func (s *Server) firmwareUSBID(w nethttp.ResponseWriter, r *nethttp.Request) {
+	var value firmware.USBIDRequest
+	if !s.commandJSON(w, r, &value) {
+		return
+	}
+	if s.config.Firmware == nil {
+		writeError(w, derrors.New(derrors.CapabilityNotSupported, "firmware management is unavailable", false, nil))
+		return
+	}
+	id, err := s.config.Firmware.StartUSBID(r.Context(), value)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, nethttp.StatusAccepted, map[string]string{"operation_id": id})
+}
+
+type firmwareModeRequest struct {
+	Mode   string `json:"mode"`
+	Serial string `json:"serial"`
+}
+
+func (s *Server) firmwareMode(w nethttp.ResponseWriter, r *nethttp.Request) {
+	var value firmwareModeRequest
+	if !s.commandJSON(w, r, &value) {
+		return
+	}
+	if strings.TrimSpace(value.Mode) != "edl" {
+		writeError(w, derrors.New(derrors.InvalidRequest, "only edl mode is supported", false, map[string]any{"mode": value.Mode}))
+		return
+	}
+	if s.config.Firmware == nil {
+		writeError(w, derrors.New(derrors.CapabilityNotSupported, "firmware management is unavailable", false, nil))
+		return
+	}
+	id, err := s.config.Firmware.StartEnterEDL(r.Context(), value.Serial)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, nethttp.StatusAccepted, map[string]string{"operation_id": id})
+}
+
+var adbShellUpgrader = websocket.Upgrader{CheckOrigin: func(*nethttp.Request) bool { return true }}
+
+func (s *Server) firmwareADBShellWS(w nethttp.ResponseWriter, r *nethttp.Request) {
+	if !s.protected(w, r) {
+		return
+	}
+	if s.config.Firmware == nil {
+		writeError(w, derrors.New(derrors.CapabilityNotSupported, "firmware management is unavailable", false, nil))
+		return
+	}
+	if !isWebSocketRequest(r) {
+		writeError(w, derrors.New(derrors.InvalidRequest, "websocket upgrade required", false, nil))
+		return
+	}
+	serial := strings.TrimSpace(r.URL.Query().Get("serial"))
+	shell, err := s.config.Firmware.OpenADBShell(serial)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	defer shell.Close()
+	conn, err := adbShellUpgrader.Upgrade(w, r, nil)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+
+	readerDone := make(chan struct{})
+	go func() {
+		defer close(readerDone)
+		buffer := make([]byte, 4096)
+		for {
+			count, readErr := shell.Read(buffer)
+			if count > 0 {
+				if writeErr := conn.WriteMessage(websocket.BinaryMessage, buffer[:count]); writeErr != nil {
+					return
+				}
+			}
+			if readErr != nil {
+				return
+			}
+		}
+	}()
+	for {
+		messageType, payload, readErr := conn.ReadMessage()
+		if readErr != nil {
+			return
+		}
+		if messageType != websocket.TextMessage && messageType != websocket.BinaryMessage {
+			continue
+		}
+		if _, writeErr := shell.Write(payload); writeErr != nil {
+			return
+		}
+	}
+}
+
+func (s *Server) firmwareBackup(w nethttp.ResponseWriter, r *nethttp.Request) {
+	var value firmware.BackupRequest
+	if !s.commandJSON(w, r, &value) {
+		return
+	}
+	if s.config.Firmware == nil {
+		writeError(w, derrors.New(derrors.CapabilityNotSupported, "firmware management is unavailable", false, nil))
+		return
+	}
+	id, err := s.config.Firmware.StartBackup(r.Context(), value)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, nethttp.StatusAccepted, map[string]string{"operation_id": id})
+}
+
+func (s *Server) firmwareBackupSelectDirectory(w nethttp.ResponseWriter, r *nethttp.Request) {
+	if !s.commandOnly(w, r) {
+		return
+	}
+	if s.config.Firmware == nil {
+		writeError(w, derrors.New(derrors.CapabilityNotSupported, "firmware management is unavailable", false, nil))
+		return
+	}
+	directory, err := s.config.Firmware.SelectBackupDirectory(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, nethttp.StatusOK, map[string]string{"directory": directory})
+}
+
+func (s *Server) firmwareBackupSelectEDLDirectory(w nethttp.ResponseWriter, r *nethttp.Request) {
+	if !s.commandOnly(w, r) {
+		return
+	}
+	if s.config.Firmware == nil {
+		writeError(w, derrors.New(derrors.CapabilityNotSupported, "firmware management is unavailable", false, nil))
+		return
+	}
+	directory, err := s.config.Firmware.SelectEDLDirectory(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, nethttp.StatusOK, map[string]string{"directory": directory})
+}
+
 func (s *Server) vowifiStatus(w nethttp.ResponseWriter, r *nethttp.Request) {
 	if !s.requireMethod(w, r, nethttp.MethodGet) || !s.protected(w, r) {
 		return
@@ -877,7 +1093,45 @@ func writeJSON(w nethttp.ResponseWriter, status int, value any) {
 
 func writeError(w nethttp.ResponseWriter, err error) {
 	structured := toStructuredError(err)
+	log.Printf("http error code=%s error=%v", structured.Code, err)
 	writeJSON(w, errorStatus(structured.Code), map[string]any{"error": structured})
+}
+
+type statusResponseWriter struct {
+	nethttp.ResponseWriter
+	status int
+}
+
+func (w *statusResponseWriter) WriteHeader(status int) {
+	if w.status == 0 {
+		w.status = status
+	}
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *statusResponseWriter) Write(payload []byte) (int, error) {
+	if w.status == 0 {
+		w.status = nethttp.StatusOK
+	}
+	return w.ResponseWriter.Write(payload)
+}
+
+func logRequests(next nethttp.Handler) nethttp.Handler {
+	return nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
+		// WebSocket upgraders require the original ResponseWriter interfaces.
+		if isWebSocketRequest(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		started := time.Now()
+		recorder := &statusResponseWriter{ResponseWriter: w}
+		next.ServeHTTP(recorder, r)
+		status := recorder.status
+		if status == 0 {
+			status = nethttp.StatusOK
+		}
+		log.Printf("http request method=%s path=%s status=%d duration=%s", r.Method, r.URL.RequestURI(), status, time.Since(started).Round(time.Millisecond))
+	})
 }
 
 func toStructuredError(err error) *derrors.Error {

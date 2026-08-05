@@ -90,6 +90,26 @@ func TestParseECMInterfaceNamesMatchesUSBIdentityAndLocation(t *testing.T) {
 	}
 }
 
+func TestContainsUSBIdentityDetectsQualcommEDL(t *testing.T) {
+	output := `+-o DJI 4G Module <class IOUSBHostDevice>
+  {
+    "idVendor" = 11427
+    "idProduct" = 16390
+  }
+
++-o QUSB_BULK_CID <class IOUSBHostDevice>
+  {
+    "idVendor" = 1478
+    "idProduct" = 36872
+  }`
+	if !containsUSBIdentity(output, 0x05c6, 0x9008) {
+		t.Fatal("Qualcomm 05c6:9008 EDL device was not detected")
+	}
+	if containsUSBIdentity(output, 0x2c7c, 0x0125) {
+		t.Fatal("unlisted USB identity was detected")
+	}
+}
+
 func TestParseInterfaceCountersUsesLinkRow(t *testing.T) {
 	output := `Name Mtu Network Address Ipkts Ierrs Ibytes Opkts Oerrs Obytes Coll
 en13 1500 <Link#46> 86:33:1a:d1:aa:45 281 0 38756 462 0 95136 0

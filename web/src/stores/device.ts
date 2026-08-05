@@ -2,13 +2,14 @@ import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { APIError, api } from '../services/api'
 import { i18n } from '../i18n'
-import type { DeviceStatus, Envelope, OperationStatus, Snapshot } from '../types'
+import type { DeviceStatus, Envelope, OperationLog, OperationStatus, Snapshot } from '../types'
 
 export const useDeviceStore = defineStore('device', () => {
   const status = ref<DeviceStatus | null>(null)
   const error = ref('')
   const connected = ref(false)
   const operations = ref<Record<string, OperationStatus>>({})
+  const operationLogs = ref<Record<string, string[]>>({})
   const eventRevision = ref(0)
   const lastEventType = ref('')
   const lastEventData = ref<unknown>(undefined)
@@ -22,9 +23,22 @@ export const useDeviceStore = defineStore('device', () => {
     snapshot.value?.state === 'ready' &&
     Object.prototype.hasOwnProperty.call(capabilities.value, name)
 
+  function applyStatus(next: DeviceStatus) {
+    if (next.snapshot.state === 'ready') {
+      status.value = next
+      return
+    }
+    status.value = {
+      snapshot: { ...next.snapshot, identity: { stable_id: '' }, capabilities: {} },
+      identity: {},
+      radio: { registered: false },
+      sim: { inserted: false },
+    }
+  }
+
   async function refresh() {
     try {
-      status.value = await api.status()
+      applyStatus(await api.status())
       error.value = ''
     } catch (cause) {
       if (cause instanceof APIError) {
@@ -35,14 +49,19 @@ export const useDeviceStore = defineStore('device', () => {
       } else {
         error.value = cause instanceof Error ? cause.message : String(i18n.global.t('errors.apiUnavailable'))
       }
+      if (status.value) {
+        applyStatus({
+          ...status.value,
+          snapshot: { ...status.value.snapshot, state: 'disconnected' },
+        })
+      }
     }
   }
 
   function applyEnvelope(envelope: Envelope) {
     if (envelope.type === 'snapshot') {
-      status.value = (envelope.data as { snapshot?: DeviceStatus }).snapshot
-        ? (envelope.data as DeviceStatus)
-        : status.value
+      const next = envelope.data as DeviceStatus
+      if ((envelope.data as { snapshot?: Snapshot }).snapshot) applyStatus(next)
       lastEventID = envelope.id
       lastEventType.value = envelope.type
       lastEventData.value = envelope.data
@@ -64,7 +83,15 @@ export const useDeviceStore = defineStore('device', () => {
     eventRevision.value++
     if (envelope.type === 'device.status.changed') {
       const snapshotData = envelope.data as Snapshot
-      if (status.value) status.value.snapshot = snapshotData
+      if (status.value) applyStatus({ ...status.value, snapshot: snapshotData })
+      return
+    }
+    if (envelope.type === 'operation.log') {
+      const log = envelope.data as OperationLog
+      if (log?.operation_id && log.message) {
+        const current = operationLogs.value[log.operation_id] || []
+        operationLogs.value[log.operation_id] = [...current, log.message].slice(-10_000)
+      }
       return
     }
     if (
@@ -110,6 +137,7 @@ export const useDeviceStore = defineStore('device', () => {
     error,
     connected,
     operations,
+    operationLogs,
     eventRevision,
     lastEventType,
     lastEventData,

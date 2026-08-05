@@ -13,6 +13,7 @@
     "format:check": "prettier --check \"src/**/*.{ts,vue}\""
   },
   "dependencies": {
+    "@xterm/xterm": "^6.0.0",
     "ant-design-vue": "^4.2.6",
     "pinia": "^3.0.3",
     "vue": "^3.5.18",

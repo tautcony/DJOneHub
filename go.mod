@@ -4,6 +4,8 @@ go 1.26.3
 
 replace github.com/damonto/euicc-go => ./third_party/euicc-go
 
+replace github.com/electricbubble/gadb => ./third_party/gadb
+
 replace github.com/damonto/uicc-go => ./third_party/uicc-go
 
 replace github.com/iniwex5/quectel-qmi-go => ./third_party/quectel-qmi-go
@@ -19,6 +21,8 @@ replace golang.org/x/text => ./third_party/x-text
 replace go.uber.org/multierr => ./third_party/multierr
 
 require (
+	github.com/electricbubble/gadb v0.1.0
+	github.com/gorilla/websocket v1.5.3
 	github.com/damonto/euicc-go v1.1.3-0.20260628013808-8d873a2dfc98
 	github.com/damonto/uicc-go v0.0.0-20260629073618-7ddada6bb13e
 	github.com/iniwex5/quectel-qmi-go v0.6.0

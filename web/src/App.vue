@@ -12,6 +12,7 @@ import { useDeviceStore } from './stores/device'
 import type {
   CallStatus,
   EsimOverview,
+  FirmwareStatus,
   NotificationDebugEvent,
   NotificationDebugInfo,
   NotificationDebugRequest,
@@ -108,6 +109,16 @@ const vowifiOperationID = ref('')
 const vowifiOperation = computed(() =>
   vowifiOperationID.value ? device.operations[vowifiOperationID.value] : undefined,
 )
+const firmware = ref<FirmwareStatus | null>(null)
+const firmwareOperationID = ref('')
+const firmwareOperationModalOpen = ref(false)
+const firmwareOperation = computed(() =>
+  firmwareOperationID.value ? device.operations[firmwareOperationID.value] : undefined,
+)
+const firmwareOperationLogs = computed(() =>
+  firmwareOperationID.value ? device.operationLogs[firmwareOperationID.value] || [] : [],
+)
+const notifiedFirmwareOperations = new Set<string>()
 const rawATCommand = ref('')
 const rawATExecutedCommand = ref('')
 const rawATResponse = ref('')
@@ -160,6 +171,7 @@ const navGroups = computed<ShellNavGroup[]>(() => [
     label: t('nav.groups.tools'),
     items: [
       { id: 'raw-at', label: t('nav.rawAt'), capability: 'raw_at' },
+      { id: 'firmware', label: t('nav.firmware'), capability: 'raw_at' },
       ...(showNotificationDebug.value ? [{ id: 'notifications', label: t('nav.notifications') }] : []),
       { id: 'settings', label: t('nav.settings') },
     ],
@@ -168,6 +180,15 @@ const navGroups = computed<ShellNavGroup[]>(() => [
 const nav = computed(() => navGroups.value.flatMap((group) => group.items))
 const stateValue = computed(() => device.snapshot?.state || 'offline')
 const effectiveStateValue = computed(() => (device.error ? 'offline' : stateValue.value))
+watch(effectiveStateValue, (state) => {
+  if (state === 'ready') return
+  firmware.value = null
+  const operation = firmwareOperation.value
+  if (!operation || ['succeeded', 'failed', 'cancelled'].includes(operation.state)) {
+    firmwareOperationID.value = ''
+    firmwareOperationModalOpen.value = false
+  }
+})
 const stateLabel = computed(() =>
   te(`states.${effectiveStateValue.value}`) ? t(`states.${effectiveStateValue.value}`) : t('status.offline'),
 )
@@ -578,6 +599,7 @@ function operationView(operation: OperationStatus): ViewID | undefined {
   if (operation.type.startsWith('esim.')) return 'esim'
   if (operation.type.startsWith('network.')) return 'network'
   if (operation.type.startsWith('vowifi.')) return 'vowifi'
+  if (operation.type.startsWith('firmware.')) return 'firmware'
   return undefined
 }
 
@@ -611,6 +633,18 @@ watch(esimOperation, (operation) => {
   scheduleViewRefresh('esim', delay)
 })
 
+watch(firmwareOperation, (operation) => {
+  if (!operation || !['succeeded', 'failed', 'cancelled'].includes(operation.state)) return
+  if (notifiedFirmwareOperations.has(operation.operation_id)) return
+  notifiedFirmwareOperations.add(operation.operation_id)
+  if (operation.state === 'succeeded') notifySuccess(t('firmware.operationSucceeded'))
+  else notifyError('view', operation.error?.message || t('firmware.operationFailed'))
+})
+
+watch(firmwareOperationID, (operationID) => {
+  if (operationID) firmwareOperationModalOpen.value = true
+})
+
 watch(
   () => device.eventRevision,
   () => {
@@ -621,6 +655,7 @@ watch(
     }
     if (eventType === 'device.status.changed') {
       scheduleViewRefresh('overview')
+      if (active.value === 'firmware') scheduleViewRefresh('firmware', 700)
       return
     }
     if (eventType === 'network.traffic.updated') {
@@ -641,7 +676,13 @@ watch(
     if (!operation || typeof operation.type !== 'string') return
     const view = operationView(operation)
     if (!view) return
-    scheduleViewRefresh(view, view === 'esim' && operation.state === 'succeeded' ? 1200 : 0)
+    const delay =
+      operation.type === 'firmware.enter_edl' && operation.state === 'succeeded'
+        ? 1200
+        : view === 'esim' && operation.state === 'succeeded'
+          ? 1200
+          : 0
+    scheduleViewRefresh(view, delay)
   },
 )
 
@@ -772,6 +813,81 @@ async function loadVowifi() {
     viewError.value = errorText(error, 'vowifi.unableLoad')
   } finally {
     markViewLoaded('vowifi')
+  }
+}
+
+async function loadFirmware() {
+  try {
+    firmware.value = await api.firmware()
+    viewError.value = ''
+  } catch (error) {
+    firmware.value = null
+    viewError.value = errorText(error, 'firmware.unableLoad')
+  } finally {
+    markViewLoaded('firmware')
+  }
+}
+
+async function refreshFirmware() {
+  await loadFirmware()
+}
+
+async function runFirmwareAction(action: 'unlock' | 'enable' | 'disable' | 'edl', serial = '') {
+  try {
+    const result =
+      action === 'unlock'
+        ? await api.firmwareADBUnlock()
+        : action === 'enable'
+          ? await api.firmwareADBMode(true)
+          : action === 'disable'
+            ? await api.firmwareADBMode(false)
+            : await api.firmwareMode('edl', serial)
+    firmwareOperationID.value = result.operation_id
+    notifySuccess(t('firmware.operationAccepted', { id: result.operation_id }))
+  } catch (error) {
+    notifyError('view', errorText(error, 'firmware.unableAction'))
+  }
+}
+
+async function updateFirmwareUSBID(vid: string, pid: string) {
+  try {
+    const result = await api.firmwareUSBID(vid, pid)
+    firmwareOperationID.value = result.operation_id
+    notifySuccess(t('firmware.operationAccepted', { id: result.operation_id }))
+  } catch (error) {
+    notifyError('view', errorText(error, 'firmware.unableUSBID'))
+  }
+}
+
+async function backupFirmware(outputPath: string, loaderPath: string, edlPath: string, edlRunner: 'python' | 'uv') {
+  try {
+    const result = await api.firmwareBackup(outputPath, loaderPath, edlPath, edlRunner)
+    firmwareOperationID.value = result.operation_id
+    notifySuccess(t('firmware.operationAccepted', { id: result.operation_id }))
+  } catch (error) {
+    notifyError('view', errorText(error, 'firmware.unableBackup'))
+  }
+}
+
+async function selectFirmwareEDLDirectory() {
+  try {
+    const result = await api.selectFirmwareEDLDirectory()
+    return result.directory
+  } catch (error) {
+    if (error instanceof APIError && error.message.includes('cancelled')) return ''
+    notifyError('view', errorText(error, 'firmware.unableSelectEDLDirectory'))
+    return ''
+  }
+}
+
+async function selectFirmwareBackupDirectory() {
+  try {
+    const result = await api.selectFirmwareBackupDirectory()
+    return result.directory
+  } catch (error) {
+    if (error instanceof APIError && error.message.includes('cancelled')) return ''
+    notifyError('view', errorText(error, 'firmware.unableSelectDirectory'))
+    return ''
   }
 }
 
@@ -931,6 +1047,7 @@ const viewLoaders: Partial<Record<ViewID, () => Promise<void>>> = {
   esim: loadEsim,
   network: loadNetwork,
   vowifi: loadVowifi,
+  firmware: loadFirmware,
   notifications: loadNotifierDebug,
   settings: loadSettings,
 }
@@ -1194,6 +1311,16 @@ provide(viewContextKey, {
   notificationPreferencesBusy,
   startupBusy,
   startupSettings,
+  firmware,
+  firmwareOperation,
+  firmwareOperationLogs,
+  firmwareOperationModalOpen,
+  refreshFirmware,
+  runFirmwareAction,
+  updateFirmwareUSBID,
+  backupFirmware,
+  selectFirmwareBackupDirectory,
+  selectFirmwareEDLDirectory,
   toggleStartup,
   openNotificationSettings,
   requestNotificationPermission,

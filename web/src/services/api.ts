@@ -15,6 +15,7 @@ import type {
   OperationStatus,
   SMSMessage,
   VowifiStatus,
+  FirmwareStatus,
 } from '../types'
 
 const base = '/api/v1'
@@ -100,6 +101,33 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ command }),
     }),
+  firmware: () => request<FirmwareStatus>('/firmware'),
+  firmwareADBUnlock: () =>
+    request<{ operation_id: string }>('/firmware/actions/adb/unlock', { method: 'POST' }),
+  firmwareADBMode: (enabled: boolean) =>
+    request<{ operation_id: string }>('/firmware/actions/adb/mode', {
+      method: 'POST',
+      body: JSON.stringify({ enabled }),
+    }),
+  firmwareUSBID: (vid: string, pid: string) =>
+    request<{ operation_id: string }>('/firmware/actions/usb-id', {
+      method: 'POST',
+      body: JSON.stringify({ vid, pid }),
+    }),
+  firmwareMode: (mode: 'edl', serial: string) =>
+    request<{ operation_id: string }>('/firmware/actions/mode', {
+      method: 'POST',
+      body: JSON.stringify({ mode, serial }),
+    }),
+  firmwareBackup: (output_path: string, loader_path: string, edl_path: string, edl_runner: 'python' | 'uv') =>
+    request<{ operation_id: string }>('/firmware/actions/backup', {
+      method: 'POST',
+      body: JSON.stringify({ output_path, loader_path, edl_path, edl_runner }),
+    }),
+  selectFirmwareBackupDirectory: () =>
+    request<{ directory: string }>('/firmware/actions/backup/select-directory', { method: 'POST' }),
+  selectFirmwareEDLDirectory: () =>
+    request<{ directory: string }>('/firmware/actions/backup/select-edl-directory', { method: 'POST' }),
   vowifi: () => request<VowifiStatus>('/vowifi'),
   vowifiEnable: () => request<{ operation_id: string }>('/vowifi/actions/enable', { method: 'POST' }),
   vowifiDisable: () => request<{ operation_id: string }>('/vowifi/actions/disable', { method: 'POST' }),

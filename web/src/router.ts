@@ -10,6 +10,7 @@ export type ViewID =
   | 'vowifi'
   | 'notifications'
   | 'settings'
+  | 'firmware'
 
 export const viewPaths: Record<ViewID, string> = {
   overview: '/overview',
@@ -21,6 +22,7 @@ export const viewPaths: Record<ViewID, string> = {
   vowifi: '/vowifi',
   notifications: '/notifications',
   settings: '/settings',
+  firmware: '/firmware',
 }
 
 export function viewFromRoute(value: unknown): ViewID {
