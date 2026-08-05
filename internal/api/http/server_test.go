@@ -3,15 +3,23 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
+
 	"github.com/iniwex5/vohive/internal/application/device"
 	"github.com/iniwex5/vohive/internal/application/esim"
+	"github.com/iniwex5/vohive/internal/application/firmware"
 	"github.com/iniwex5/vohive/internal/application/network"
 	"github.com/iniwex5/vohive/internal/application/notification"
 	"github.com/iniwex5/vohive/internal/application/operation"
@@ -37,12 +45,8 @@ func (emptyFactory) Open(context.Context, domain.Candidate) (backend.ModemBacken
 	return nil, "", nil
 }
 
-func newTestServer(t *testing.T, auth Authenticator) *Server {
+func newTestServerWithRuntime(t *testing.T, auth Authenticator, r *runtime.Runtime) *Server {
 	t.Helper()
-	r, err := runtime.New(runtime.Config{Discovery: emptyDiscovery{}, Backends: emptyFactory{}})
-	if err != nil {
-		t.Fatal(err)
-	}
 	ops := operation.NewManager(r.Events())
 	devices := device.NewService(r)
 	smsService := sms.NewService(devices, ops, r)
@@ -57,6 +61,15 @@ func newTestServer(t *testing.T, auth Authenticator) *Server {
 		Notification: notificationService, RawAT: rawATService, VoWiFi: vowifiService,
 		Operations: ops, Runtime: r, Auth: auth,
 	})
+}
+
+func newTestServer(t *testing.T, auth Authenticator) *Server {
+	t.Helper()
+	r, err := runtime.New(runtime.Config{Discovery: emptyDiscovery{}, Backends: emptyFactory{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return newTestServerWithRuntime(t, auth, r)
 }
 
 func TestServerReturnsOfflineSnapshot(t *testing.T) {
@@ -482,3 +495,185 @@ func TestAPIContractOperationStatusIsStable(t *testing.T) {
 }
 
 const domainErrorUnauthenticated = "unauthenticated"
+
+type brokenSIMBackend struct{ *contractBackend }
+
+func (b *brokenSIMBackend) SIM(context.Context) (backend.SIMState, error) {
+	return backend.SIMState{}, derrors.New(derrors.Internal, "设备返回错误: +CME ERROR: 10", true, nil)
+}
+
+// TestDeviceStatusSurvivesSubQueryFailure: 单项能力查询失败(如无 SIM 时 AT 返回
+// +CME ERROR: 10)时,/device/status 仍返回 200 并携带已检测到的设备身份,而不是
+// 500 让前端误以为没有兼容的模组。
+func TestDeviceStatusSurvivesSubQueryFailure(t *testing.T) {
+	discovery := &fakeReadyDiscovery{candidate: domain.Candidate{Identity: domain.Identity{StableID: "fake-1", Product: "Quectel 4G Module"}}}
+	b := &brokenSIMBackend{contractBackend: &contractBackend{caps: allContractCapabilities()}}
+	server, _ := newReadyServerWithBackend(t, discovery, b)
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/device/status", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var body struct {
+		Snapshot struct {
+			State    string `json:"state"`
+			Identity struct {
+				StableID string `json:"stable_id"`
+				Product  string `json:"product"`
+			} `json:"identity"`
+			LastError string `json:"last_error"`
+		} `json:"snapshot"`
+		SIM struct {
+			Inserted bool `json:"inserted"`
+		} `json:"sim"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Snapshot.State != string(domain.StateReady) {
+		t.Fatalf("state = %q", body.Snapshot.State)
+	}
+	if body.Snapshot.Identity.StableID != "fake-1" || body.Snapshot.Identity.Product != "Quectel 4G Module" {
+		t.Fatalf("identity = %#v", body.Snapshot.Identity)
+	}
+	if body.Snapshot.LastError == "" {
+		t.Fatal("expected last_error to carry the SIM failure")
+	}
+	if body.SIM.Inserted {
+		t.Fatal("sim should not be marked inserted")
+	}
+}
+
+type oneCandidateDiscovery struct{}
+
+func (oneCandidateDiscovery) Discover(context.Context) ([]domain.Candidate, error) {
+	return []domain.Candidate{{Identity: domain.Identity{StableID: "test/1"}}}, nil
+}
+
+type failingFactory struct{}
+
+func (failingFactory) Open(context.Context, domain.Candidate) (backend.ModemBackend, string, error) {
+	return nil, "", derrors.New(derrors.Internal, "probe failed", true, nil)
+}
+
+// TestWebSocketStaysOpenWhenSnapshotFails drives the runtime into the degraded
+// state (backend init failed, e.g. the modem answering CME ERROR), where the
+// initial snapshot query errors. The websocket must remain open and keep
+// delivering runtime events instead of closing right after the upgrade.
+func TestWebSocketStaysOpenWhenSnapshotFails(t *testing.T) {
+	r, err := runtime.New(runtime.Config{
+		Discovery: oneCandidateDiscovery{}, Backends: failingFactory{},
+		PollInterval: time.Hour, // keep background rescans out of the test
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Rescan(context.Background()); err == nil {
+		t.Fatal("expected rescan to fail backend probing")
+	}
+	if got := r.Snapshot().State; got != domain.StateDegraded {
+		t.Fatalf("state = %s, want %s", got, domain.StateDegraded)
+	}
+	server := newTestServerWithRuntime(t, nil, r)
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws://"+strings.TrimPrefix(ts.URL, "http://")+"/api/v1/events/ws", nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	// The server subscribes after the upgrade; publish repeatedly until the
+	// event is observed so the test is not sensitive to that ordering.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		r.Events().Publish("device.status.changed", map[string]any{"state": "degraded"})
+		_ = conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+		_, payload, err := conn.ReadMessage()
+		if err == nil {
+			var envelope struct {
+				Type string `json:"type"`
+			}
+			if err := json.Unmarshal(payload, &envelope); err != nil {
+				t.Fatalf("bad envelope: %v", err)
+			}
+			if envelope.Type != "device.status.changed" {
+				t.Fatalf("envelope type = %q", envelope.Type)
+			}
+			return
+		}
+		var netErr net.Error
+		if !errors.As(err, &netErr) || !netErr.Timeout() {
+			t.Fatalf("websocket closed instead of staying open: %v", err)
+		}
+	}
+	t.Fatal("no event delivered within deadline")
+}
+
+// settingsJSONStore is a minimal storage.ValueStore keeping one JSON document.
+type settingsJSONStore struct{ value string }
+
+func (s *settingsJSONStore) Read(value any) error {
+	if s.value == "" {
+		return nil
+	}
+	return json.Unmarshal([]byte(s.value), value)
+}
+
+func (s *settingsJSONStore) Write(value any) error {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	s.value = string(encoded)
+	return nil
+}
+
+func TestFirmwareADBSettingsAPI(t *testing.T) {
+	r, err := runtime.New(runtime.Config{Discovery: emptyDiscovery{}, Backends: emptyFactory{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ops := operation.NewManager(r.Events())
+	store := &settingsJSONStore{}
+	firmwareService := firmware.NewService(nil, ops, r, firmware.Config{Store: store})
+	server := NewServer(Config{
+		Firmware: firmwareService, Operations: ops, Runtime: r,
+		Auth: AuthenticatorFunc(func(*http.Request) bool { return true }),
+	})
+	handler := server.Handler()
+
+	executable := filepath.Join(t.TempDir(), "adb")
+	if err := os.WriteFile(executable, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/firmware/actions/adb/settings", strings.NewReader(fmt.Sprintf(`{"command":%q}`, executable)))
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var result map[string]string
+	if err := json.Unmarshal(recorder.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result["command"] != executable || result["command_source"] != "saved" {
+		t.Fatalf("response = %#v", result)
+	}
+
+	// A fresh service reads the persisted value back from the store.
+	reloaded := firmware.NewService(nil, ops, r, firmware.Config{Store: store})
+	if command, source := reloaded.ADBCommandConfig(); command != executable || source != "saved" {
+		t.Fatalf("persisted command = %q, %q; want %q, saved", command, source, executable)
+	}
+
+	// A command that does not resolve to an executable is rejected.
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost, "/api/v1/firmware/actions/adb/settings", strings.NewReader(`{"command":"definitely-not-a-real-command-xyz"}`))
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("invalid command status = %d, want 400: %s", recorder.Code, recorder.Body.String())
+	}
+}

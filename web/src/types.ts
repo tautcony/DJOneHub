@@ -141,6 +141,8 @@ export interface FirmwareStatus {
     serial?: string
     state?: string
     error?: string
+    command?: string
+    command_source?: 'env' | 'saved' | 'default' | string
     devices?: Array<{ serial: string; state: string; online: boolean }>
   }
   backup: {

@@ -18,6 +18,8 @@ const {
   firmwareOperationModalOpen,
   refreshFirmware,
   runFirmwareAction,
+  saveFirmwareADBCommand,
+  selectFirmwareADBFile,
   selectFirmwareBackupDirectory,
   selectFirmwareEDLDirectory,
   updateFirmwareUSBID,
@@ -76,6 +78,45 @@ const adbClientLabel = computed(() => {
   if (firmware.value?.adb.server_available) return t('firmware.adb.serverReady')
   return t('firmware.adb.serverUnavailable')
 })
+const adbCommand = ref('')
+let lastPersistedCommand = ''
+let adbCommandSaveTimer: ReturnType<typeof setTimeout> | undefined
+// Fill the draft once from the effective command reported by the backend,
+// without clobbering edits while status keeps polling.
+watch(
+  () => firmware.value?.adb.command,
+  (command) => {
+    if (command && !adbCommand.value) {
+      adbCommand.value = command
+      lastPersistedCommand = command
+    }
+  },
+  { immediate: true },
+)
+// The command saves automatically after a short pause: choosing a file or
+// finishing a manual edit persists without a separate save button.
+watch(adbCommand, (value) => {
+  const next = value.trim()
+  if (next === lastPersistedCommand) return
+  if (adbCommandSaveTimer !== undefined) window.clearTimeout(adbCommandSaveTimer)
+  adbCommandSaveTimer = window.setTimeout(async () => {
+    const effective = await saveFirmwareADBCommand(next)
+    if (effective) {
+      lastPersistedCommand = effective
+      adbCommand.value = effective
+    }
+  }, 600)
+})
+const adbCommandSourceLabel = computed(() => {
+  const source = firmware.value?.adb.command_source
+  if (source === 'env') return t('firmware.adb.commandFromEnv')
+  if (source === 'saved') return t('firmware.adb.commandFromSaved')
+  return t('firmware.adb.commandFromDefault')
+})
+async function chooseADBFile() {
+  const path = await selectFirmwareADBFile()
+  if (path) adbCommand.value = path // the watcher auto-saves
+}
 const adbAccessibleLabel = computed(() => {
   if (adbDevices.value.some((item) => item.online)) return t('firmware.adb.accessible')
   return t('firmware.adb.inaccessible')
@@ -402,6 +443,23 @@ onBeforeUnmount(() => {
           </div>
         </div>
         <a-alert v-if="firmware?.adb.error" type="warning" show-icon :message="firmware.adb.error" />
+        <div class="firmware-adb-command">
+          <a-input v-model:value="adbCommand" allow-clear :placeholder="t('firmware.adb.commandPlaceholder')">
+            <template #suffix>
+              <a-tooltip :title="t('firmware.adb.chooseFile')">
+                <button
+                  type="button"
+                  class="firmware-directory-button"
+                  :aria-label="t('firmware.adb.chooseFile')"
+                  @click="chooseADBFile"
+                >
+                  <FolderOpenOutlined />
+                </button>
+              </a-tooltip>
+            </template>
+          </a-input>
+          <div class="firmware-adb-command-source">{{ adbCommandSourceLabel }}</div>
+        </div>
         <div class="firmware-adb-device-controls">
           <a-select v-model:value="selectedADBSerial" :disabled="busy || !adbDevices.length" :placeholder="t('firmware.adb.selectDevice')">
             <a-select-option v-for="item in adbDevices" :key="item.serial" :value="item.serial">

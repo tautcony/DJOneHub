@@ -891,6 +891,28 @@ async function selectFirmwareBackupDirectory() {
   }
 }
 
+async function selectFirmwareADBFile() {
+  try {
+    const result = await api.selectFirmwareADBFile()
+    return result.path
+  } catch (error) {
+    if (error instanceof APIError && error.message.includes('cancelled')) return ''
+    notifyError('view', errorText(error, 'firmware.adb.unableSelectADBFile'))
+    return ''
+  }
+}
+
+async function saveFirmwareADBCommand(command: string) {
+  try {
+    const result = await api.firmwareSetADBCommand(command)
+    notifySuccess(t('firmware.adb.commandSaved'))
+    return result.command
+  } catch (error) {
+    notifyError('view', errorText(error, 'firmware.adb.unableSaveCommand'))
+    return ''
+  }
+}
+
 function newNotifierCall() {
   notifierCallID.value = `debug-call-${Date.now()}`
 }
@@ -1321,6 +1343,8 @@ provide(viewContextKey, {
   backupFirmware,
   selectFirmwareBackupDirectory,
   selectFirmwareEDLDirectory,
+  selectFirmwareADBFile,
+  saveFirmwareADBCommand,
   toggleStartup,
   openNotificationSettings,
   requestNotificationPermission,

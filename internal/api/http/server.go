@@ -96,6 +96,8 @@ func (s *Server) Handler() nethttp.Handler {
 	mux.HandleFunc("/api/v1/firmware/actions/backup", s.firmwareBackup)
 	mux.HandleFunc("/api/v1/firmware/actions/backup/select-directory", s.firmwareBackupSelectDirectory)
 	mux.HandleFunc("/api/v1/firmware/actions/backup/select-edl-directory", s.firmwareBackupSelectEDLDirectory)
+	mux.HandleFunc("/api/v1/firmware/actions/select-adb-file", s.firmwareSelectADBFile)
+	mux.HandleFunc("/api/v1/firmware/actions/adb/settings", s.firmwareSetADBSettings)
 	mux.HandleFunc("/api/v1/vowifi", s.vowifiStatus)
 	mux.HandleFunc("/api/v1/vowifi/actions/enable", s.vowifiEnable)
 	mux.HandleFunc("/api/v1/vowifi/actions/disable", s.vowifiDisable)
@@ -729,6 +731,41 @@ func (s *Server) firmwareBackupSelectEDLDirectory(w nethttp.ResponseWriter, r *n
 	writeJSON(w, nethttp.StatusOK, map[string]string{"directory": directory})
 }
 
+func (s *Server) firmwareSelectADBFile(w nethttp.ResponseWriter, r *nethttp.Request) {
+	if !s.commandOnly(w, r) {
+		return
+	}
+	if s.config.Firmware == nil {
+		writeError(w, derrors.New(derrors.CapabilityNotSupported, "firmware management is unavailable", false, nil))
+		return
+	}
+	path, err := s.config.Firmware.SelectADBFile(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, nethttp.StatusOK, map[string]string{"path": path})
+}
+
+func (s *Server) firmwareSetADBSettings(w nethttp.ResponseWriter, r *nethttp.Request) {
+	var value struct {
+		Command string `json:"command"`
+	}
+	if !s.commandJSON(w, r, &value) {
+		return
+	}
+	if s.config.Firmware == nil {
+		writeError(w, derrors.New(derrors.CapabilityNotSupported, "firmware management is unavailable", false, nil))
+		return
+	}
+	if err := s.config.Firmware.SetADBCommand(r.Context(), value.Command); err != nil {
+		writeError(w, err)
+		return
+	}
+	command, source := s.config.Firmware.ADBCommandConfig()
+	writeJSON(w, nethttp.StatusOK, map[string]string{"command": command, "command_source": source})
+}
+
 func (s *Server) vowifiStatus(w nethttp.ResponseWriter, r *nethttp.Request) {
 	if !s.requireMethod(w, r, nethttp.MethodGet) || !s.protected(w, r) {
 		return
@@ -1019,13 +1056,13 @@ func (s *Server) websocket(w nethttp.ResponseWriter, r *nethttp.Request) {
 	accept := sha1.Sum([]byte(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
 	fmt.Fprintf(rw, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n", base64.StdEncoding.EncodeToString(accept[:]))
 	_ = rw.Flush()
-	status, err := s.config.Device.Status(r.Context())
-	if err != nil {
-		return
-	}
-	snapshot := runtime.Event{ID: s.config.Runtime.Events().LastID(), Type: "snapshot", Version: 1, OccurredAt: time.Now().UTC(), Data: publicDeviceStatus(status)}
-	if err := writeTextFrame(rw, snapshot); err != nil {
-		return
+	// 初始快照查询失败(模组暂不可用)时不得中断事件流:连接已升级,
+	// 后续 device.status.changed 事件仍会推送,前端也会定期通过 HTTP 刷新状态。
+	if status, err := s.config.Device.Status(r.Context()); err == nil {
+		snapshot := runtime.Event{ID: s.config.Runtime.Events().LastID(), Type: "snapshot", Version: 1, OccurredAt: time.Now().UTC(), Data: publicDeviceStatus(status)}
+		if err := writeTextFrame(rw, snapshot); err != nil {
+			return
+		}
 	}
 	_, events, unsubscribe := s.config.Runtime.Events().Subscribe(32)
 	defer unsubscribe()

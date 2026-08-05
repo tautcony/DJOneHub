@@ -128,6 +128,13 @@ export const api = {
     request<{ directory: string }>('/firmware/actions/backup/select-directory', { method: 'POST' }),
   selectFirmwareEDLDirectory: () =>
     request<{ directory: string }>('/firmware/actions/backup/select-edl-directory', { method: 'POST' }),
+  selectFirmwareADBFile: () =>
+    request<{ path: string }>('/firmware/actions/select-adb-file', { method: 'POST' }),
+  firmwareSetADBCommand: (command: string) =>
+    request<{ command: string; command_source: string }>('/firmware/actions/adb/settings', {
+      method: 'POST',
+      body: JSON.stringify({ command }),
+    }),
   vowifi: () => request<VowifiStatus>('/vowifi'),
   vowifiEnable: () => request<{ operation_id: string }>('/vowifi/actions/enable', { method: 'POST' }),
   vowifiDisable: () => request<{ operation_id: string }>('/vowifi/actions/disable', { method: 'POST' }),

@@ -28,11 +28,13 @@ export const useDeviceStore = defineStore('device', () => {
       status.value = next
       return
     }
+    // 非 ready 状态(初始化/降级)下仍保留已检测到的设备身份,避免界面显示
+    // "未检测到兼容的模块";能力集合仅在 ready 时生效,此处照常清空。
     status.value = {
-      snapshot: { ...next.snapshot, identity: { stable_id: '' }, capabilities: {} },
-      identity: {},
-      radio: { registered: false },
-      sim: { inserted: false },
+      snapshot: { ...next.snapshot, capabilities: {} },
+      identity: next.identity ?? {},
+      radio: next.radio ?? { registered: false },
+      sim: next.sim ?? { inserted: false },
     }
   }
 

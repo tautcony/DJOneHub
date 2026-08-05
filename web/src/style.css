@@ -547,6 +547,8 @@ button:disabled { cursor: not-allowed; }
 .firmware-directory-button { display: inline-grid; width: 28px; height: 28px; place-items: center; padding: 0; border: 0; border-radius: 4px; color: var(--ui-text-secondary); background: transparent; cursor: pointer; }
 .firmware-directory-button:hover, .firmware-directory-button:focus-visible { color: var(--ui-text); background: var(--ui-surface-muted); outline: 0; }
 .firmware-directory-button:disabled { color: var(--ui-text-tertiary); cursor: not-allowed; }
+.firmware-adb-command { display: grid; gap: 6px; margin-bottom: 14px; }
+.firmware-adb-command-source { color: var(--ui-text-tertiary); font-size: 11px; }
 .firmware-usb-presets { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
 .firmware-preset { display: grid; gap: 4px; min-width: 0; padding: 12px; border: 1px solid var(--ui-border); border-radius: 7px; color: var(--ui-text); text-align: left; background: var(--ui-surface); }
 .firmware-preset:hover, .firmware-preset.active { border-color: #d9ad27; background: #fffbe8; }

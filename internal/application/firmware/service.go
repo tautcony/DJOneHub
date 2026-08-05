@@ -21,6 +21,7 @@ import (
 	"github.com/iniwex5/vohive/internal/application/operation"
 	derrors "github.com/iniwex5/vohive/internal/domain/errors"
 	"github.com/iniwex5/vohive/internal/runtime"
+	"github.com/iniwex5/vohive/internal/storage"
 )
 
 type ATExecutor interface {
@@ -42,6 +43,15 @@ type Config struct {
 	EDLScript  string
 	EDLPython  string
 	DetectEDL  func(context.Context) (bool, error)
+	ADBCommand string
+	// Store persists user-tunable settings (e.g. the adb command). A nil
+	// store leaves settings in their default state.
+	Store storage.ValueStore
+}
+
+// Settings is the JSON document persisted in the firmware settings namespace.
+type Settings struct {
+	ADBCommand string `json:"adb_command,omitempty"`
 }
 
 func ConfigFromEnvironment() Config {
@@ -49,22 +59,75 @@ func ConfigFromEnvironment() Config {
 		EDLCommand: strings.TrimSpace(os.Getenv("DJONEHUB_EDL_COMMAND")),
 		EDLScript:  strings.TrimSpace(os.Getenv("DJI_FW_EDL_SCRIPT")),
 		EDLPython:  strings.TrimSpace(os.Getenv("DJI_FW_EDL_PYTHON")),
+		ADBCommand: strings.TrimSpace(os.Getenv("DJONEHUB_ADB_COMMAND")),
 	}
 }
 
 type Service struct {
-	at      ATExecutor
-	ops     *operation.Manager
-	runtime *runtime.Runtime
-	config  Config
-	adbList ADBLister
-	mu      sync.Mutex
+	at       ATExecutor
+	ops      *operation.Manager
+	runtime  *runtime.Runtime
+	config   Config
+	settings Settings
+	adbList  ADBLister
+	mu       sync.Mutex
 }
 
 func NewService(at ATExecutor, ops *operation.Manager, rt *runtime.Runtime, config Config) *Service {
 	service := &Service{at: at, ops: ops, runtime: rt, config: config}
-	service.adbList = listADBDevices
+	if config.Store != nil {
+		_ = config.Store.Read(&service.settings)
+	}
+	service.adbList = func() ([]ADBDevice, error) {
+		command, _ := service.adbCommandConfig()
+		return listADBDevices(command)
+	}
 	return service
+}
+
+// adbCommandConfig returns the adb command used to start the local adb
+// server together with its origin. An environment-configured command wins
+// over the value saved from the UI; an empty command means `adb` from PATH.
+func (s *Service) adbCommandConfig() (command, source string) {
+	if command = strings.TrimSpace(s.config.ADBCommand); command != "" {
+		return command, "env"
+	}
+	s.mu.Lock()
+	command = strings.TrimSpace(s.settings.ADBCommand)
+	s.mu.Unlock()
+	if command != "" {
+		return command, "saved"
+	}
+	return "", "default"
+}
+
+// ADBCommandConfig exposes the effective adb command and its origin to the
+// HTTP layer so the UI can render where the value came from.
+func (s *Service) ADBCommandConfig() (command, source string) {
+	return s.adbCommandConfig()
+}
+
+// SetADBCommand persists the adb command used to start the local adb server.
+// An empty command clears the saved value; DJONEHUB_ADB_COMMAND still wins
+// while it is set. A non-empty command must resolve to an executable.
+func (s *Service) SetADBCommand(ctx context.Context, command string) error {
+	command = strings.TrimSpace(command)
+	if s.config.Store == nil {
+		return derrors.New(derrors.CapabilityNotSupported, "firmware settings are unavailable", false, nil)
+	}
+	if command != "" {
+		if _, err := exec.LookPath(command); err != nil {
+			return derrors.New(derrors.InvalidRequest, "adb command not found", false, map[string]any{"command": command})
+		}
+	}
+	s.mu.Lock()
+	s.settings.ADBCommand = command
+	err := s.config.Store.Write(&s.settings)
+	s.mu.Unlock()
+	if err != nil {
+		return derrors.New(derrors.Internal, "unable to save the adb command", true, map[string]any{"cause": err.Error()})
+	}
+	return nil
 }
 
 type Status struct {
@@ -98,6 +161,8 @@ type ADBStatus struct {
 	Serial          string            `json:"serial,omitempty"`
 	State           string            `json:"state,omitempty"`
 	Error           string            `json:"error,omitempty"`
+	Command         string            `json:"command,omitempty"`
+	CommandSource   string            `json:"command_source,omitempty"`
 	Devices         []ADBDeviceStatus `json:"devices,omitempty"`
 }
 
@@ -343,21 +408,86 @@ func (s *Service) SelectEDLDirectory(ctx context.Context) (string, error) {
 	return selectDirectory(ctx, "Choose EDL tool directory", "")
 }
 
+// SelectADBFile opens a file picker for the adb executable.
+func (s *Service) SelectADBFile(ctx context.Context) (string, error) {
+	return selectFile(ctx, "Choose the adb executable", "")
+}
+
+// selectDirectory opens the platform directory chooser. Platforms without a
+// native picker fall back to the conventional value.
 func selectDirectory(ctx context.Context, prompt, fallback string) (string, error) {
-	if goruntime.GOOS != "darwin" {
+	switch goruntime.GOOS {
+	case "darwin":
+		return macPicker(ctx, prompt, "folder")
+	case "linux":
+		return linuxPicker(ctx, prompt, true)
+	default:
 		return fallback, nil
 	}
-	script := `POSIX path of (choose folder with prompt "` + strings.ReplaceAll(prompt, `"`, "") + `")`
+}
+
+// selectFile opens the platform file chooser. Platforms without a native
+// picker fall back to the conventional value.
+func selectFile(ctx context.Context, prompt, fallback string) (string, error) {
+	switch goruntime.GOOS {
+	case "darwin":
+		return macPicker(ctx, prompt, "file")
+	case "linux":
+		return linuxPicker(ctx, prompt, false)
+	default:
+		return fallback, nil
+	}
+}
+
+// macPicker wraps an osascript choose folder/file dialog.
+func macPicker(ctx context.Context, prompt, kind string) (string, error) {
+	verb := "folder"
+	if kind == "file" {
+		verb = "file"
+	}
+	script := `POSIX path of (choose ` + verb + ` with prompt "` + strings.ReplaceAll(prompt, `"`, "") + `")`
 	cmd := exec.CommandContext(ctx, "osascript", "-e", script)
 	output, err := cmd.Output()
 	if err != nil {
-		return "", derrors.New(derrors.InvalidRequest, "backup directory selection was cancelled", false, nil)
+		return "", derrors.New(derrors.InvalidRequest, "file selection was cancelled", false, nil)
 	}
-	directory := strings.TrimSpace(string(output))
-	if directory == "" {
-		return "", derrors.New(derrors.InvalidRequest, "backup directory selection returned an empty path", false, nil)
+	path := strings.TrimSpace(string(output))
+	if path == "" {
+		return "", derrors.New(derrors.InvalidRequest, "file selection returned an empty path", false, nil)
 	}
-	return filepath.Clean(directory), nil
+	return filepath.Clean(path), nil
+}
+
+// linuxPicker opens the graphical chooser through zenity (GNOME) or kdialog
+// (KDE). If neither desktop helper is installed the caller gets a capability
+// error instead of a silent fallback.
+func linuxPicker(ctx context.Context, prompt string, directory bool) (string, error) {
+	choices := [][]string{
+		{"zenity", "--file-selection", "--title=" + prompt},
+		{"kdialog", "--getopenfilename", "."},
+	}
+	if directory {
+		choices = [][]string{
+			{"zenity", "--file-selection", "--directory", "--title=" + prompt},
+			{"kdialog", "--getexistingdirectory", "."},
+		}
+	}
+	for _, argv := range choices {
+		if _, err := exec.LookPath(argv[0]); err != nil {
+			continue
+		}
+		cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+		output, err := cmd.Output()
+		if err != nil {
+			return "", derrors.New(derrors.InvalidRequest, "file selection was cancelled", false, nil)
+		}
+		path := strings.TrimSpace(string(output))
+		if path == "" {
+			return "", derrors.New(derrors.InvalidRequest, "file selection returned an empty path", false, nil)
+		}
+		return filepath.Clean(path), nil
+	}
+	return "", derrors.New(derrors.CapabilityNotSupported, "no graphical file picker is available (install zenity or kdialog)", false, nil)
 }
 
 func (s *Service) unlock(ctx context.Context, report func(int, string)) error {
@@ -695,7 +825,52 @@ func (w *progressWriter) String() string {
 	return w.buffer.String()
 }
 
-func listADBDevices() ([]ADBDevice, error) {
+// adbServerRetryInterval bounds how often we re-attempt to start the ADB
+// server, so a polling status doesn't spawn an adb process on every tick.
+const adbServerRetryInterval = 10 * time.Second
+
+var (
+	adbServerMu      sync.Mutex
+	adbServerLastTry time.Time
+)
+
+// listADBDevices talks to the ADB server on port 5037. When the adb
+// executable is missing the failure is reported as such without dialing. If
+// no server is running, it starts one via `adb start-server` (idempotent
+// when a server is already up) and retries, so the app works without
+// requiring a pre-running adb server on the host.
+func listADBDevices(adbCommand string) ([]ADBDevice, error) {
+	if err := resolveADBCommand(adbCommand); err != nil {
+		return nil, err
+	}
+	devices, err := queryADBDevices()
+	if err == nil {
+		return devices, nil
+	}
+	startErr := ensureADBServer(adbCommand)
+	devices, err = queryADBDevices()
+	if err == nil {
+		return devices, nil
+	}
+	if startErr != nil && !errors.Is(startErr, errADBServerStartThrottled) {
+		return nil, fmt.Errorf("%v (adb server could not be started: %v)", err, startErr)
+	}
+	return nil, err
+}
+
+// resolveADBCommand verifies the configured adb executable exists so a
+// missing binary is reported clearly instead of surfacing dial errors.
+func resolveADBCommand(adbCommand string) error {
+	if adbCommand = strings.TrimSpace(adbCommand); adbCommand == "" {
+		adbCommand = "adb"
+	}
+	if _, err := exec.LookPath(adbCommand); err != nil {
+		return fmt.Errorf("adb executable not found: %s", adbCommand)
+	}
+	return nil
+}
+
+func queryADBDevices() ([]ADBDevice, error) {
 	client, err := gadb.NewClient()
 	if err != nil {
 		return nil, err
@@ -712,12 +887,39 @@ func listADBDevices() ([]ADBDevice, error) {
 	return result, nil
 }
 
+var errADBServerStartThrottled = errors.New("adb start attempt made recently, skipping")
+
+// ensureADBServer runs `adb start-server` unless a start attempt was made
+// within adbServerRetryInterval. It never blocks a caller for long: the
+// command is best-effort and idempotent.
+func ensureADBServer(command string) error {
+	adbServerMu.Lock()
+	defer adbServerMu.Unlock()
+	if time.Since(adbServerLastTry) < adbServerRetryInterval {
+		return errADBServerStartThrottled
+	}
+	adbServerLastTry = time.Now()
+	if command == "" {
+		command = "adb"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, command, "start-server").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s start-server: %w: %s", command, err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
 func (s *Service) adbStatus() ADBStatus {
+	status := ADBStatus{}
+	status.Command, status.CommandSource = s.adbCommandConfig()
 	devices, err := s.adbList()
 	if err != nil {
-		return ADBStatus{Error: err.Error()}
+		status.Error = err.Error()
+		return status
 	}
-	status := ADBStatus{ServerAvailable: true}
+	status.ServerAvailable = true
 	for _, device := range devices {
 		item := ADBDeviceStatus{Serial: device.Serial()}
 		state, stateErr := device.State()

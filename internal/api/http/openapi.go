@@ -22,6 +22,8 @@ func openAPIDocument() map[string]any {
 			"/api/v1/firmware/actions/backup":                      commandPath("firmware backup operation", true),
 			"/api/v1/firmware/actions/backup/select-directory":     commandPath("firmware backup directory selection", false),
 			"/api/v1/firmware/actions/backup/select-edl-directory": commandPath("EDL tool directory selection", false),
+			"/api/v1/firmware/actions/select-adb-file":             commandPath("adb executable selection", false),
+			"/api/v1/firmware/actions/adb/settings":                commandPath("adb command setting", false),
 			"/api/v1/sms/actions/refresh":                          commandPath("SMS list", false),
 			"/api/v1/sms/actions/send":                             commandPath("operation accepted", true),
 			"/api/v1/sms/actions/clear":                            commandPath("SMS clear result", false),
