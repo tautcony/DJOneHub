@@ -744,7 +744,7 @@ func (m *Manager) preCleanChannels() {
 func (m *Manager) createLPAWithAID(aid []byte) (*lpa.Client, error) {
 	client, err := m.channelFactory(aid)
 	if err != nil {
-		return nil, fmt.Errorf("创建 LPA client 失败 (AID=%X): %w", aid, err)
+		return nil, fmt.Errorf("eUICC AID 会话打开失败 (AID=%X): %w", aid, err)
 	}
 	logger.Info("LPA client 创建成功",
 		"device", m.deviceID,
@@ -871,6 +871,12 @@ func (m *Manager) forEachEUICC(fn func(client *lpa.Client, aid []byte, eidStr st
 		"triedCount", len(aids),
 		"err", err)
 	if err != nil {
+		// 模组对 AT+CCHO 直接返回 ERROR 说明 eUICC 不可用（未插入/未启用
+		// eUICC，或固件不支持 APDU 命令），与“AID 不匹配”是不同的问题，
+		// 给出可操作的提示而不是笼统的“未发现 eUICC”。
+		if strings.Contains(err.Error(), "设备返回错误") {
+			return fmt.Errorf("未发现任何 eUICC: 模组拒绝了全部 %d 个 ISD-R AID 的 AT+CCHO 尝试（最后一次错误: %v）。请确认模组已启用 eUICC（如 eSTK.me / 5ber 卡）且固件支持 AT+CCHO/AT+CGLA", len(aids), err)
+		}
 		return fmt.Errorf("未发现任何 eUICC: %w", err)
 	}
 	return fmt.Errorf("未发现任何 eUICC")

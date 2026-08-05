@@ -14,6 +14,7 @@ import (
 
 	"github.com/iniwex5/vohive/internal/backend"
 	"github.com/iniwex5/vohive/internal/domain/device"
+	"github.com/iniwex5/vohive/internal/esim"
 	"github.com/iniwex5/vohive/internal/modem"
 	"github.com/iniwex5/vohive/internal/platform/unsupported"
 )
@@ -142,7 +143,7 @@ func (a *Adapter) OpenAT(_ context.Context, candidate device.Candidate) (backend
 		return nil, err
 	}
 	commandBackend := backend.NewCommandBackend(transport, candidate.Identity)
-	if port, portErr := newESIMPort(candidate.Identity.StableID, transport.Command, func(ctx context.Context) (string, error) {
+	if port, portErr := esim.NewATPort(candidate.Identity.StableID, transport.Command, func(ctx context.Context) (string, error) {
 		identity, err := commandBackend.Identity(ctx)
 		return identity.IMEI, err
 	}, func(ctx context.Context) (string, error) {

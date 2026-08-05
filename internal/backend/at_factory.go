@@ -15,6 +15,9 @@ import (
 // gets a fresh serial handle and fresh command loops.
 type ATFactory struct {
 	OpenAT func(context.Context, device.Candidate) (ModemBackend, error)
+	// ESIMPort 为串口 AT 路径（candidate.ATPort != ""）构建 eSIM 服务端口。
+	// 构建失败时 eSIM 保持不可用，不影响设备连接本身。
+	ESIMPort func(*modem.Manager, device.Candidate) (ESIMPort, error)
 }
 
 func NewATFactory(openAT func(context.Context, device.Candidate) (ModemBackend, error)) *ATFactory {
@@ -59,5 +62,11 @@ func (f *ATFactory) Open(ctx context.Context, candidate device.Candidate) (Modem
 	// window to become usable, while allowing status polling to continue if a
 	// modem takes longer than usual to answer.
 	_ = m.WaitReady(15 * time.Second)
-	return Adapt(NewATBackend(m)), "selected AT serial transport", nil
+	at := NewATBackend(m)
+	if f.ESIMPort != nil {
+		if port, portErr := f.ESIMPort(m, candidate); portErr == nil {
+			at.SetESIMPort(port)
+		}
+	}
+	return Adapt(at), "selected AT serial transport", nil
 }

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	goruntime "runtime"
+	"time"
 
 	httpapi "github.com/iniwex5/vohive/internal/api/http"
 	"github.com/iniwex5/vohive/internal/application/device"
@@ -20,6 +21,8 @@ import (
 	"github.com/iniwex5/vohive/internal/application/vowifi"
 	"github.com/iniwex5/vohive/internal/backend"
 	domain "github.com/iniwex5/vohive/internal/domain/device"
+	djiesim "github.com/iniwex5/vohive/internal/esim"
+	"github.com/iniwex5/vohive/internal/modem"
 	"github.com/iniwex5/vohive/internal/platform/darwin"
 	"github.com/iniwex5/vohive/internal/platform/darwin/native"
 	"github.com/iniwex5/vohive/internal/platform/linux"
@@ -30,6 +33,20 @@ import (
 	"github.com/iniwex5/vohive/internal/storage"
 	"github.com/iniwex5/vohive/internal/transport"
 )
+
+// serialESIMPortBuilder 为串口 AT 路径（Linux/Windows）构建 eSIM 服务端口。
+// 模组暴露为操作系统串口，eUICC APDU 通道走 modem.Manager 的串口 AT 通道
+// （AT+CCHO/AT+CGLA/AT+CCHC），与 darwin 的 USB AT 路径共用 internal/esim.NewATPort。
+func serialESIMPortBuilder() func(*modem.Manager, domain.Candidate) (backend.ESIMPort, error) {
+	return func(m *modem.Manager, candidate domain.Candidate) (backend.ESIMPort, error) {
+		return djiesim.NewATPort(
+			candidate.Identity.StableID,
+			func(cmd string, timeout time.Duration) (string, error) { return m.ExecuteAT(cmd, timeout) },
+			func(context.Context) (string, error) { return m.QueryIMEI() },
+			func(context.Context) (string, error) { return m.QueryICCID() },
+		)
+	}
+}
 
 type noHardwareDiscovery struct{}
 
@@ -76,10 +93,14 @@ func New() (*App, error) {
 		discovery, backends, networkAdapter = adapter, backend.NewATFactory(adapter.OpenAT), adapter
 	case "linux":
 		adapter := linux.New()
-		discovery, backends, networkAdapter = adapter, backend.NewATFactory(nil), adapter
+		factory := backend.NewATFactory(nil)
+		factory.ESIMPort = serialESIMPortBuilder()
+		discovery, backends, networkAdapter = adapter, factory, adapter
 	case "windows":
 		adapter := windows.New()
-		discovery, backends, networkAdapter = adapter, backend.NewATFactory(nil), adapter
+		factory := backend.NewATFactory(nil)
+		factory.ESIMPort = serialESIMPortBuilder()
+		discovery, backends, networkAdapter = adapter, factory, adapter
 	default:
 		return NewOffline()
 	}
@@ -127,6 +148,7 @@ func newApp(r *runtime.Runtime, err error, platformAdapter transport.NetworkCont
 	networkService := network.NewService(devices, ops, r, platformAdapter, database)
 	rawATService := rawat.NewService(devices, r)
 	firmwareConfig := firmware.ConfigFromEnvironment()
+	firmwareConfig.Store = database.Namespace("firmware_settings")
 	if detector, ok := platformAdapter.(interface {
 		DetectEDL(context.Context) (bool, error)
 	}); ok {

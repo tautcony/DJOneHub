@@ -1,4 +1,4 @@
-package darwin
+package esim
 
 import (
 	"context"
@@ -8,25 +8,27 @@ import (
 
 	"github.com/damonto/euicc-go/driver"
 	"github.com/iniwex5/vohive/internal/backend"
-	djiesim "github.com/iniwex5/vohive/internal/esim"
 )
 
-// esimPort adapts the existing LPA manager to the application backend port.
-// The manager creates a fresh APDU channel for each LPA session, while the
-// underlying USB AT transport remains owned by CommandBackend.
+// esimPort 将现有 LPA manager 适配为应用后端端口。
+// manager 为每个 LPA 会话创建全新的 APDU 通道，而底层 AT 传输仍由调用方
+// （CommandBackend 或 ATBackend）持有。
 type esimPort struct {
-	manager *djiesim.Manager
+	manager *Manager
 }
 
-func newESIMPort(candidateID string, command func(string, time.Duration) (string, error), imei func(context.Context) (string, error), iccid func(context.Context) (string, error)) (*esimPort, error) {
-	manager, err := djiesim.NewManager(djiesim.ManagerOptions{
+// NewATPort 创建基于纯 AT 命令传输的 eSIM 服务端口。command 由调用方注入：
+// darwin 走 CommandBackend 的 USB AT 传输，Linux/Windows 走 modem.Manager 的
+// 串口 AT 通道（ExecuteAT），因此两个平台路径共用同一实现。
+func NewATPort(candidateID string, command func(string, time.Duration) (string, error), imei func(context.Context) (string, error), iccid func(context.Context) (string, error)) (backend.ESIMPort, error) {
+	manager, err := NewManager(ManagerOptions{
 		DeviceID:             candidateID,
 		Transport:            "custom",
 		IMEIProvider:         imei,
 		ICCIDProvider:        iccid,
 		SwitchUseRefreshTrue: true,
 		SmartCardChannelFactory: func() (driver.SmartCardChannel, error) {
-			return newUSBATESIMChannel(command), nil
+			return NewATSmartCardChannel(command), nil
 		},
 	})
 	if err != nil {
@@ -35,7 +37,7 @@ func newESIMPort(candidateID string, command func(string, time.Duration) (string
 	return &esimPort{manager: manager}, nil
 }
 
-func (p *esimPort) Overview(context.Context) (*djiesim.EsimOverview, error) {
+func (p *esimPort) Overview(context.Context) (*EsimOverview, error) {
 	if p == nil || p.manager == nil {
 		return nil, fmt.Errorf("eSIM manager is unavailable")
 	}

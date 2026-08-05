@@ -1,4 +1,4 @@
-package darwin
+package esim
 
 import (
 	"encoding/hex"
@@ -9,26 +9,31 @@ import (
 	"time"
 )
 
-type usbATESIMChannel struct {
+// ATSmartCardChannel 实现 euicc-go 的 driver.SmartCardChannel 接口，
+// 通过纯 AT 命令（AT+CCHO / AT+CGLA / AT+CCHC）访问 eUICC APDU 通道。
+// 与具体传输无关：command 由调用方注入（darwin USB bulk 传输或
+// Linux/Windows 串口 modem.Manager 的 AT 通道）。
+type ATSmartCardChannel struct {
 	command func(string, time.Duration) (string, error)
 	channel byte
 	mu      sync.Mutex
 }
 
-func newUSBATESIMChannel(command func(string, time.Duration) (string, error)) *usbATESIMChannel {
-	return &usbATESIMChannel{command: command}
+// NewATSmartCardChannel 创建基于 AT 命令的 eUICC APDU 通道。
+func NewATSmartCardChannel(command func(string, time.Duration) (string, error)) *ATSmartCardChannel {
+	return &ATSmartCardChannel{command: command}
 }
 
-func (c *usbATESIMChannel) Connect() error       { return nil }
-func (c *usbATESIMChannel) Disconnect() error    { return nil }
-func (c *usbATESIMChannel) CurrentChannel() byte { return c.channel }
+func (c *ATSmartCardChannel) Connect() error       { return nil }
+func (c *ATSmartCardChannel) Disconnect() error    { return nil }
+func (c *ATSmartCardChannel) CurrentChannel() byte { return c.channel }
 
-func (c *usbATESIMChannel) OpenLogicalChannel(aid []byte) (byte, error) {
+func (c *ATSmartCardChannel) OpenLogicalChannel(aid []byte) (byte, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	response, err := c.command(fmt.Sprintf(`AT+CCHO="%s"`, strings.ToUpper(hex.EncodeToString(aid))), 8*time.Second)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("AT+CCHO 打开逻辑通道失败: %w", err)
 	}
 	match := regexp.MustCompile(`\+CCHO:\s*(\d+)`).FindStringSubmatch(response)
 	if len(match) != 2 {
@@ -42,7 +47,7 @@ func (c *usbATESIMChannel) OpenLogicalChannel(aid []byte) (byte, error) {
 	return c.channel, nil
 }
 
-func (c *usbATESIMChannel) Transmit(command []byte) ([]byte, error) {
+func (c *ATSmartCardChannel) Transmit(command []byte) ([]byte, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.channel == 0 {
@@ -51,7 +56,7 @@ func (c *usbATESIMChannel) Transmit(command []byte) ([]byte, error) {
 	commandHex := strings.ToUpper(hex.EncodeToString(command))
 	response, err := c.command(fmt.Sprintf(`AT+CGLA=%d,%d,"%s"`, c.channel, len(commandHex), commandHex), 15*time.Second)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("AT+CGLA APDU 透传失败: %w", err)
 	}
 	match := regexp.MustCompile(`\+CGLA:\s*\d+\s*,\s*"?([0-9A-Fa-f]+)"?`).FindStringSubmatch(response)
 	if len(match) != 2 {
@@ -60,7 +65,7 @@ func (c *usbATESIMChannel) Transmit(command []byte) ([]byte, error) {
 	return hex.DecodeString(match[1])
 }
 
-func (c *usbATESIMChannel) CloseLogicalChannel(channel byte) error {
+func (c *ATSmartCardChannel) CloseLogicalChannel(channel byte) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	_, err := c.command(fmt.Sprintf("AT+CCHC=%d", channel), 8*time.Second)

@@ -14,6 +14,7 @@ import (
 // 不修改 modem.Manager 的任何一行代码
 type ATBackend struct {
 	modem       *modem.Manager
+	esimPort    ESIMPort
 	eventsOnce  sync.Once
 	eventsCh    chan BackendEvent
 	eventsDone  chan struct{}
@@ -43,6 +44,55 @@ func (a *ATBackend) Close() error {
 
 // Modem 返回底层 modem.Manager（供需要直接访问 AT 通道的调用方使用，如 AT+QCFG）
 func (a *ATBackend) Modem() *modem.Manager { return a.modem }
+
+// SetESIMPort 注入 eSIM 服务端口。未注入时 eSIM 能力保持不可用。
+func (a *ATBackend) SetESIMPort(port ESIMPort) { a.esimPort = port }
+
+// ============================================================================
+// ESIMPort 实现 — 委托给注入的 eSIM 服务端口（由 internal/esim.NewATPort 构建）
+// ============================================================================
+
+func (a *ATBackend) EID(ctx context.Context) (string, error) {
+	if a.esimPort == nil {
+		return "", commandUnsupported("esim", "esim_eid")
+	}
+	return a.esimPort.EID(ctx)
+}
+
+func (a *ATBackend) Profiles(ctx context.Context) ([]Profile, error) {
+	if a.esimPort == nil {
+		return nil, commandUnsupported("esim", "esim_profiles")
+	}
+	return a.esimPort.Profiles(ctx)
+}
+
+func (a *ATBackend) Download(ctx context.Context, activationCode, confirmationCode, matchingID string) error {
+	if a.esimPort == nil {
+		return commandUnsupported("esim", "esim_download")
+	}
+	return a.esimPort.Download(ctx, activationCode, confirmationCode, matchingID)
+}
+
+func (a *ATBackend) Enable(ctx context.Context, iccid string) error {
+	if a.esimPort == nil {
+		return commandUnsupported("esim", "esim_enable")
+	}
+	return a.esimPort.Enable(ctx, iccid)
+}
+
+func (a *ATBackend) Rename(ctx context.Context, iccid, label string) error {
+	if a.esimPort == nil {
+		return commandUnsupported("esim", "esim_rename")
+	}
+	return a.esimPort.Rename(ctx, iccid, label)
+}
+
+func (a *ATBackend) Delete(ctx context.Context, iccid string) error {
+	if a.esimPort == nil {
+		return commandUnsupported("esim", "esim_delete")
+	}
+	return a.esimPort.Delete(ctx, iccid)
+}
 
 func (a *ATBackend) RawAT(ctx context.Context, command string) (string, error) {
 	if a == nil || a.modem == nil {
