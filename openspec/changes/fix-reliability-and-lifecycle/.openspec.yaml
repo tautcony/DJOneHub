@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-08-06
+requires:
+  - fix-security-and-data-loss
