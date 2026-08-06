@@ -50,6 +50,8 @@ dist/DJOneHub-macOS-universal-<version>.dmg.sha256
 
 `scripts/build-macos.sh` 按架构完成 App、依赖、DMG 和 SHA-256 校验文件的全部构建；`scripts/build-macos-dev.sh` 只生成本地开发测试 App。
 
+发行构建会显式启用 `libusb` 构建标签，并使用脚本下载、编译和随 App 打包的 libusb 1.0.30。`build-macos-dev.sh` 用于连接真实 USB 设备的本地测试，因此需要本机安装 libusb（例如 Homebrew 的 `libusb`）。普通 `go test ./...` 和不带 `libusb` 标签的构建使用 USB AT stub，不要求本机存在 libusb 头文件。
+
 libusb 源码包会缓存到 `dist/cache/libusb/`，后续构建会复用并校验本地缓存。需要强制重新下载时，在命令末尾添加 `--redownload`。
 
 ## 本地开发

@@ -6,19 +6,9 @@ replace github.com/damonto/euicc-go => ./third_party/euicc-go
 
 replace github.com/electricbubble/gadb => ./third_party/gadb
 
-replace github.com/damonto/uicc-go => ./third_party/uicc-go
-
-replace github.com/iniwex5/quectel-qmi-go => ./third_party/quectel-qmi-go
-
-replace github.com/lestrrat-go/strftime => ./third_party/strftime
-
-replace github.com/pkg/errors => ./third_party/pkg-errors
-
 replace golang.org/x/sys => ./third_party/x-sys
 
-replace golang.org/x/text => ./third_party/x-text
-
-replace go.uber.org/multierr => ./third_party/multierr
+replace github.com/iniwex5/netlink => ./third_party/netlink
 
 require (
 	github.com/damonto/euicc-go v1.1.3-0.20260628013808-8d873a2dfc98

@@ -375,8 +375,8 @@ DJOneHub.app/
 
 ```sh
 go test ./...
-CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 go build ./cmd/djonehub
-CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 go build ./cmd/djonehub
+CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 go build -tags libusb ./cmd/djonehub
+CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 go build -tags libusb ./cmd/djonehub
 swift build -c release
 codesign --verify --deep --strict DJOneHub.app
 plutil -lint DJOneHub.app/Contents/Info.plist

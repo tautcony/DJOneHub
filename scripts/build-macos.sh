@@ -54,6 +54,8 @@ CHECKSUM="${DMG}.sha256"
 BUILD_ROOT="${TMPDIR:-/tmp}/djonehub-macos-${ARCH}"
 LIBUSB_SOURCE="${BUILD_ROOT}/libusb-source"
 LIBUSB_INCLUDE="${BUILD_ROOT}/libusb-include"
+SWIFT_BUILD_ROOT="${BUILD_ROOT}/swift-build"
+SWIFT_CACHE="${BUILD_ROOT}/swift-cache"
 
 rm -rf "${STAGE_DIR}" "${DMG_STAGE}" "${BUILD_ROOT}"
 mkdir -p "${APP_DIR}/Contents/MacOS" "${APP_DIR}/Contents/Resources" "${APP_DIR}/Contents/lib" "${STAGE_DIR}/licenses" "${BUILD_ROOT}" "${LIBUSB_CACHE_DIR}"
@@ -122,13 +124,19 @@ if [ "${ARCH}" = "arm64" ]; then
 	NOTIFIER_SRC="${ROOT_DIR}/macos/DJOneHubNotifier"
 	(
 		cd "${NOTIFIER_SRC}"
-		swift build --disable-sandbox -c release
+		mkdir -p "${SWIFT_CACHE}/clang" "${SWIFT_CACHE}/swiftpm"
+		CLANG_MODULE_CACHE_PATH="${SWIFT_CACHE}/clang" \
+		SWIFTPM_MODULECACHE_OVERRIDE="${SWIFT_CACHE}/clang" \
+		SWIFTPM_CUSTOM_CACHE_PATH="${SWIFT_CACHE}/swiftpm" \
+		swift build --disable-sandbox -c release --scratch-path "${SWIFT_BUILD_ROOT}"
+		mkdir -p "${NOTIFIER_SRC}/.build/release"
+		cp "${SWIFT_BUILD_ROOT}/release/libDJOneHubNotifier.a" "${NOTIFIER_SRC}/.build/release/libDJOneHubNotifier.a"
 	)
 	GOCACHE="${BUILD_ROOT}/go-cache"; rm -rf "${GOCACHE}"; mkdir -p "${GOCACHE}"
 	GOCACHE="${GOCACHE}" CGO_CFLAGS="-I${LIBUSB_INCLUDE}" \
-		CGO_LDFLAGS="-L${LIBUSB_ARM}/lib -lusb-1.0" \
+		CGO_LDFLAGS="-L${LIBUSB_ARM}/lib" \
 		MACOSX_DEPLOYMENT_TARGET=13.0 CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 \
-		go build -p 2 -trimpath -buildvcs=false -ldflags="-s -w" -o "${APP_BINARY}" ./cmd/djonehub
+		go build -tags libusb -p 2 -trimpath -buildvcs=false -ldflags="-s -w" -o "${APP_BINARY}" ./cmd/djonehub
 	cp "${LIBUSB_ARM}/lib/libusb-1.0.0.dylib" "${APP_DIR}/Contents/lib/libusb-1.0.0.dylib"
 else
 	LIBUSB_ARM="${BUILD_ROOT}/libusb-arm64"
@@ -139,20 +147,21 @@ else
 		-output "${APP_DIR}/Contents/lib/libusb-1.0.0.dylib"
 
 	NOTIFIER_SRC="${ROOT_DIR}/macos/DJOneHubNotifier"
-	SWIFT_CACHE="${BUILD_ROOT}/swift-cache"
 	mkdir -p "${SWIFT_CACHE}/clang" "${SWIFT_CACHE}/swiftpm"
 	export CLANG_MODULE_CACHE_PATH="${SWIFT_CACHE}/clang"
 	export SWIFTPM_MODULECACHE_OVERRIDE="${SWIFT_CACHE}/clang"
 	export SWIFTPM_CUSTOM_CACHE_PATH="${SWIFT_CACHE}/swiftpm"
 	(
 		cd "${NOTIFIER_SRC}"
-		swift build --disable-sandbox -c release
-		cp .build/release/libDJOneHubNotifier.a "${BUILD_ROOT}/libDJOneHubNotifier-arm64.a"
+		swift build --disable-sandbox -c release --scratch-path "${SWIFT_BUILD_ROOT}"
+		cp "${SWIFT_BUILD_ROOT}/release/libDJOneHubNotifier.a" "${BUILD_ROOT}/libDJOneHubNotifier-arm64.a"
 		swift build --disable-sandbox -c release --arch x86_64 \
+			--scratch-path "${SWIFT_BUILD_ROOT}" \
 			-Xswiftc -runtime-compatibility-version -Xswiftc none
-		cp .build/release/libDJOneHubNotifier.a "${BUILD_ROOT}/libDJOneHubNotifier-x86_64.a"
-		cp "${BUILD_ROOT}/libDJOneHubNotifier-arm64.a" .build/release/libDJOneHubNotifier.a
+		cp "${SWIFT_BUILD_ROOT}/release/libDJOneHubNotifier.a" "${BUILD_ROOT}/libDJOneHubNotifier-x86_64.a"
+		cp "${BUILD_ROOT}/libDJOneHubNotifier-arm64.a" "${SWIFT_BUILD_ROOT}/release/libDJOneHubNotifier.a"
 	)
+	mkdir -p "${NOTIFIER_SRC}/.build/release"
 	lipo -create "${BUILD_ROOT}/libDJOneHubNotifier-arm64.a" "${BUILD_ROOT}/libDJOneHubNotifier-x86_64.a" \
 		-output "${NOTIFIER_SRC}/.build/release/libDJOneHubNotifier.a"
 	build_go() {
@@ -160,9 +169,9 @@ else
 		cache="${BUILD_ROOT}/go-cache-${arch}"
 		rm -rf "${cache}"; mkdir -p "${cache}"
 		if [ "${arch}" = "arm64" ]; then libdir="${LIBUSB_ARM}/lib"; else libdir="${LIBUSB_X86}/lib"; fi
-		CGO_CFLAGS="-I${LIBUSB_INCLUDE}" CGO_LDFLAGS="-L${libdir} -lusb-1.0" GOCACHE="${cache}" \
+		CGO_CFLAGS="-I${LIBUSB_INCLUDE}" CGO_LDFLAGS="-L${libdir}" GOCACHE="${cache}" \
 			MACOSX_DEPLOYMENT_TARGET=13.0 CGO_ENABLED=1 GOOS=darwin GOARCH="${arch}" \
-			go build -p 2 -trimpath -buildvcs=false -ldflags="-s -w" \
+			go build -tags libusb -p 2 -trimpath -buildvcs=false -ldflags="-s -w" \
 			-o "${BUILD_ROOT}/djonehub-${arch}" ./cmd/djonehub
 	}
 	build_go arm64

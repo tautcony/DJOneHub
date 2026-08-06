@@ -16,17 +16,15 @@ The macOS release package includes **libusb 1.0.30**, distributed under the GNU 
 
 ## Vendored Source Dependencies
 
-The source repository includes vendored dependencies under `third_party/` so the versions used by DJOneHub remain reproducible. Their original copyright notices and license texts are retained in the corresponding directories.
+The source repository includes selected source dependencies under `third_party/` so project-specific changes remain reproducible. Their original copyright notices and license texts are retained in the corresponding directories.
 
 | Component | License file |
 | --- | --- |
 | euicc-go | `third_party/euicc-go/LICENSE` |
-| uicc-go | `third_party/uicc-go/LICENSE` |
-| quectel-qmi-go | `third_party/quectel-qmi-go/LICENSE` |
-| strftime | `third_party/strftime/LICENSE` |
-| pkg/errors | `third_party/pkg-errors/LICENSE` |
+| gadb | `third_party/gadb/LICENSE` |
+| github.com/iniwex5/netlink | `third_party/netlink/LICENSE` |
 | golang.org/x/sys | `third_party/x-sys/LICENSE` |
-| golang.org/x/text | `third_party/x-text/LICENSE` |
-| multierr | `third_party/multierr/LICENSE.txt` |
 
-Dependencies fetched through Go modules retain their own licenses and copyright notices. This file is informational and does not replace any component's full license text.
+The following dependencies are fetched directly through Go modules and retain their upstream licenses and copyright notices: `github.com/damonto/uicc-go`, `github.com/iniwex5/quectel-qmi-go`, `github.com/lestrrat-go/strftime`, `github.com/pkg/errors`, `golang.org/x/text`, and `go.uber.org/multierr`.
+
+This file is informational and does not replace any component's full license text.

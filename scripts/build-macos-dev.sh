@@ -12,8 +12,8 @@ cd "${ROOT_DIR}"
 "${ROOT_DIR}/macos/DJOneHubNotifier/build-app.sh" >/dev/null
 ARCH=$(go env GOARCH)
 CGO_CFLAGS="${CGO_CFLAGS:--I/opt/homebrew/include -I/usr/local/include}" \
-CGO_LDFLAGS="${CGO_LDFLAGS:--L/opt/homebrew/lib -L/usr/local/lib -lusb-1.0}" \
-	CGO_ENABLED=1 GOOS=darwin GOARCH="${ARCH}" go build -a -p 2 -trimpath -ldflags="-s -w" \
+CGO_LDFLAGS="${CGO_LDFLAGS:--L/opt/homebrew/lib -L/usr/local/lib}" \
+	CGO_ENABLED=1 GOOS=darwin GOARCH="${ARCH}" go build -tags libusb -a -p 2 -trimpath -ldflags="-s -w" \
 	-o "${DIST_DIR}/djonehub-macos-${ARCH}" ./cmd/djonehub
 
 rm -rf "${APP}"

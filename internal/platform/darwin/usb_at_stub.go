@@ -1,4 +1,4 @@
-//go:build !darwin || !cgo
+//go:build !darwin || !cgo || !libusb
 
 package darwin
 
@@ -15,7 +15,7 @@ type usbDeviceIdentity struct {
 }
 
 func openUSBAT(usbDeviceIdentity) (backend.ATCommandTransport, error) {
-	return nil, errors.New("DJI raw USB AT requires a macOS cgo build with libusb-1.0")
+	return nil, errors.New("DJI raw USB AT requires a macOS cgo build with the libusb build tag")
 }
 
 type unavailableUSBAT struct{}

@@ -9,8 +9,20 @@ set -eu
 root="${0:A:h}"
 build_root="${root}/.build"
 cache_root="${build_root}/local-cache"
+build_root_marker="${build_root}/.djonehub-build-root"
 
 cd "${root}"
+# Swift and Clang build artifacts contain absolute source paths. Clear the
+# package build directory only when this checkout has moved.
+cached_root=""
+if [[ -f "${build_root_marker}" ]]; then
+  cached_root="$(<"${build_root_marker}")"
+fi
+if [[ "${cached_root}" != "${root}" ]]; then
+  rm -rf "${build_root}"
+  mkdir -p "${build_root}"
+  print -r -- "${root}" > "${build_root_marker}"
+fi
 mkdir -p "${cache_root}/clang" "${cache_root}/swiftpm"
 export CLANG_MODULE_CACHE_PATH="${cache_root}/clang"
 export SWIFTPM_MODULECACHE_OVERRIDE="${cache_root}/clang"

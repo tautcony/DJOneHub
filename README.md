@@ -185,6 +185,8 @@ npm --prefix web run build
 
 libusb 源码包会缓存到 `dist/cache/libusb/`。需要强制重新下载时，在命令末尾添加 `--redownload`。
 
+发行构建通过 `libusb` 构建标签启用真实 USB AT 实现，并将脚本编译的 libusb 1.0.30 一起打包。普通 `go test ./...` 不启用该标签，使用 stub，不要求本机安装 libusb；本地 macOS 测试 App `scripts/build-macos-dev.sh` 会启用该标签并需要本机 libusb 头文件和库。
+
 构建跨平台基础二进制：
 
 ```sh

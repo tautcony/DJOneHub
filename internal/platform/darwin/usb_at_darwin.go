@@ -1,8 +1,9 @@
-//go:build darwin && cgo
+//go:build darwin && cgo && libusb
 
 package darwin
 
 /*
+#cgo darwin,libusb LDFLAGS: -lusb-1.0
 #include <libusb-1.0/libusb.h>
 */
 import "C"
