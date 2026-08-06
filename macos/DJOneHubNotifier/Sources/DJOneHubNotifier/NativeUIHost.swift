@@ -374,7 +374,11 @@ final class UIAppDelegate: NSObject, NSApplicationDelegate, @MainActor UNUserNot
 
     // MARK: - System notification actions
 
-    func userNotificationCenter(
+    // 通知点击冷启动时，系统可能在后台队列调用这些回调。Swift 6 下若保持
+    // @MainActor 隔离，动态隔离检查会中止进程；改为 nonisolated，状态访问
+    // 切到主 actor，完成处理器在回调内同步调用（UNUserNotificationCenter
+    // 要求）。
+    nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping @Sendable (UNNotificationPresentationOptions) -> Void
@@ -382,21 +386,27 @@ final class UIAppDelegate: NSObject, NSApplicationDelegate, @MainActor UNUserNot
         completionHandler([.banner, .sound])
     }
 
-    func userNotificationCenter(
+    nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping @Sendable () -> Void
     ) {
-        defer { completionHandler() }
-        switch response.actionIdentifier {
-        case NativeNotificationAction.rejectCall:
-            if let callID = response.notification.request.content.userInfo[NativeNotificationUserInfoKey.callID] as? String {
-                rejectCall(callID: callID)
+        completionHandler()
+        // 先把非 Sendable 的 response 中需要的值提取为 Sendable 值，再切到
+        // 主 actor 访问状态，避免把 response 送入 task 造成数据竞争。
+        let actionIdentifier = response.actionIdentifier
+        let callID = response.notification.request.content.userInfo[NativeNotificationUserInfoKey.callID] as? String
+        Task { @MainActor in
+            switch actionIdentifier {
+            case NativeNotificationAction.rejectCall:
+                if let callID {
+                    rejectCall(callID: callID)
+                }
+            case NativeNotificationAction.openDashboard, UNNotificationDefaultActionIdentifier:
+                openDashboard()
+            default:
+                break
             }
-        case NativeNotificationAction.openDashboard, UNNotificationDefaultActionIdentifier:
-            openDashboard()
-        default:
-            break
         }
     }
 

@@ -1,7 +1,5 @@
 package backend
 
-import "time"
-
 // SignalInfo 信号质量信息（AT 和 QMI 后端统一返回此结构）
 type SignalInfo struct {
 	// 通用信号强度
@@ -74,20 +72,6 @@ type SIMServiceTable struct {
 	Kind            string `json:"kind,omitempty"`
 	RawHex          string `json:"raw_hex,omitempty"`
 	EnabledServices []int  `json:"enabled_services,omitempty"`
-}
-
-// SMS 短信消息（统一数据结构）
-type SMS struct {
-	Index     int
-	Sender    string
-	Content   string
-	Timestamp time.Time
-}
-
-// SMSSummary 短信列表概要
-type SMSSummary struct {
-	Index int
-	Tag   int // 0=已读, 1=未读, 2=已发送, 3=未发送
 }
 
 // OperatingMode 操作模式（映射 AT+CFUN 值和 QMI DMS OperatingMode）

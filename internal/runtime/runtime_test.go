@@ -50,7 +50,8 @@ func (f *fakeBackend) Events(context.Context) (<-chan backend.BackendEvent, erro
 	}
 	return make(chan backend.BackendEvent), nil
 }
-func (f *fakeBackend) Close() error { f.closed = true; return nil }
+func (f *fakeBackend) SetInboundSMSHandler(backend.InboundSMSHandler) {}
+func (f *fakeBackend) Close() error                                  { f.closed = true; return nil }
 
 type fakeFactory struct {
 	b   backend.ModemBackend

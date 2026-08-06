@@ -153,6 +153,10 @@ type DeviceConfig struct {
 	OperatorSelectionPLMN string `mapstructure:"operator_selection_plmn"`
 	OperatorSelectionRAT  string `mapstructure:"operator_selection_rat"`
 
+	// ATTimeoutWatchdogThreshold 连续 AT 超时达到该次数后触发控制面恢复；
+	// 0 表示使用默认值 5。长耗时命令（超时超过 30s）不计入连续计数。
+	ATTimeoutWatchdogThreshold int `mapstructure:"at_timeout_watchdog_threshold"`
+
 	// Serial config
 	BaudRate int    `mapstructure:"baud_rate"`
 	DataBits int    `mapstructure:"data_bits"`

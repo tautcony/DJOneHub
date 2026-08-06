@@ -36,6 +36,13 @@ func newTestManagerWithOverviewLoader(loader func() (*EsimOverview, error)) *Man
 	}
 }
 
+// snapshotCacheFields 在 cacheMu 下读取快照缓存字段，避免与后台加载协程竞争。
+func snapshotCacheFields(mgr *Manager) (*EUICCChipInfo, []EUICCInfo) {
+	mgr.cacheMu.RLock()
+	defer mgr.cacheMu.RUnlock()
+	return mgr.chipInfoCache, mgr.discoveredEUICCs
+}
+
 func newManagerWithChannelFactory(
 	deviceID string,
 	channelFactory func(aid []byte) (*lpa.Client, error),
@@ -174,10 +181,10 @@ func (f *fakeSIMPowerBackend) GetSIMMetadata(ctx context.Context) (*backend.SIMM
 func (f *fakeSIMPowerBackend) SendSMS(ctx context.Context, to, body string) error {
 	return nil
 }
-func (f *fakeSIMPowerBackend) ReadSMS(ctx context.Context, index int) (*backend.SMS, error) {
+func (f *fakeSIMPowerBackend) ReadSMS(ctx context.Context, ref backend.NewSMSRef) (*backend.SMS, error) {
 	return nil, nil
 }
-func (f *fakeSIMPowerBackend) DeleteSMS(ctx context.Context, index int) error { return nil }
+func (f *fakeSIMPowerBackend) DeleteSMS(ctx context.Context, ref backend.NewSMSRef) error { return nil }
 func (f *fakeSIMPowerBackend) ListSMS(ctx context.Context) ([]backend.SMSSummary, error) {
 	return nil, nil
 }
@@ -1483,11 +1490,12 @@ func TestNotifyModemResetDelayedClearsCacheImmediatelyAndReloadsAfterDelay(t *te
 	if mgr.cachedOverview() != nil {
 		t.Fatal("overview cache should be cleared immediately")
 	}
-	if mgr.chipInfoCache != nil {
+	chipInfo, discovered := snapshotCacheFields(mgr)
+	if chipInfo != nil {
 		t.Fatal("chipInfoCache should be cleared immediately")
 	}
-	if len(mgr.discoveredEUICCs) != 0 {
-		t.Fatalf("discoveredEUICCs = %v, want cleared", mgr.discoveredEUICCs)
+	if len(discovered) != 0 {
+		t.Fatalf("discoveredEUICCs = %v, want cleared", discovered)
 	}
 	select {
 	case <-loaded:
@@ -1523,11 +1531,12 @@ func TestNotifyModemResetDelayedSkipsReloadDuringSwitchSuppressionWindow(t *test
 	if got := mgr.cachedOverview(); got != nil {
 		t.Fatalf("cachedOverview() = %#v, want cleared during reset suppression window", got)
 	}
-	if mgr.chipInfoCache != nil {
-		t.Fatalf("chipInfoCache = %#v, want cleared during reset suppression window", mgr.chipInfoCache)
+	chipInfo, discovered := snapshotCacheFields(mgr)
+	if chipInfo != nil {
+		t.Fatalf("chipInfoCache = %#v, want cleared during reset suppression window", chipInfo)
 	}
-	if len(mgr.discoveredEUICCs) != 0 {
-		t.Fatalf("discoveredEUICCs = %v, want cleared during reset suppression window", mgr.discoveredEUICCs)
+	if len(discovered) != 0 {
+		t.Fatalf("discoveredEUICCs = %v, want cleared during reset suppression window", discovered)
 	}
 }
 

@@ -124,7 +124,11 @@ func (a *BusinessAdapter) ListSMS(ctx context.Context) ([]SMSMessage, error) {
 	}
 	out := make([]SMSMessage, 0, len(items))
 	for _, item := range items {
-		out = append(out, SMSMessage{Index: item.Index})
+		out = append(out, SMSMessage{
+			Index: item.Index, Tag: item.Tag, Storage: item.Storage,
+			ReceivedAt: item.ReceivedAt, Sender: item.Sender, Body: item.Body,
+			ConcatRef: item.ConcatRef, PartNumber: item.PartNumber, TotalParts: item.TotalParts,
+		})
 	}
 	return out, nil
 }
@@ -132,27 +136,40 @@ func (a *BusinessAdapter) ListSMS(ctx context.Context) ([]SMSMessage, error) {
 // ReadSMS and the other SMSPort methods preserve message contents for
 // application services while keeping protocol-specific SMS types below the
 // adapter boundary.
-func (a *BusinessAdapter) ReadSMS(ctx context.Context, index int) (SMSMessage, error) {
+func (a *BusinessAdapter) ReadSMS(ctx context.Context, ref NewSMSRef) (SMSMessage, error) {
 	provider, ok := a.legacy.(SMSProvider)
 	if !ok {
 		return SMSMessage{}, unsupported("sms_read", "read_sms")
 	}
-	message, err := provider.ReadSMS(ctx, index)
+	message, err := provider.ReadSMS(ctx, ref)
 	if err != nil {
 		return SMSMessage{}, err
 	}
 	if message == nil {
-		return SMSMessage{}, fmt.Errorf("SMS %d is empty", index)
+		return SMSMessage{}, fmt.Errorf("SMS %d is empty", ref.Index)
 	}
-	return SMSMessage{Index: message.Index, Sender: message.Sender, Body: message.Content, ReceivedAt: message.Timestamp}, nil
+	return SMSMessage{
+		Index: message.Index, Sender: message.Sender, Body: message.Content,
+		ReceivedAt: message.Timestamp, Storage: ref.Storage,
+		ConcatRef: message.ConcatRef, PartNumber: message.PartNumber, TotalParts: message.TotalParts,
+	}, nil
 }
 
-func (a *BusinessAdapter) DeleteSMS(ctx context.Context, index int) error {
+func (a *BusinessAdapter) DeleteSMS(ctx context.Context, ref NewSMSRef) error {
 	provider, ok := a.legacy.(SMSProvider)
 	if !ok {
 		return unsupported("sms_read", "delete_sms")
 	}
-	return provider.DeleteSMS(ctx, index)
+	return provider.DeleteSMS(ctx, ref)
+}
+
+// SetInboundSMSHandler forwards consumer registration to the underlying
+// protocol backend when it supports push notification (AT +CMTI); polling
+// backends record the registration through the same contract.
+func (a *BusinessAdapter) SetInboundSMSHandler(handler InboundSMSHandler) {
+	if port, ok := a.legacy.(SMSInboundPort); ok {
+		port.SetInboundSMSHandler(handler)
+	}
 }
 
 func (a *BusinessAdapter) DeleteAllSMS(ctx context.Context) error {

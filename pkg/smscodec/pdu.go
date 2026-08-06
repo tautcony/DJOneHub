@@ -1,6 +1,7 @@
 package smscodec
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -54,6 +55,23 @@ type ConcatInfo struct {
 	RefBits  int  // 引用号位宽：8 或 16
 	Total    int  // 总分片数
 	Seq      int  // 当前序号 (1-based)
+}
+
+// DecodeDeliverPDUHex 解码一条完整的 SMS-DELIVER PDU 的十六进制文本（含 SMSC
+// 长度前缀，即模组通过 AT+CMGR/AT+CMGL 或 QMI/MBIM 读回的存储格式）。返回发送方
+// 号码、文本内容、SMSC 时间戳和 concat 分片信息。
+func DecodeDeliverPDUHex(pduHex string) (sender string, text string, ts time.Time, concat ConcatInfo, err error) {
+	b, err := hex.DecodeString(strings.TrimSpace(pduHex))
+	if err != nil {
+		return "", "", time.Time{}, ConcatInfo{}, err
+	}
+	if len(b) > 0 {
+		smscLen := int(b[0])
+		if len(b) > smscLen+1 {
+			b = b[smscLen+1:]
+		}
+	}
+	return DecodeDeliverTPDU(b)
 }
 
 // DecodeDeliverTPDU 解码下行短信 TPDU，返回发送方号码、文本内容、发送时间、和 concat 分片信息。

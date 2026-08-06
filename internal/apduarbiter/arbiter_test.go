@@ -641,6 +641,16 @@ func TestLeaseWatchdogForceReleasesWithoutTouch(t *testing.T) {
 			}
 			defer lease.Release()
 
+			// 强制释放必须通知持有方。
+			select {
+			case <-lease.Forced():
+			case <-time.After(time.Second):
+				t.Fatal("lease holder was not notified of force release")
+			}
+			// transport 租约的 APDU 在持有方报告完成前仍占用设备：Release 即
+			// 完成信号。
+			lease.Release()
+
 			ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 			defer cancel()
 			if err := arb.WaitIdle(ctx); err != nil {

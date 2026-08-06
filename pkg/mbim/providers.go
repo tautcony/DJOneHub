@@ -26,6 +26,14 @@ func parseVisibleProviders(info []byte) ([]Provider, error) {
 	if err != nil {
 		return nil, err
 	}
+	// 设备控制的 count 必须先与剩余缓冲区校验，避免按恶意计数预分配内存。
+	capacity := (len(info) - 4) / providerRefLen
+	if capacity < 0 {
+		capacity = 0
+	}
+	if uint64(count) > uint64(capacity) {
+		return nil, fmt.Errorf("mbim: VISIBLE_PROVIDERS count %d exceeds buffer capacity %d", count, capacity)
+	}
 	providers := make([]Provider, 0, count)
 	for i := uint32(0); i < count; i++ {
 		refPos := 4 + int(i)*providerRefLen

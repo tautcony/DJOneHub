@@ -29,11 +29,16 @@ func (r *Reassembler) Add(sender string, concat ConcatInfo, content string) (com
 	if !concat.IsConcat {
 		return true, content
 	}
+	// 8 位引用号回绕后不同长短信可能复用同一 (sender, ref)；总分片数加入缓存
+	// 键并在添加时校验序号范围，避免互相污染。
+	if concat.Total <= 0 || concat.Seq < 1 || concat.Seq > concat.Total {
+		return false, ""
+	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	key := fmt.Sprintf("%s_%d", sender, concat.Ref)
+	key := fmt.Sprintf("%s_%d_%d", sender, concat.Ref, concat.Total)
 	fragments := r.cache[key]
 	for _, f := range fragments {
 		if f.Seq == concat.Seq {

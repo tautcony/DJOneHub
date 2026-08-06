@@ -59,8 +59,20 @@ func newTestServerWithRuntime(t *testing.T, auth Authenticator, r *runtime.Runti
 	return NewServer(Config{
 		Device: devices, SMS: smsService, ESIM: esimService, Network: networkService,
 		Notification: notificationService, RawAT: rawATService, VoWiFi: vowifiService,
-		Operations: ops, Runtime: r, Auth: auth,
+		Operations: ops, Runtime: r, Auth: auth, LoopbackPort: testLoopbackPort,
 	})
+}
+
+// testLoopbackPort anchors the temporary boundary in recorder-based tests,
+// which never bind a real listener.
+const testLoopbackPort = 7575
+
+// withSameOrigin attaches an allowed loopback Origin so a state-changing test
+// request passes the temporary boundary instead of being rejected for missing
+// origin metadata.
+func withSameOrigin(request *http.Request) *http.Request {
+	request.Header.Set("Origin", fmt.Sprintf("http://127.0.0.1:%d", testLoopbackPort))
+	return request
 }
 
 func newTestServer(t *testing.T, auth Authenticator) *Server {
@@ -95,7 +107,7 @@ func TestServerReturnsOfflineSnapshot(t *testing.T) {
 
 func TestServerEnforcesConfiguredAuthentication(t *testing.T) {
 	server := newTestServer(t, AuthenticatorFunc(func(*http.Request) bool { return false }))
-	request := httptest.NewRequest(http.MethodPost, "/api/v1/device/actions/rescan", nil)
+	request := withSameOrigin(httptest.NewRequest(http.MethodPost, "/api/v1/device/actions/rescan", nil))
 	recorder := httptest.NewRecorder()
 	server.Handler().ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusUnauthorized {
@@ -125,7 +137,7 @@ func TestServerManagesLoginStartup(t *testing.T) {
 		t.Fatalf("get startup status = %d, %s", read.Code, read.Body.String())
 	}
 	write := httptest.NewRecorder()
-	handler.ServeHTTP(write, httptest.NewRequest(http.MethodPut, "/api/v1/settings/startup", strings.NewReader(`{"enabled":true}`)))
+	handler.ServeHTTP(write, withSameOrigin(httptest.NewRequest(http.MethodPut, "/api/v1/settings/startup", strings.NewReader(`{"enabled":true}`))))
 	if write.Code != http.StatusOK || !strings.Contains(write.Body.String(), `"enabled":true`) {
 		t.Fatalf("put startup status = %d, %s", write.Code, write.Body.String())
 	}
@@ -159,11 +171,12 @@ func (b *contractBackend) Events(context.Context) (<-chan backend.BackendEvent, 
 }
 func (b *contractBackend) Close() error { return nil }
 
-func (b *contractBackend) ReadSMS(context.Context, int) (backend.SMSMessage, error) {
+func (b *contractBackend) ReadSMS(context.Context, backend.NewSMSRef) (backend.SMSMessage, error) {
 	return backend.SMSMessage{Index: 1, Sender: "+100", Body: "hello"}, nil
 }
-func (b *contractBackend) DeleteSMS(context.Context, int) error { return nil }
-func (b *contractBackend) DeleteAllSMS(context.Context) error   { return nil }
+func (b *contractBackend) DeleteSMS(context.Context, backend.NewSMSRef) error { return nil }
+func (b *contractBackend) DeleteAllSMS(context.Context) error                 { return nil }
+func (b *contractBackend) SetInboundSMSHandler(backend.InboundSMSHandler)     {}
 func (b *contractBackend) EID(context.Context) (string, error) {
 	return "89049032000000000000000000000000", nil
 }
@@ -230,7 +243,7 @@ func newReadyServerWithBackend(t *testing.T, discovery *fakeReadyDiscovery, b ba
 	return NewServer(Config{
 		Device: devices, SMS: smsService, ESIM: esimService, Network: networkService,
 		Notification: notificationService, RawAT: rawATService, VoWiFi: vowifiService,
-		Operations: ops, Runtime: r,
+		Operations: ops, Runtime: r, LoopbackPort: testLoopbackPort,
 	}), ops
 }
 
@@ -277,7 +290,7 @@ func TestAPIContractCoversQueriesCommandsAndOperations(t *testing.T) {
 	}
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/api/v1/sms/actions/send", strings.NewReader(`{"to":"+100","body":"hello"}`))
+	request := withSameOrigin(httptest.NewRequest(http.MethodPost, "/api/v1/sms/actions/send", strings.NewReader(`{"to":"+100","body":"hello"}`)))
 	request.Header.Set("Content-Type", "application/json")
 	handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusAccepted {
@@ -311,7 +324,7 @@ func TestNotificationDebugAPI(t *testing.T) {
 	}
 
 	recorder = httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/api/v1/notifications/debug", strings.NewReader(`{"action":"call_incoming","call_id":"debug-1","number":"10010"}`))
+	request := withSameOrigin(httptest.NewRequest(http.MethodPost, "/api/v1/notifications/debug", strings.NewReader(`{"action":"call_incoming","call_id":"debug-1","number":"10010"}`)))
 	request.Header.Set("Content-Type", "application/json")
 	handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"type":"call.incoming"`) {
@@ -319,7 +332,7 @@ func TestNotificationDebugAPI(t *testing.T) {
 	}
 
 	recorder = httptest.NewRecorder()
-	request = httptest.NewRequest(http.MethodPost, "/api/v1/notifications/debug", strings.NewReader(`{"action":"invalid"}`))
+	request = withSameOrigin(httptest.NewRequest(http.MethodPost, "/api/v1/notifications/debug", strings.NewReader(`{"action":"invalid"}`)))
 	handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "unsupported notification debug action") {
 		t.Fatalf("invalid debug action = %d %s", recorder.Code, recorder.Body.String())
@@ -351,7 +364,7 @@ func TestNotificationPreferencesAndPermissionAPI(t *testing.T) {
 	}
 
 	recorder = httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPut, "/api/v1/notifications/preferences", strings.NewReader(`{"incoming_call":"custom","missed_call":"system","sms":"custom","device_offline":"system","show_debug":false}`))
+	request := withSameOrigin(httptest.NewRequest(http.MethodPut, "/api/v1/notifications/preferences", strings.NewReader(`{"incoming_call":"custom","missed_call":"system","sms":"custom","device_offline":"system","show_debug":false}`)))
 	handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK || preferences.IncomingCall != notification.NotificationPresentationCustom || preferences.SMS != notification.NotificationPresentationCustom || preferences.ShowDebug {
 		t.Fatalf("preferences put = %d %s, value = %+v", recorder.Code, recorder.Body.String(), preferences)
@@ -364,14 +377,14 @@ func TestNotificationPreferencesAndPermissionAPI(t *testing.T) {
 	}
 
 	recorder = httptest.NewRecorder()
-	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/notifications/permissions/open-settings", nil))
+	handler.ServeHTTP(recorder, withSameOrigin(httptest.NewRequest(http.MethodPost, "/api/v1/notifications/permissions/open-settings", nil)))
 	if recorder.Code != http.StatusAccepted || settingsCalled != 1 {
 		t.Fatalf("permission settings = %d calls=%d %s", recorder.Code, settingsCalled, recorder.Body.String())
 	}
 
 	permissionState = notification.NotificationPermissionNotDetermined
 	recorder = httptest.NewRecorder()
-	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/notifications/permissions/request", nil))
+	handler.ServeHTTP(recorder, withSameOrigin(httptest.NewRequest(http.MethodPost, "/api/v1/notifications/permissions/request", nil)))
 	if recorder.Code != http.StatusAccepted || requestCalled != 1 {
 		t.Fatalf("permission request = %d calls=%d %s", recorder.Code, requestCalled, recorder.Body.String())
 	}
@@ -412,7 +425,7 @@ func TestAPIContractReturnsStructuredOfflineAndUnsupportedErrors(t *testing.T) {
 				body = strings.NewReader(check.body)
 			}
 			recorder := httptest.NewRecorder()
-			handler.ServeHTTP(recorder, httptest.NewRequest(check.method, check.path, body))
+			handler.ServeHTTP(recorder, withSameOrigin(httptest.NewRequest(check.method, check.path, body)))
 			if recorder.Code != check.status {
 				t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 			}
@@ -431,7 +444,7 @@ func TestAPIContractReturnsStructuredOfflineAndUnsupportedErrors(t *testing.T) {
 
 	ready, _ := newReadyServer(t, domain.CapabilitySet{domain.CapabilityDeviceStatus: ""})
 	recorder := httptest.NewRecorder()
-	ready.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/device/actions/raw-at", strings.NewReader(`{"command":"AT"}`)))
+	ready.Handler().ServeHTTP(recorder, withSameOrigin(httptest.NewRequest(http.MethodPost, "/api/v1/device/actions/raw-at", strings.NewReader(`{"command":"AT"}`))))
 	if recorder.Code != http.StatusUnprocessableEntity || !strings.Contains(recorder.Body.String(), "raw_at") {
 		t.Fatalf("unsupported response = %d %s", recorder.Code, recorder.Body.String())
 	}
@@ -442,8 +455,8 @@ func TestAPIContractRejectsInvalidPayloadAndMethod(t *testing.T) {
 	handler := server.Handler()
 
 	for _, request := range []*http.Request{
-		httptest.NewRequest(http.MethodPost, "/api/v1/sms/actions/send", strings.NewReader(`{"to":"+100"}`)),
-		httptest.NewRequest(http.MethodPost, "/api/v1/esim/actions/download", strings.NewReader(`{"matching_id":"x"}`)),
+		withSameOrigin(httptest.NewRequest(http.MethodPost, "/api/v1/sms/actions/send", strings.NewReader(`{"to":"+100"}`))),
+		withSameOrigin(httptest.NewRequest(http.MethodPost, "/api/v1/esim/actions/download", strings.NewReader(`{"matching_id":"x"}`))),
 		httptest.NewRequest(http.MethodGet, "/api/v1/device/status", nil),
 	} {
 		if request.Method == http.MethodGet {
@@ -460,7 +473,7 @@ func TestAPIContractRejectsInvalidPayloadAndMethod(t *testing.T) {
 func TestAPIContractRejectsTrailingJSON(t *testing.T) {
 	server := newTestServer(t, nil)
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/api/v1/device/actions/raw-at", strings.NewReader(`{"command":"AT"} {"extra":true}`))
+	request := withSameOrigin(httptest.NewRequest(http.MethodPost, "/api/v1/device/actions/raw-at", strings.NewReader(`{"command":"AT"} {"extra":true}`)))
 	server.Handler().ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "invalid JSON") {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
@@ -577,6 +590,7 @@ func TestWebSocketStaysOpenWhenSnapshotFails(t *testing.T) {
 	server := newTestServerWithRuntime(t, nil, r)
 	ts := httptest.NewServer(server.Handler())
 	defer ts.Close()
+	server.SetLoopbackPort(ts.Listener.Addr().(*net.TCPAddr).Port)
 
 	conn, _, err := websocket.DefaultDialer.Dial("ws://"+strings.TrimPrefix(ts.URL, "http://")+"/api/v1/events/ws", nil)
 	if err != nil {
@@ -640,7 +654,7 @@ func TestFirmwareADBSettingsAPI(t *testing.T) {
 	firmwareService := firmware.NewService(nil, ops, r, firmware.Config{Store: store})
 	server := NewServer(Config{
 		Firmware: firmwareService, Operations: ops, Runtime: r,
-		Auth: AuthenticatorFunc(func(*http.Request) bool { return true }),
+		Auth: AuthenticatorFunc(func(*http.Request) bool { return true }), LoopbackPort: testLoopbackPort,
 	})
 	handler := server.Handler()
 
@@ -650,7 +664,7 @@ func TestFirmwareADBSettingsAPI(t *testing.T) {
 	}
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/api/v1/firmware/actions/adb/settings", strings.NewReader(fmt.Sprintf(`{"command":%q}`, executable)))
+	request := withSameOrigin(httptest.NewRequest(http.MethodPost, "/api/v1/firmware/actions/adb/settings", strings.NewReader(fmt.Sprintf(`{"command":%q}`, executable))))
 	handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d: %s", recorder.Code, recorder.Body.String())
@@ -671,7 +685,7 @@ func TestFirmwareADBSettingsAPI(t *testing.T) {
 
 	// A command that does not resolve to an executable is rejected.
 	recorder = httptest.NewRecorder()
-	request = httptest.NewRequest(http.MethodPost, "/api/v1/firmware/actions/adb/settings", strings.NewReader(`{"command":"definitely-not-a-real-command-xyz"}`))
+	request = withSameOrigin(httptest.NewRequest(http.MethodPost, "/api/v1/firmware/actions/adb/settings", strings.NewReader(`{"command":"definitely-not-a-real-command-xyz"}`)))
 	handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("invalid command status = %d, want 400: %s", recorder.Code, recorder.Body.String())

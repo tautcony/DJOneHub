@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 )
 
 // Device is an opened MBIM control endpoint with transaction multiplexing.
@@ -19,6 +20,9 @@ type Device struct {
 	collector map[uint32]*collector
 
 	indications chan Indication
+
+	sweepStop     chan struct{}
+	sweepStopOnce sync.Once
 }
 
 type commandResult struct {
@@ -44,6 +48,7 @@ func newDevice(tr Transport) *Device {
 		pending:     make(map[uint32]chan commandResult),
 		collector:   make(map[uint32]*collector),
 		indications: make(chan Indication, 16),
+		sweepStop:   make(chan struct{}),
 	}
 }
 
@@ -53,6 +58,7 @@ func (d *Device) Open(ctx context.Context, maxControlTransfer uint32) error {
 	d.maxCtrl = maxControlTransfer
 	d.mu.Unlock()
 	go d.readLoop()
+	go d.sweepLoop()
 
 	// 走 mbim-proxy 时必须先发 PROXY_CONFIG 告诉代理要打开哪个底层设备,
 	// 之后 OPEN 才能被代理正确转发——顺序与 libmbim / `mbimcli -p` 一致。
@@ -124,7 +130,10 @@ func (d *Device) Command(ctx context.Context, service UUID, cid uint32, ct Comma
 
 	select {
 	case <-ctx.Done():
+		// 上下文取消/超时不仅清理等待者，也清理该事务的不完整碎片收集器，
+		// 防止碎片流永不完成时收集器无限滞留。
 		d.removePending(tx)
+		d.removeCollector(tx)
 		return CommandDone{}, ctx.Err()
 	case result := <-ch:
 		if result.err != nil {
@@ -132,6 +141,38 @@ func (d *Device) Command(ctx context.Context, service UUID, cid uint32, ct Comma
 		}
 		return result.resp, nil
 	}
+}
+
+// sweepLoop 定期清理长时间未收到碎片的不完整收集器，避免设备碎片流被
+// 中断后收集器无限滞留。
+func (d *Device) sweepLoop() {
+	ticker := time.NewTicker(collectorSweepInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-d.sweepStop:
+			return
+		case <-ticker.C:
+			d.sweepStaleCollectors()
+		}
+	}
+}
+
+func (d *Device) sweepStaleCollectors() {
+	d.mu.Lock()
+	cutoff := time.Now().Add(-collectorStaleTTL)
+	for tx, c := range d.collector {
+		if c.lastSeen.Before(cutoff) {
+			delete(d.collector, tx)
+		}
+	}
+	d.mu.Unlock()
+}
+
+func (d *Device) stopSweep() {
+	d.sweepStopOnce.Do(func() {
+		close(d.sweepStop)
+	})
 }
 
 // Indications returns unsolicited INDICATE_STATUS messages.
@@ -248,6 +289,7 @@ func (d *Device) failPending(err error) {
 	d.pending = make(map[uint32]chan commandResult)
 	d.collector = make(map[uint32]*collector)
 	d.mu.Unlock()
+	d.stopSweep()
 	for _, ch := range pending {
 		ch <- commandResult{err: err}
 	}
@@ -288,6 +330,7 @@ func (d *Device) Close() error {
 
 	d.writeMu.Lock()
 	defer d.writeMu.Unlock()
+	d.stopSweep()
 	_ = d.tr.WriteMessage(encodeClose(tx))
 	return d.tr.Close()
 }

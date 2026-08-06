@@ -58,11 +58,21 @@ type Config struct {
 	SetNotificationPreferences    func(notification.NotificationPreferences) error
 	StartupStatus                 func() startup.Status
 	SetStartupEnabled             func(bool) error
+	// LoopbackPort is the port the server binds on loopback. It anchors the
+	// temporary boundary's Origin/Host checks; set via SetLoopbackPort before
+	// serving. The guard fails closed when it is unset.
+	LoopbackPort int
 }
 
 type Server struct{ config Config }
 
 func NewServer(config Config) *Server { return &Server{config: config} }
+
+// SetLoopbackPort records the bound loopback port used to validate Origin and
+// Host metadata on state-changing requests and WebSocket upgrades. It must be
+// called before serving; without it the boundary rejects every state-changing
+// request and upgrade.
+func (s *Server) SetLoopbackPort(port int) { s.config.LoopbackPort = port }
 
 func (s *Server) Handler() nethttp.Handler {
 	mux := nethttp.NewServeMux()
@@ -115,7 +125,7 @@ func (s *Server) Handler() nethttp.Handler {
 	mux.HandleFunc("/api/v1/operations/", s.operationStatus)
 	mux.HandleFunc("/api/v1/openapi.json", s.openapi)
 	mux.HandleFunc("/api/v1/events/ws", s.websocket)
-	return logRequests(mux)
+	return logRequests(s.loopbackGuard(mux))
 }
 
 func (s *Server) protected(w nethttp.ResponseWriter, r *nethttp.Request) bool {
@@ -625,7 +635,11 @@ func (s *Server) firmwareMode(w nethttp.ResponseWriter, r *nethttp.Request) {
 	writeJSON(w, nethttp.StatusAccepted, map[string]string{"operation_id": id})
 }
 
-var adbShellUpgrader = websocket.Upgrader{CheckOrigin: func(*nethttp.Request) bool { return true }}
+// adbShellUpgrader builds an upgrader that enforces the same loopback
+// Origin/Host boundary as the event WebSocket instead of accepting any origin.
+func (s *Server) adbShellUpgrader() websocket.Upgrader {
+	return websocket.Upgrader{CheckOrigin: s.loopbackOriginAllowed}
+}
 
 func (s *Server) firmwareADBShellWS(w nethttp.ResponseWriter, r *nethttp.Request) {
 	if !s.protected(w, r) {
@@ -646,7 +660,8 @@ func (s *Server) firmwareADBShellWS(w nethttp.ResponseWriter, r *nethttp.Request
 		return
 	}
 	defer shell.Close()
-	conn, err := adbShellUpgrader.Upgrade(w, r, nil)
+	upgrader := s.adbShellUpgrader()
+	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
 	}
@@ -1040,6 +1055,10 @@ func (s *Server) websocket(w nethttp.ResponseWriter, r *nethttp.Request) {
 	}
 	if !isWebSocketRequest(r) {
 		writeError(w, derrors.New(derrors.InvalidRequest, "websocket upgrade required", false, nil))
+		return
+	}
+	if !s.loopbackOriginAllowed(r) {
+		writeError(w, derrors.New(derrors.InvalidRequest, "websocket origin rejected", false, nil))
 		return
 	}
 	hijacker, ok := w.(nethttp.Hijacker)

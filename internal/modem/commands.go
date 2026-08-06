@@ -210,7 +210,16 @@ func (m *Manager) SMSReadPDU(index string) (string, error) {
 	return pdu, nil
 }
 
-func (m *Manager) SMSListAllPDU() ([]string, error) {
+// SMSEntry 是 CMGL 列表中的一条短信：模组真实存储索引 + PDU 原文。
+type SMSEntry struct {
+	Index uint32
+	PDU   string
+}
+
+// SMSListAllPDU 列出当前 AT 存储中的全部短信，返回 (真实存储索引, PDU) 对，
+// 而非合成循环索引。列表命令基于当前 CPMS 读存储选择，条目身份在后续
+// list/read/delete 中原样保留。
+func (m *Manager) SMSListAllPDU() ([]SMSEntry, error) {
 	resp, err := m.ExecuteAT("AT+CMGL=4", 10*time.Second)
 	if err != nil {
 		return nil, err
@@ -218,7 +227,7 @@ func (m *Manager) SMSListAllPDU() ([]string, error) {
 	if strings.TrimSpace(resp) == "OK" {
 		return nil, nil
 	}
-	return extractAllSMSPDUsAfterPrefix(resp, "+CMGL:"), nil
+	return extractAllSMSEntriesAfterPrefix(resp, "+CMGL:"), nil
 }
 
 func (m *Manager) SMSDeleteAll() error {

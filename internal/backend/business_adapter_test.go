@@ -33,12 +33,12 @@ func (f *contractLegacy) GetNativeMCCMNC(context.Context) (string, string, error
 func (f *contractLegacy) GetNativeSPN(context.Context) (string, error)         { return "Test", nil }
 func (f *contractLegacy) GetSIMMetadata(context.Context) (*SIMMetadata, error) { return nil, nil }
 func (f *contractLegacy) SendSMS(context.Context, string, string) error        { return nil }
-func (f *contractLegacy) ReadSMS(context.Context, int) (*SMS, error) {
+func (f *contractLegacy) ReadSMS(context.Context, NewSMSRef) (*SMS, error) {
 	return &SMS{Index: 7, Sender: testfixtures.MSISDN, Content: "code 123456", Timestamp: time.Unix(1, 0)}, nil
 }
-func (f *contractLegacy) DeleteSMS(context.Context, int) error { return nil }
+func (f *contractLegacy) DeleteSMS(context.Context, NewSMSRef) error { return nil }
 func (f *contractLegacy) ListSMS(context.Context) ([]SMSSummary, error) {
-	return []SMSSummary{{Index: 7}}, nil
+	return []SMSSummary{{Index: 7, Storage: "SM", ReceivedAt: time.Unix(2, 0), Sender: testfixtures.MSISDN, Body: "code 123456"}}, nil
 }
 func (f *contractLegacy) DeleteAllSMS(context.Context) error                    { return nil }
 func (f *contractLegacy) SetOperatingMode(context.Context, OperatingMode) error { return nil }
@@ -70,7 +70,7 @@ func TestBusinessAdapterExposesCommonContractAndLegacyPorts(t *testing.T) {
 		!adapter.Capabilities(context.Background()).Has(device.CapabilityAPDU) {
 		t.Fatalf("capabilities=%v", adapter.Capabilities(context.Background()))
 	}
-	message, err := adapter.ReadSMS(context.Background(), 7)
+	message, err := adapter.ReadSMS(context.Background(), NewSMSRef{Index: 7})
 	if err != nil || message.Body != "code 123456" {
 		t.Fatalf("message=%+v err=%v", message, err)
 	}

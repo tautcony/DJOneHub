@@ -880,26 +880,56 @@ func (q *QMIBackend) SendSMSWithOptions(ctx context.Context, to, body string, op
 	return nil
 }
 
-func (q *QMIBackend) ReadSMS(ctx context.Context, index int) (*SMS, error) {
-	// 优先从 NV 存储（storageType=1）读取
-	pdu, err := q.source.WMSRawReadMessage(ctx, 1, uint32(index))
+// SetInboundSMSHandler records the inbound SMS consumer. QMI's notification
+// source is WMS indications rather than +CMTI; delivery of newly listed
+// messages runs through the consumer-owned polling path, so the registration
+// keeps the same contract without a push hook here.
+func (q *QMIBackend) SetInboundSMSHandler(handler InboundSMSHandler) {
+	// The polling refresh path owns inbound delivery; nothing to push on +CMTI.
+	// Keep the method to satisfy the shared contract.
+}
+
+func qmiStorageType(storage string) uint8 {
+	if storage == "0" {
+		return 0
+	}
+	return 1
+}
+
+// ReadSMS 按存储引用读取并解码短信 PDU。PDU 解析失败返回错误而不删除条目，
+// 由消费者保留以便刷新重试。
+func (q *QMIBackend) ReadSMS(ctx context.Context, ref NewSMSRef) (*SMS, error) {
+	pdu, err := q.source.WMSRawReadMessage(ctx, qmiStorageType(ref.Storage), uint32(ref.Index))
 	if err != nil {
-		// 回退到 SIM 存储（storageType=0）
-		pdu, err = q.source.WMSRawReadMessage(ctx, 0, uint32(index))
+		// 引用未指定存储时回退到另一存储类型
+		if ref.Storage == "" {
+			pdu, err = q.source.WMSRawReadMessage(ctx, 1-qmiStorageType(ref.Storage), uint32(ref.Index))
+		}
 		if err != nil {
 			return nil, err
 		}
 	}
+	sender, content, timestamp, concat, err := smscodec.DecodeDeliverPDUHex(hex.EncodeToString(pdu))
+	if err != nil {
+		return nil, fmt.Errorf("短信 %d PDU 解码失败: %w", ref.Index, err)
+	}
 	return &SMS{
-		Index:   index,
-		Content: hex.EncodeToString(pdu),
+		Index:      ref.Index,
+		Sender:     sender,
+		Content:    content,
+		Timestamp:  timestamp,
+		ConcatRef:  concat.Ref,
+		PartNumber: concat.Seq,
+		TotalParts: concat.Total,
 	}, nil
 }
 
-func (q *QMIBackend) DeleteSMS(ctx context.Context, index int) error {
-	return q.source.WMSDeleteMessage(ctx, 1, uint32(index))
+func (q *QMIBackend) DeleteSMS(ctx context.Context, ref NewSMSRef) error {
+	return q.source.WMSDeleteMessage(ctx, qmiStorageType(ref.Storage), uint32(ref.Index))
 }
 
+// ListSMS 返回全部短信概要：真实存储索引、tag 与解码出的时间戳/内容。
+// WMS 列表本身不含内容，逐条读取解码以支持上层合并去重。
 func (q *QMIBackend) ListSMS(ctx context.Context) ([]SMSSummary, error) {
 	msgs, err := q.source.WMSListMessagesAuto(ctx, 1)
 	if err != nil {
@@ -907,10 +937,22 @@ func (q *QMIBackend) ListSMS(ctx context.Context) ([]SMSSummary, error) {
 	}
 	result := make([]SMSSummary, 0, len(msgs))
 	for _, m := range msgs {
-		result = append(result, SMSSummary{
-			Index: int(m.Index),
-			Tag:   int(m.Tag),
-		})
+		summary := SMSSummary{
+			Index:   int(m.Index),
+			Tag:     int(m.Tag),
+			Storage: "1",
+		}
+		if pdu, readErr := q.source.WMSRawReadMessage(ctx, 1, m.Index); readErr == nil {
+			if sender, content, timestamp, concat, decodeErr := smscodec.DecodeDeliverPDUHex(hex.EncodeToString(pdu)); decodeErr == nil {
+				summary.ReceivedAt = timestamp
+				summary.Sender = sender
+				summary.Body = content
+				summary.ConcatRef = concat.Ref
+				summary.PartNumber = concat.Seq
+				summary.TotalParts = concat.Total
+			}
+		}
+		result = append(result, summary)
 	}
 	return result, nil
 }

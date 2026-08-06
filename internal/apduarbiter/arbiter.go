@@ -53,6 +53,19 @@ type Options struct {
 	// MaxQMITransports 限制 QMI logical-channel transport 并发数量。
 	// 只有显式使用 TransportScopeQMIChannel 的 QMI channel APDU 会使用该并发窗口。
 	MaxQMITransports int
+	// TransportRecoveryDeadline 是被强制释放的 transport 租约（其 APDU 仍在
+	// 飞行中）等待完成的期限。期限内持有方未报告完成，仲裁器将传输标记为隔离
+	// 并上报传输所有者（modem manager）执行关闭/重新初始化。
+	TransportRecoveryDeadline time.Duration
+}
+
+// TransportOwner 由传输所有者（modem manager）实现，接收传输隔离上报并负责
+// 关闭/重新初始化传输。仲裁器从不关闭它不拥有的传输。
+type TransportOwner interface {
+	// OnTransportQuarantine 在传输恢复期限到期、飞行中的 APDU 仍未完成时被
+	// 调用。所有者应执行关闭/重新初始化序列，并在完成后调用
+	// ConfirmTransportRecovery 解除隔离。
+	OnTransportQuarantine(reason string)
 }
 
 type Request struct {
@@ -123,6 +136,8 @@ type activeLease struct {
 	acquiredAt time.Time
 	expiresAt  time.Time
 	timer      *time.Timer
+	// forced 在租约被 MaxLeaseHold 强制释放时关闭，通知持有方。
+	forced chan struct{}
 }
 
 type activeBarrier struct {
@@ -146,6 +161,15 @@ type Arbiter struct {
 	simAuthReady     simAuthReadyState
 	notifyC          chan struct{}
 
+	// forceReleasedTransports 记录被 MaxLeaseHold 强制释放但 APDU 仍在飞行中的
+	// transport 租约：其 APDU 仍占用设备，新独占租约与 SIM 切换屏障不得授予，
+	// 直到持有方报告完成（Release）或传输恢复期限到期后隔离上报所有者。
+	forceReleasedTransports []*activeLease
+	// transportQuarantined 表示传输已被隔离（恢复期限内未完成）：不再接受任何
+	// 新的 APDU 工作，直到所有者确认恢复。
+	transportQuarantined bool
+	transportOwner       TransportOwner
+
 	waitRequests   atomic.Uint64
 	acquires       atomic.Uint64
 	waitTimeouts   atomic.Uint64
@@ -161,7 +185,19 @@ type Lease struct {
 	channel   int
 	scope     TransportScope
 	leaseType LeaseType
+	forced    chan struct{}
 	once      sync.Once
+}
+
+// Forced 返回一个在租约被 MaxLeaseHold 强制释放时关闭的 channel。持有方应监听
+// 它以感知租约被收回（例如用于记录与清理），而不是继续假定独占性。
+func (l *Lease) Forced() <-chan struct{} {
+	if l == nil || l.forced == nil {
+		ch := make(chan struct{})
+		close(ch)
+		return ch
+	}
+	return l.forced
 }
 
 type Barrier struct {
@@ -183,11 +219,34 @@ func New(deviceID string, opts Options) *Arbiter {
 	if opts.MaxQMITransports <= 0 {
 		opts.MaxQMITransports = 1
 	}
+	if opts.TransportRecoveryDeadline <= 0 {
+		opts.TransportRecoveryDeadline = 30 * time.Second
+	}
 	return &Arbiter{
 		deviceID: strings.TrimSpace(deviceID),
 		opts:     opts,
 		notifyC:  make(chan struct{}),
 	}
+}
+
+// SetTransportOwner 注册传输所有者。所有者接收隔离上报并负责关闭/重新初始化
+// 传输，随后调用 ConfirmTransportRecovery 解除隔离。
+func (a *Arbiter) SetTransportOwner(owner TransportOwner) {
+	a.mu.Lock()
+	a.transportOwner = owner
+	a.mu.Unlock()
+}
+
+// ConfirmTransportRecovery 由传输所有者在其重新初始化完成后调用，解除传输
+// 隔离并允许新的 APDU 工作。对未隔离的仲裁器是无操作。
+func (a *Arbiter) ConfirmTransportRecovery() {
+	a.mu.Lock()
+	wasQuarantined := a.transportQuarantined
+	a.transportQuarantined = false
+	if wasQuarantined {
+		a.signalLocked()
+	}
+	a.mu.Unlock()
 }
 
 func (a *Arbiter) AcquireTransport(ctx context.Context, req Request) (*Lease, error) {
@@ -322,8 +381,8 @@ func (a *Arbiter) Stats() Stats {
 		CurrentQueue:     len(a.queue),
 		ActiveSessions:   len(a.activeSessions),
 		ActiveOneshot:    a.activeOneshot != nil,
-		ActiveTransport:  len(a.activeTransports) > 0,
-		ActiveTransports: len(a.activeTransports),
+		ActiveTransport:  a.hasActiveTransportLocked(),
+		ActiveTransports: len(a.activeTransports) + len(a.forceReleasedTransports),
 		ActiveBarriers:   len(a.activeBarriers),
 		CurrentQueueType: queueType,
 	}
@@ -433,6 +492,7 @@ func (a *Arbiter) acquire(ctx context.Context, req Request, leaseType LeaseType)
 			active := &activeLease{
 				waitTicket: ticket,
 				acquiredAt: time.Now(),
+				forced:     make(chan struct{}),
 			}
 			if a.opts.MaxLeaseHold > 0 {
 				active.expiresAt = active.acquiredAt.Add(a.opts.MaxLeaseHold)
@@ -457,6 +517,7 @@ func (a *Arbiter) acquire(ctx context.Context, req Request, leaseType LeaseType)
 				channel:   ticket.channel,
 				scope:     ticket.scope,
 				leaseType: leaseType,
+				forced:    active.forced,
 			}, nil
 		}
 
@@ -667,6 +728,17 @@ func (a *Arbiter) release(leaseID uint64, leaseType LeaseType, reason string) {
 	defer a.mu.Unlock()
 
 	released := a.removeActiveLocked(leaseID, leaseType)
+	if released == nil && leaseType == LeaseTypeTransport {
+		// 租约可能已被强制释放但仍处于飞行中：持有方在 APDU 完成后调用
+		// Release 即报告完成，占用设备的状态随之解除。
+		for i, active := range a.forceReleasedTransports {
+			if active.id == leaseID {
+				released = active
+				a.forceReleasedTransports = append(a.forceReleasedTransports[:i], a.forceReleasedTransports[i+1:]...)
+				break
+			}
+		}
+	}
 	if released == nil {
 		return
 	}
@@ -701,10 +773,10 @@ func (a *Arbiter) releaseBarrier(barrierID uint64) {
 
 func (a *Arbiter) releaseExpired(leaseID uint64, leaseType LeaseType) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 
 	active := a.findActiveLocked(leaseID, leaseType)
 	if active == nil {
+		a.mu.Unlock()
 		return
 	}
 	if !active.expiresAt.IsZero() {
@@ -712,12 +784,14 @@ func (a *Arbiter) releaseExpired(leaseID uint64, leaseType LeaseType) {
 			if active.timer != nil {
 				active.timer.Reset(remaining)
 			}
+			a.mu.Unlock()
 			return
 		}
 	}
 
 	released := a.removeActiveLocked(leaseID, leaseType)
 	if released == nil {
+		a.mu.Unlock()
 		return
 	}
 	if released.timer != nil {
@@ -725,8 +799,58 @@ func (a *Arbiter) releaseExpired(leaseID uint64, leaseType LeaseType) {
 	}
 	a.forcedReleases.Add(1)
 	holdMs := time.Since(released.acquiredAt).Milliseconds()
+
+	if leaseType == LeaseTypeTransport {
+		// 被强制释放的 transport 租约的 APDU 仍在飞行中，视为仍占用设备：
+		// 不授予新的独占租约或 SIM 切换屏障，直到持有方报告完成，或传输恢复
+		// 期限到期后隔离上报给传输所有者。
+		released.expiresAt = time.Time{}
+		leaseID := released.id
+		a.forceReleasedTransports = append(a.forceReleasedTransports, released)
+		released.timer = time.AfterFunc(a.opts.TransportRecoveryDeadline, func() {
+			a.quarantineTransport(leaseID)
+		})
+		close(released.forced) // 通知持有方租约已被强制释放
+		a.logEvent(released.waitTicket, "force-release", len(a.queue), 0, holdMs, "force-timeout")
+		a.signalLocked()
+		a.mu.Unlock()
+		return
+	}
+
+	close(released.forced)
 	a.logEvent(released.waitTicket, "force-release", len(a.queue), 0, holdMs, "force-timeout")
 	a.signalLocked()
+	a.mu.Unlock()
+}
+
+// quarantineTransport 在传输恢复期限内飞行中的 APDU 仍未完成时被调用：将传输
+// 标记为隔离并上报传输所有者执行关闭/重新初始化。仲裁器从不关闭它不拥有的传输。
+func (a *Arbiter) quarantineTransport(leaseID uint64) {
+	a.mu.Lock()
+	var released *activeLease
+	for i, active := range a.forceReleasedTransports {
+		if active.id == leaseID {
+			released = active
+			a.forceReleasedTransports = append(a.forceReleasedTransports[:i], a.forceReleasedTransports[i+1:]...)
+			break
+		}
+	}
+	if released == nil {
+		a.mu.Unlock()
+		return
+	}
+	if released.timer != nil {
+		released.timer.Stop()
+	}
+	a.transportQuarantined = true
+	holdMs := time.Since(released.acquiredAt).Milliseconds()
+	a.logEvent(released.waitTicket, "quarantine", len(a.queue), 0, holdMs, "transport-recovery-deadline")
+	owner := a.transportOwner
+	a.signalLocked()
+	a.mu.Unlock()
+	if owner != nil {
+		owner.OnTransportQuarantine("apdu_transport_recovery_deadline")
+	}
 }
 
 func (a *Arbiter) isActive(leaseID uint64, leaseType LeaseType) bool {
@@ -799,11 +923,15 @@ func (a *Arbiter) isIdleLocked() bool {
 		len(a.activeTransports) == 0 &&
 		len(a.activeSessions) == 0 &&
 		len(a.activeBarriers) == 0 &&
-		len(a.queue) == 0
+		len(a.queue) == 0 &&
+		len(a.forceReleasedTransports) == 0 &&
+		!a.transportQuarantined
 }
 
+// hasActiveTransportLocked 报告传输是否被占用：活动的 transport 租约、被强制
+// 释放但 APDU 仍在飞行中的租约、或已隔离的传输，都视为占用设备。
 func (a *Arbiter) hasActiveTransportLocked() bool {
-	return len(a.activeTransports) > 0
+	return len(a.activeTransports) > 0 || len(a.forceReleasedTransports) > 0 || a.transportQuarantined
 }
 
 func (a *Arbiter) hasActiveExclusiveTransportLocked() bool {
@@ -812,7 +940,12 @@ func (a *Arbiter) hasActiveExclusiveTransportLocked() bool {
 			return true
 		}
 	}
-	return false
+	for _, transport := range a.forceReleasedTransports {
+		if transport.scope != TransportScopeQMIChannel {
+			return true
+		}
+	}
+	return a.transportQuarantined
 }
 
 func (a *Arbiter) activeQMITransportCountLocked() int {

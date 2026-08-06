@@ -276,7 +276,7 @@ func TestHandleCommandTriggersWatchdogAfterConsecutiveNormalTimeouts(t *testing.
 	disconnected := make(chan string, 1)
 	m.SetOnDisconnectWithReason(func(reason string) { disconnected <- reason })
 
-	for i := 1; i <= atTimeoutWatchdogThreshold; i++ {
+	for i := 1; i <= defaultATTimeoutWatchdogThreshold; i++ {
 		req := commandRequest{
 			cmd:      "AT+PING",
 			timeout:  time.Millisecond,
@@ -287,7 +287,7 @@ func TestHandleCommandTriggersWatchdogAfterConsecutiveNormalTimeouts(t *testing.
 		if err := <-req.errChan; err == nil || err.Error() != "命令执行超时" {
 			t.Fatalf("timeout %d error=%v want 命令执行超时", i, err)
 		}
-		if i < atTimeoutWatchdogThreshold {
+		if i < defaultATTimeoutWatchdogThreshold {
 			select {
 			case reason := <-disconnected:
 				t.Fatalf("disconnect reason=%q before threshold %d", reason, i)
@@ -323,7 +323,7 @@ func TestHandleCommandIgnoresHighPriorityTimeoutsForWatchdog(t *testing.T) {
 	disconnected := make(chan string, 1)
 	m.SetOnDisconnectWithReason(func(reason string) { disconnected <- reason })
 
-	for i := 0; i < atTimeoutWatchdogThreshold+1; i++ {
+	for i := 0; i < defaultATTimeoutWatchdogThreshold+1; i++ {
 		req := commandRequest{
 			cmd:          "AT+HIGH",
 			timeout:      time.Millisecond,
@@ -358,7 +358,7 @@ func TestHandleCommandResetsTimeoutWatchdogOnDeviceError(t *testing.T) {
 	disconnected := make(chan string, 1)
 	m.SetOnDisconnectWithReason(func(reason string) { disconnected <- reason })
 
-	for i := 0; i < atTimeoutWatchdogThreshold-1; i++ {
+	for i := 0; i < defaultATTimeoutWatchdogThreshold-1; i++ {
 		req := commandRequest{
 			cmd:      "AT+PING",
 			timeout:  time.Millisecond,
@@ -384,7 +384,7 @@ func TestHandleCommandResetsTimeoutWatchdogOnDeviceError(t *testing.T) {
 		t.Fatalf("device error=%v want 设备返回错误", err)
 	}
 
-	for i := 0; i < atTimeoutWatchdogThreshold-1; i++ {
+	for i := 0; i < defaultATTimeoutWatchdogThreshold-1; i++ {
 		req := commandRequest{
 			cmd:      "AT+PING",
 			timeout:  time.Millisecond,

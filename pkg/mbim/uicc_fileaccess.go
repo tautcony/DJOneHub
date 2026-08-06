@@ -124,6 +124,14 @@ func parseUICCApplicationList(info []byte) ([]UICCApplication, error) {
 		return nil, err
 	}
 	const ptrStart = 16 // Version+Count+ActiveIndex+ListSizeBytes
+	// 设备控制的 count 必须先与剩余缓冲区校验，避免按恶意计数预分配内存。
+	capacity := (len(info) - ptrStart) / 8
+	if capacity < 0 {
+		capacity = 0
+	}
+	if uint64(count) > uint64(capacity) {
+		return nil, fmt.Errorf("mbim: UICC application count %d exceeds buffer capacity %d", count, capacity)
+	}
 	apps := make([]UICCApplication, 0, count)
 	for i := uint32(0); i < count; i++ {
 		off, err := r.u32At(ptrStart + int(i)*8)

@@ -53,6 +53,10 @@ func parseSMSRead(info []byte) ([]SMSRecord, error) {
 	}
 	r := newInfoReader(info)
 	count, _ := r.u32At(4)
+	// 设备控制的 count 必须先与剩余缓冲区校验，避免按恶意计数预分配内存。
+	if count > uint32((len(info)-8)/8) {
+		return nil, fmt.Errorf("mbim: SMS_READ count %d exceeds buffer capacity %d", count, (len(info)-8)/8)
+	}
 	out := make([]SMSRecord, 0, count)
 	for i := uint32(0); i < count; i++ {
 		pairPos := 8 + int(i)*8

@@ -32,6 +32,10 @@ func (r *infoReader) stringArrayCountAt(countPos int) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	// 设备控制的 count 必须先与剩余缓冲区校验，避免按恶意计数预分配内存。
+	if count > uint32((len(r.b)-(countPos+4))/8) {
+		return nil, fmt.Errorf("mbim info buffer string-array count %d exceeds buffer capacity", count)
+	}
 	out := make([]string, 0, count)
 	for i := uint32(0); i < count; i++ {
 		s, err := r.stringAt(countPos + 4 + int(i)*8)

@@ -53,11 +53,16 @@ type SMSMessage struct {
 	ConcatRef  int    `json:"concat_ref,omitempty"`
 	PartNumber int    `json:"part_number,omitempty"`
 	TotalParts int    `json:"total_parts,omitempty"`
+	// Storage is the modem storage identity of the entry (AT CPMS storage
+	// name, or the QMI/MBIM storage type); empty when the modem reports none.
+	Storage string `json:"storage,omitempty"`
+	// Tag is the QMI/MBIM storage tag (0=read, 1=unread, 2=sent, 3=unsent).
+	Tag int `json:"tag,omitempty"`
 }
 
 type SMSPort interface {
-	ReadSMS(context.Context, int) (SMSMessage, error)
-	DeleteSMS(context.Context, int) error
+	ReadSMS(context.Context, NewSMSRef) (SMSMessage, error)
+	DeleteSMS(context.Context, NewSMSRef) error
 	DeleteAllSMS(context.Context) error
 }
 
@@ -97,6 +102,11 @@ type ModemBackend interface {
 	APDU(context.Context, APDURequest) (APDUResponse, error)
 	Capabilities(context.Context) device.CapabilitySet
 	Events(context.Context) (<-chan BackendEvent, error)
+	// SetInboundSMSHandler registers the consumer of inbound SMS delivery;
+	// pass nil to unregister. Backends without a push notification source
+	// (QMI/MBIM) record the registration and deliver through their polling
+	// path, keeping the same consumer-owned delivery contract.
+	SetInboundSMSHandler(InboundSMSHandler)
 	Close() error
 }
 

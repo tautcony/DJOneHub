@@ -90,5 +90,5 @@ The full-repository code review (docs/code-review-report.md, baseline main @ 965
 
 ## Open Questions
 
-- Whether the watchdog timeout threshold is exposed as a CLI flag, config file value, or both.
-- Whether the QMI SMS path needs the same storage-switch serialization as the AT path, or whether QMI's delivery model makes it unnecessary — confirm against the QMI backend during implementation.
+- ~~Whether the watchdog timeout threshold is exposed as a CLI flag, config file value, or both.~~ Resolved during implementation: a config file value (`DeviceConfig.ATTimeoutWatchdogThreshold`, mapstructure key `at_timeout_watchdog_threshold`), defaulting to 5; the modem manager reads it in `modem.New`.
+- ~~Whether the QMI SMS path needs the same storage-switch serialization as the AT path~~ Resolved during implementation: QMI needs no CPMS-style storage switching — `NewSMSRef.Storage` carries the QMI storage type ("0"/"1") and `QMIBackend.ReadSMS`/`DeleteSMS` select it directly; flow serialization is provided by the SMS service's consumer mutex.

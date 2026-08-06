@@ -417,21 +417,51 @@ func extractSMSPDUAfterPrefix(resp string, prefix string) (string, bool) {
 }
 
 func extractAllSMSPDUsAfterPrefix(resp string, prefix string) []string {
+	entries := extractAllSMSEntriesAfterPrefix(resp, prefix)
+	out := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		out = append(out, entry.PDU)
+	}
+	return out
+}
+
+// extractAllSMSEntriesAfterPrefix 解析 +CMGL 响应为 (真实存储索引, PDU) 对，
+// 保留列表阶段即获得的存储身份，供后续 list/read/delete 使用。
+func extractAllSMSEntriesAfterPrefix(resp string, prefix string) []SMSEntry {
 	lines := splitLines(resp)
-	out := make([]string, 0)
+	out := make([]SMSEntry, 0)
 	for i := 0; i < len(lines); i++ {
-		if strings.HasPrefix(lines[i], prefix) {
-			if i+1 < len(lines) {
-				next := strings.TrimSpace(lines[i+1])
-				if next != "" && next != "OK" {
-					pdu, _ := smscodec.TrimFullPDUHexByATHeader(next, lines[i])
-					out = append(out, pdu)
-				}
-				i++
+		if !strings.HasPrefix(lines[i], prefix) {
+			continue
+		}
+		index, ok := parseCMGLIndex(lines[i])
+		if !ok {
+			continue
+		}
+		if i+1 < len(lines) {
+			next := strings.TrimSpace(lines[i+1])
+			if next != "" && next != "OK" {
+				pdu, _ := smscodec.TrimFullPDUHexByATHeader(next, lines[i])
+				out = append(out, SMSEntry{Index: index, PDU: pdu})
 			}
+			i++
 		}
 	}
 	return out
+}
+
+// parseCMGLIndex 提取 +CMGL 头部的真实存储索引。
+// 响应格式: +CMGL: <index>,"<stat>","<alpha>",<toa>,<length>
+func parseCMGLIndex(header string) (uint32, bool) {
+	fields := parseCommaFields(parseURCAfterColon(header))
+	if len(fields) == 0 {
+		return 0, false
+	}
+	idx, err := strconv.ParseUint(strings.TrimSpace(fields[0]), 10, 32)
+	if err != nil {
+		return 0, false
+	}
+	return uint32(idx), true
 }
 
 // parseCSCA 解析 AT+CSCA? 响应，提取短信中心号码

@@ -181,16 +181,19 @@ func (b *CommandBackend) listSMSStorage(ctx context.Context, storage string) ([]
 	return items, nil
 }
 
-func (b *CommandBackend) ReadSMS(ctx context.Context, index int) (SMSMessage, error) {
-	if index < 0 {
-		return SMSMessage{}, fmt.Errorf("invalid SMS index %d", index)
+func (b *CommandBackend) ReadSMS(ctx context.Context, ref NewSMSRef) (SMSMessage, error) {
+	if ref.Index < 0 {
+		return SMSMessage{}, fmt.Errorf("invalid SMS index %d", ref.Index)
 	}
 	if err := b.setPDUMode(ctx); err != nil {
 		return SMSMessage{}, err
 	}
-	b.smsMu.Lock()
-	storage := b.smsStore[index]
-	b.smsMu.Unlock()
+	storage := ref.Storage
+	if storage == "" {
+		b.smsMu.Lock()
+		storage = b.smsStore[ref.Index]
+		b.smsMu.Unlock()
+	}
 	storages := []string{storage}
 	if storage == "" {
 		storages = []string{"SM", "ME"}
@@ -204,13 +207,14 @@ func (b *CommandBackend) ReadSMS(ctx context.Context, index int) (SMSMessage, er
 			lastErr = err
 			continue
 		}
-		response, err := b.command(ctx, fmt.Sprintf("AT+CMGR=%d", index), 10*time.Second)
+		response, err := b.command(ctx, fmt.Sprintf("AT+CMGR=%d", ref.Index), 10*time.Second)
 		if err != nil {
 			lastErr = err
 			continue
 		}
-		item, err := parseSMSReadResponse(response, index, candidate)
+		item, err := parseSMSReadResponse(response, ref.Index, candidate)
 		if err == nil {
+			item.Storage = candidate
 			return item, nil
 		}
 		lastErr = err
@@ -221,22 +225,29 @@ func (b *CommandBackend) ReadSMS(ctx context.Context, index int) (SMSMessage, er
 	return SMSMessage{}, lastErr
 }
 
-func (b *CommandBackend) DeleteSMS(ctx context.Context, index int) error {
-	if index < 0 {
-		return fmt.Errorf("invalid SMS index %d", index)
+func (b *CommandBackend) DeleteSMS(ctx context.Context, ref NewSMSRef) error {
+	if ref.Index < 0 {
+		return fmt.Errorf("invalid SMS index %d", ref.Index)
 	}
-	b.smsMu.Lock()
-	storage := b.smsStore[index]
-	b.smsMu.Unlock()
+	storage := ref.Storage
+	if storage == "" {
+		b.smsMu.Lock()
+		storage = b.smsStore[ref.Index]
+		b.smsMu.Unlock()
+	}
 	if storage == "" {
 		storage = "ME"
 	}
 	if _, err := b.command(ctx, fmt.Sprintf(`AT+CPMS="%s","%s","%s"`, storage, storage, storage), 5*time.Second); err != nil {
 		return err
 	}
-	_, err := b.command(ctx, fmt.Sprintf("AT+CMGD=%d", index), 10*time.Second)
+	_, err := b.command(ctx, fmt.Sprintf("AT+CMGD=%d", ref.Index), 10*time.Second)
 	return err
 }
+
+// SetInboundSMSHandler records the inbound SMS consumer. The command backend
+// has no +CMTI push source; inbound delivery runs through the polling path.
+func (b *CommandBackend) SetInboundSMSHandler(handler InboundSMSHandler) {}
 
 func (b *CommandBackend) DeleteAllSMS(ctx context.Context) error {
 	if _, err := b.command(ctx, `AT+CPMS="ME","ME","ME"`, 5*time.Second); err != nil {

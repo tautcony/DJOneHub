@@ -131,6 +131,27 @@ func TestExtractAllSMSPDUsAfterPrefixTrimsCMGLPadding(t *testing.T) {
 	}
 }
 
+// TestExtractAllSMSEntriesPreservesTrueStorageIndexes: 列表解析保留模组的真实
+// 存储索引（而非合成循环下标），供后续 list/read/delete 使用。
+func TestExtractAllSMSEntriesPreservesTrueStorageIndexes(t *testing.T) {
+	valid := "079144872000302320048102020000625061028204401AD9775D0E72D7DBE2B21C949E8360B75A4E7683D16AB71B"
+	resp := "\r\n+CMGL: 7,1,,38\r\n" + valid + "\r\n+CMGL: 3,0,,38\r\n" + valid + "\r\n+CMGL: 42,1,,38\r\n" + valid + "\r\n\r\nOK\r\n"
+
+	got := extractAllSMSEntriesAfterPrefix(resp, "+CMGL:")
+	if len(got) != 3 {
+		t.Fatalf("len(got)=%d want 3", len(got))
+	}
+	wantIndexes := []uint32{7, 3, 42}
+	for i, entry := range got {
+		if entry.Index != wantIndexes[i] {
+			t.Fatalf("entry %d index=%d want %d", i, entry.Index, wantIndexes[i])
+		}
+		if entry.PDU != valid {
+			t.Fatalf("entry %d pdu mismatched", i)
+		}
+	}
+}
+
 func TestParseServingCellLTEInfoIncludesRadio(t *testing.T) {
 	info, ok := parseServingCellLTEInfo("\r\n+QENG: \"servingcell\",\"NOCONN\",\"LTE\",\"FDD\",460,01,8401A29,132,3740,8,3,3,-95,5992,-75,-8,-50,11,44\r\n\r\nOK\r\n")
 	if !ok {

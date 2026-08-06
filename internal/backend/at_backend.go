@@ -3,10 +3,12 @@ package backend
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 
 	"github.com/iniwex5/vohive/internal/modem"
+	"github.com/iniwex5/vohive/pkg/logger"
 	"github.com/iniwex5/vohive/pkg/smscodec"
 )
 
@@ -300,37 +302,80 @@ func (a *ATBackend) SendSMSWithOptions(ctx context.Context, to, body string, opt
 	return a.modem.SendSMSWithOptions(to, body, opts)
 }
 
-func (a *ATBackend) ReadSMS(ctx context.Context, index int) (*SMS, error) {
-	// 委托给 modem 读取 PDU 并解码
-	pdu, err := a.modem.SMSReadPDU(fmt.Sprintf("%d", index))
+// SetInboundSMSHandler forwards the consumer registration to the AT manager's
+// +CMTI hook, converting the (storage, index) strings to NewSMSRef. nil
+// unregisters the consumer so +CMTI entries are retained without auto-delete.
+func (a *ATBackend) SetInboundSMSHandler(handler InboundSMSHandler) {
+	if a == nil || a.modem == nil {
+		return
+	}
+	if handler == nil {
+		a.modem.SetNewSMSHandler(nil)
+		return
+	}
+	a.modem.SetNewSMSHandler(func(storage, index string) {
+		idx, err := strconv.Atoi(index)
+		if err != nil {
+			logger.Warn("[at_backend] 新短信索引非法，跳过交付", "index", index)
+			return
+		}
+		handler(NewSMSRef{Storage: storage, Index: idx})
+	})
+}
+
+// ReadSMS 按存储引用读取并解码短信 PDU。PDU 解析失败返回错误而不删除条目，
+// 由消费者保留以便刷新重试。
+func (a *ATBackend) ReadSMS(ctx context.Context, ref NewSMSRef) (*SMS, error) {
+	pdu, err := a.modem.ReadSMSFromStorage(ref.Storage, uint32(ref.Index))
 	if err != nil {
 		return nil, err
 	}
 	if pdu == "" {
-		return nil, fmt.Errorf("短信 %d 不存在或为空", index)
+		return nil, fmt.Errorf("短信 %d 不存在或为空", ref.Index)
 	}
-	// 返回原始 PDU 数据; 完整解码由上层处理
+	sender, content, timestamp, concat, err := smscodec.DecodeDeliverPDUHex(pdu)
+	if err != nil {
+		return nil, fmt.Errorf("短信 %d PDU 解码失败: %w", ref.Index, err)
+	}
 	return &SMS{
-		Index:   index,
-		Content: pdu, // PDU 原文
+		Index:      ref.Index,
+		Sender:     sender,
+		Content:    content,
+		Timestamp:  timestamp,
+		ConcatRef:  concat.Ref,
+		PartNumber: concat.Seq,
+		TotalParts: concat.Total,
 	}, nil
 }
 
-func (a *ATBackend) DeleteSMS(ctx context.Context, index int) error {
-	cmd := fmt.Sprintf("AT+CMGD=%d", index)
-	_, err := a.modem.ExecuteAT(cmd, 5*time.Second)
-	return err
+func (a *ATBackend) DeleteSMS(ctx context.Context, ref NewSMSRef) error {
+	return a.modem.DeleteSMSFromStorage(ref.Storage, uint32(ref.Index))
 }
 
+// ListSMS 返回全部短信概要：真实存储索引 + 解码出的时间戳/内容（+CMGL 一次
+// 返回全部 PDU，解码无额外往返），供上层合并与去重。
 func (a *ATBackend) ListSMS(ctx context.Context) ([]SMSSummary, error) {
-	pdus, err := a.modem.SMSListAllPDU()
+	entries, err := a.modem.SMSListAllPDU()
 	if err != nil {
 		return nil, err
 	}
-	// 返回 PDU 数量的概要；实际索引需解析 +CMGL 响应
-	result := make([]SMSSummary, 0, len(pdus))
-	for i := range pdus {
-		result = append(result, SMSSummary{Index: i})
+	result := make([]SMSSummary, 0, len(entries))
+	for _, entry := range entries {
+		sender, content, timestamp, concat, decodeErr := smscodec.DecodeDeliverPDUHex(entry.PDU)
+		if decodeErr != nil {
+			// 无法解码的条目保留在模组存储中，不进入上层摘要。
+			logger.Debug("[at_backend] 列表条目 PDU 解码失败，保留条目", "index", entry.Index, "err", decodeErr)
+			continue
+		}
+		result = append(result, SMSSummary{
+			Index:      int(entry.Index),
+			ReceivedAt: timestamp,
+			Sender:     sender,
+			Body:       content,
+			ConcatRef:  concat.Ref,
+			PartNumber: concat.Seq,
+			TotalParts: concat.Total,
+		})
 	}
 	return result, nil
 }

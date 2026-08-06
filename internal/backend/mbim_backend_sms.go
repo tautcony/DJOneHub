@@ -31,18 +31,36 @@ func (b *MBIMBackend) SendSMSWithOptions(ctx context.Context, to, body string, o
 	return nil
 }
 
-func (b *MBIMBackend) ReadSMS(ctx context.Context, index int) (*SMS, error) {
-	rec, err := b.source.ReadSMS(ctx, uint32(index))
+// SetInboundSMSHandler records the inbound SMS consumer. MBIM has no +CMTI
+// notification; inbound delivery runs through the consumer-owned polling path.
+func (b *MBIMBackend) SetInboundSMSHandler(handler InboundSMSHandler) {}
+
+// ReadSMS 按存储引用读取并解码短信 PDU。PDU 解析失败返回错误而不删除条目。
+func (b *MBIMBackend) ReadSMS(ctx context.Context, ref NewSMSRef) (*SMS, error) {
+	rec, err := b.source.ReadSMS(ctx, uint32(ref.Index))
 	if err != nil {
 		return nil, err
 	}
-	return &SMS{Index: index, Content: hex.EncodeToString(rec.PDU)}, nil
+	sender, content, timestamp, concat, err := smscodec.DecodeDeliverPDUHex(hex.EncodeToString(rec.PDU))
+	if err != nil {
+		return nil, fmt.Errorf("短信 %d PDU 解码失败: %w", ref.Index, err)
+	}
+	return &SMS{
+		Index:      ref.Index,
+		Sender:     sender,
+		Content:    content,
+		Timestamp:  timestamp,
+		ConcatRef:  concat.Ref,
+		PartNumber: concat.Seq,
+		TotalParts: concat.Total,
+	}, nil
 }
 
-func (b *MBIMBackend) DeleteSMS(ctx context.Context, index int) error {
-	return b.source.DeleteSMS(ctx, uint32(index))
+func (b *MBIMBackend) DeleteSMS(ctx context.Context, ref NewSMSRef) error {
+	return b.source.DeleteSMS(ctx, uint32(ref.Index))
 }
 
+// ListSMS 返回全部短信概要：真实存储索引、状态 tag 与解码出的时间戳/内容。
 func (b *MBIMBackend) ListSMS(ctx context.Context) ([]SMSSummary, error) {
 	recs, err := b.source.ListSMS(ctx)
 	if err != nil {
@@ -50,7 +68,16 @@ func (b *MBIMBackend) ListSMS(ctx context.Context) ([]SMSSummary, error) {
 	}
 	out := make([]SMSSummary, 0, len(recs))
 	for _, r := range recs {
-		out = append(out, SMSSummary{Index: int(r.Index), Tag: int(r.Status)})
+		summary := SMSSummary{Index: int(r.Index), Tag: int(r.Status)}
+		if sender, content, timestamp, concat, decodeErr := smscodec.DecodeDeliverPDUHex(hex.EncodeToString(r.PDU)); decodeErr == nil {
+			summary.ReceivedAt = timestamp
+			summary.Sender = sender
+			summary.Body = content
+			summary.ConcatRef = concat.Ref
+			summary.PartNumber = concat.Seq
+			summary.TotalParts = concat.Total
+		}
+		out = append(out, summary)
 	}
 	return out, nil
 }

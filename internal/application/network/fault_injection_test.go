@@ -82,6 +82,7 @@ func (f *fakeNetworkBackend) Events(context.Context) (<-chan backend.BackendEven
 	return ch, nil
 }
 func (f *fakeNetworkBackend) Close() error { return nil }
+func (f *fakeNetworkBackend) SetInboundSMSHandler(backend.InboundSMSHandler) {}
 func (f *fakeNetworkBackend) Status(context.Context) (map[string]any, error) {
 	if f.unavailable {
 		return nil, errors.New("network unavailable")

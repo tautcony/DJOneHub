@@ -282,7 +282,8 @@ type Manager struct {
 
 	cacheMu                     sync.RWMutex   // 保护 chipInfoCache、overviewCache 与 discoveredEUICCs 等快照状态
 	opMu                        sync.Mutex     // eSIM 硬件操作互斥（同时只允许一个写操作）
-	opDone                      chan struct{}  // 写操作完成通知（替代 TryLock+Sleep 轮询）
+	opDoneMu                    sync.Mutex   // 保护 opDone 的关闭/替换/读取序列
+	opDone                      chan struct{} // 写操作完成通知（替代 TryLock+Sleep 轮询）
 	chipInfoCache               *EUICCChipInfo // 芯片信息缓存（硬件信息基本不变）
 	overviewCache               *EsimOverview  // eSIM 总览缓存（跟随 Manager / Worker 实例）
 	overviewLastErr             error
@@ -882,56 +883,47 @@ func (m *Manager) forEachEUICC(fn func(client *lpa.Client, aid []byte, eidStr st
 	return fmt.Errorf("未发现任何 eUICC")
 }
 
-func (m *Manager) waitForNoWriteOperation() error {
-	// 快路径：锁空闲则直接返回
-	if m.opMu.TryLock() {
-		m.opMu.Unlock()
-		return nil
-	}
-	timeout := m.readQueueWaitTimeout
-	if timeout <= 0 {
-		timeout = defaultReadQueueWaitTimeout
-	}
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
+// waitForWriteCompletion 等待当前写操作完成：先订阅完成通知 channel 再尝试
+// 获取锁。若在订阅后锁已可用（写方已完成）则立即成功；若锁被占用，订阅的
+// channel 必然在占用者完成时关闭——绝不会等待一个永远不会关闭的 channel 而
+// 误报 ErrOperationInProgress。hold 为 true 时成功返回持有写锁（写方路径），
+// 否则成功返回时写锁空闲（读方路径）。
+func (m *Manager) waitForWriteCompletion(timer *time.Timer, hold bool) error {
 	for {
-		select {
-		case <-m.opDone:
-			// 写操作已发出完成通知，尝试确认锁已释放
-			if m.opMu.TryLock() {
+		done := m.currentOpDone()
+		if m.opMu.TryLock() {
+			if !hold {
 				m.opMu.Unlock()
-				return nil
 			}
+			return nil
+		}
+		select {
+		case <-done:
+			// 写操作完成通知已发出；重试获取锁。
 		case <-timer.C:
 			return ErrOperationInProgress
 		}
 	}
 }
 
-func (m *Manager) acquireOperationLock() error {
-	if m.opMu.TryLock() {
-		return nil
-	}
+func (m *Manager) waitForNoWriteOperation() error {
 	timeout := m.readQueueWaitTimeout
 	if timeout <= 0 {
 		timeout = defaultReadQueueWaitTimeout
 	}
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
-	for {
-		done := m.opDone
-		if done == nil {
-			done = make(chan struct{})
-		}
-		select {
-		case <-done:
-			if m.opMu.TryLock() {
-				return nil
-			}
-		case <-timer.C:
-			return ErrOperationInProgress
-		}
+	return m.waitForWriteCompletion(timer, false)
+}
+
+func (m *Manager) acquireOperationLock() error {
+	timeout := m.readQueueWaitTimeout
+	if timeout <= 0 {
+		timeout = defaultReadQueueWaitTimeout
 	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	return m.waitForWriteCompletion(timer, true)
 }
 
 func (m *Manager) lockOperation(operation string) (func(), error) {
@@ -947,14 +939,29 @@ func (m *Manager) lockOperation(operation string) (func(), error) {
 }
 
 // notifyWriteDone 通知所有等待写操作完成的读方。
-// 必须在 opMu.Unlock() 之后立即调用。
+// 必须在 opMu.Unlock() 之后立即调用。关闭/替换序列在 opDoneMu 下原子完成，
+// 否则读者可能读到已被替换但尚未关闭的 channel，等待一个永远不会到来的
+// 完成通知，直到 5 秒定时器误报 ErrOperationInProgress。
 func (m *Manager) notifyWriteDone() {
+	m.opDoneMu.Lock()
 	// 关闭旧 channel（广播通知），并新建一个供下次写操作使用
 	old := m.opDone
 	m.opDone = make(chan struct{})
 	if old != nil {
 		close(old)
 	}
+	m.opDoneMu.Unlock()
+}
+
+// currentOpDone 读取当前写操作完成通知 channel，与 notifyWriteDone 的
+// 关闭/替换序列互斥。
+func (m *Manager) currentOpDone() chan struct{} {
+	m.opDoneMu.Lock()
+	defer m.opDoneMu.Unlock()
+	if m.opDone == nil {
+		m.opDone = make(chan struct{})
+	}
+	return m.opDone
 }
 
 func (m *Manager) emitSwitchPhase(operation SwitchOperation, token uint64, phase SwitchPhase) {

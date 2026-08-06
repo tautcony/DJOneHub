@@ -1,6 +1,9 @@
 package mbim
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 // fixedDoneOffset is where the info buffer begins inside a first
 // COMMAND_DONE/INDICATE fragment.
@@ -9,25 +12,40 @@ const fixedDoneOffset = headerLen + fragHdrLen + uuidLen + 4 + 4 + 4
 // fixedCmdOffset is where the info buffer begins inside a first COMMAND fragment.
 const fixedCmdOffset = headerLen + fragHdrLen + uuidLen + 4 + 4 + 4
 
+// 收集器资源上限：设备控制的碎片流不能无限累积内存。
+const (
+	maxCollectorFragments = 256
+	maxCollectorBytes     = 1 << 20 // 1 MiB
+)
+
+// collectorStaleTTL 与 collectorSweepInterval 控制不完整收集器的定期清理。
+const (
+	collectorStaleTTL      = 2 * time.Minute
+	collectorSweepInterval = 30 * time.Second
+)
+
 type collector struct {
-	started bool
-	total   uint32
-	next    uint32
-	service UUID
-	cid     uint32
-	status  uint32
-	fullLen uint32
-	info    []byte
+	started  bool
+	total    uint32
+	next     uint32
+	service  UUID
+	cid      uint32
+	status   uint32
+	fullLen  uint32
+	info     []byte
+	fragments int
+	lastSeen time.Time
 }
 
 func newCollector() *collector {
-	return &collector{}
+	return &collector{lastSeen: time.Now()}
 }
 
 func (c *collector) add(b []byte) (bool, error) {
 	if len(b) < headerLen+fragHdrLen {
 		return false, fmt.Errorf("mbim: fragment shorter than fragment header len=%d", len(b))
 	}
+	c.lastSeen = time.Now()
 
 	total := le.Uint32(b[12:])
 	current := le.Uint32(b[16:])
@@ -38,6 +56,9 @@ func (c *collector) add(b []byte) (bool, error) {
 		if len(b) < fixedDoneOffset {
 			return false, fmt.Errorf("mbim: first fragment shorter than fixed fields len=%d", len(b))
 		}
+		if err := c.checkLimits(len(b) - fixedDoneOffset); err != nil {
+			return false, err
+		}
 		copy(c.service[:], b[20:36])
 		c.cid = le.Uint32(b[36:])
 		c.status = le.Uint32(b[40:])
@@ -46,15 +67,32 @@ func (c *collector) add(b []byte) (bool, error) {
 		c.next = 1
 		c.started = true
 		c.info = append(c.info, b[fixedDoneOffset:]...)
+		c.fragments++
 		return c.next >= c.total, nil
 	}
 
 	if current != c.next {
 		return false, fmt.Errorf("mbim: fragment out of order got=%d want=%d", current, c.next)
 	}
+	if err := c.checkLimits(len(b) - (headerLen + fragHdrLen)); err != nil {
+		return false, err
+	}
 	c.next++
 	c.info = append(c.info, b[headerLen+fragHdrLen:]...)
+	c.fragments++
 	return c.next >= c.total, nil
+}
+
+// checkLimits 在追加 payload 前校验累计字节数与碎片数上限，设备控制的
+// 无终止碎片流不会耗尽内存。
+func (c *collector) checkLimits(incoming int) error {
+	if c.fragments+1 > maxCollectorFragments {
+		return fmt.Errorf("mbim: fragment collector fragment count %d exceeds limit %d", c.fragments+1, maxCollectorFragments)
+	}
+	if len(c.info)+incoming > maxCollectorBytes {
+		return fmt.Errorf("mbim: fragment collector bytes %d exceeds limit %d", len(c.info)+incoming, maxCollectorBytes)
+	}
+	return nil
 }
 
 func (c *collector) commandDone() (CommandDone, error) {

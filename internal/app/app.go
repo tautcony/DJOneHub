@@ -285,6 +285,9 @@ func (a *App) Start(ctx context.Context) {
 
 func (a *App) Stop() {
 	a.Notification.Stop()
+	// Unregister the SMS inbound consumer before the runtime closes its
+	// backend so a stopped service never receives +CMTI notifications.
+	a.SMS.Stop()
 	a.Runtime.Stop()
 	_ = a.Store.Close()
 }

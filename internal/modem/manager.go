@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -73,8 +74,19 @@ type Manager struct {
 	healthy  bool
 	eofCount int // readLoop 中连续 EOF 计数，用于检测设备断开
 
+	// overLimitBytes 是 readLoop 中超长行累计丢弃的字节数（仅 readLoop 访问）。
+	overLimitBytes int
+
 	atTimeoutMu     sync.Mutex
 	atTimeoutStreak int
+	// atTimeoutWatchdogThreshold 连续超时触发控制面恢复的阈值；0 表示默认值。
+	atTimeoutWatchdogThreshold int
+
+	// atQuarantine* 隔离超时命令的命令流：新命令不被接受，直到超时命令的终结
+	// 响应（OK/ERROR）被观测到，或超过传输恢复期限后关闭传输交给运行时重连。
+	atQuarantineMu       sync.Mutex
+	atQuarantined        bool
+	atQuarantineDeadline time.Time
 
 	// 设备信息 (从 AT 指令获取)
 	imei        string
@@ -102,10 +114,13 @@ type Manager struct {
 
 	// 回调
 	smsCallback            SMSCallback
-	newSMSHandler          func(index string) // 处理新短信索引的回调 (用于 bubble up URC)
-	disableURCRead         bool               // 如果启用 QMI，禁用 AT 自动读取
+	newSMSHandler          func(storage, index string) // +CMTI 消费者回调 (携带存储名与索引)
+	disableURCRead         bool                        // 如果启用 QMI，禁用 AT 自动读取
 	simStatusHandler       func(inserted *bool, state string)
 	onDisconnectWithReason func(reason string)
+
+	// smsReadMu 串行化存储切换/读取/恢复序列，防止并发的 +CMTI 通知交错。
+	smsReadMu sync.Mutex
 
 	// CS 来电回调
 	ringCallback    func()              // RING URC 回调
@@ -133,7 +148,20 @@ type Manager struct {
 	apduSessions map[int]apduSessionInfo
 }
 
-const atTimeoutWatchdogThreshold = 5
+const (
+	// defaultATTimeoutWatchdogThreshold 是连续超时触发控制面恢复的默认阈值。
+	defaultATTimeoutWatchdogThreshold = 5
+	// longCommandTimeout 超过该超时上限的命令视为长耗时命令，不计入连续超时计数。
+	longCommandTimeout = 30 * time.Second
+	// atQuarantineRecoveryDeadline 隔离期间等待终结响应的最大时长；超时后
+	// 关闭传输并交给运行时重新初始化。
+	atQuarantineRecoveryDeadline = 10 * time.Second
+	// maxATLineBytes 是单行 AT 输入的最大字节数；超过上限的字节被丢弃。
+	maxATLineBytes = 4 * 1024
+	// maxATOverLimitBytes 是行缓冲超限时可容忍的累计丢弃字节数；超过后判定
+	// 设备异常并触发控制面恢复。
+	maxATOverLimitBytes = 64 * 1024
+)
 
 type apduSessionInfo struct {
 	Channel  int
@@ -156,19 +184,24 @@ func (m *Manager) pureQMIBackend() bool {
 }
 
 func New(cfg config.DeviceConfig) (*Manager, error) {
+	watchdogThreshold := cfg.ATTimeoutWatchdogThreshold
+	if watchdogThreshold <= 0 {
+		watchdogThreshold = defaultATTimeoutWatchdogThreshold
+	}
 	m := &Manager{
-		cfg:          cfg,
-		atPort:       cfg.ATPort,
-		stop:         make(chan struct{}),
-		cmdChan:      make(chan commandRequest, 10),
-		cmdChanHigh:  make(chan commandRequest, 5),
-		rxChan:       make(chan rxMsg, 100),
-		triggerChan:  make(chan struct{}, 1),
-		ready:        make(chan struct{}),
-		healthy:      true,
-		reassembler:  smscodec.NewReassembler(),
-		ussdChan:     make(chan USSDResult, 1),
-		apduSessions: make(map[int]apduSessionInfo),
+		cfg:                        cfg,
+		atPort:                     cfg.ATPort,
+		stop:                       make(chan struct{}),
+		cmdChan:                    make(chan commandRequest, 10),
+		cmdChanHigh:                make(chan commandRequest, 5),
+		rxChan:                     make(chan rxMsg, 100),
+		triggerChan:                make(chan struct{}, 1),
+		ready:                      make(chan struct{}),
+		healthy:                    true,
+		reassembler:                smscodec.NewReassembler(),
+		ussdChan:                   make(chan USSDResult, 1),
+		apduSessions:               make(map[int]apduSessionInfo),
+		atTimeoutWatchdogThreshold: watchdogThreshold,
 		reqPool: sync.Pool{
 			New: func() interface{} {
 				return &commandRequest{
@@ -218,8 +251,10 @@ func (m *Manager) SetSMSCallback(cb SMSCallback) {
 	m.smsCallback = cb
 }
 
-// SetNewSMSHandler 设置新短信索引回调 (当收到 URC 时调用，用于接管读取流程)
-func (m *Manager) SetNewSMSHandler(handler func(index string)) {
+// SetNewSMSHandler 设置新短信引用回调（收到 +CMTI URC 时调用，携带存储名与索引）。
+// 回调注册后，管理器不再自动读取/删除短信：读取、持久化与确认删除全部由消费者
+// 负责。未注册消费者时，+CMTI 只记录日志，短信条目保留在模组存储中。
+func (m *Manager) SetNewSMSHandler(handler func(storage, index string)) {
 	m.infoMu.Lock()
 	m.newSMSHandler = handler
 	m.infoMu.Unlock()
@@ -338,10 +373,14 @@ func (m *Manager) recordATTimeout(req commandRequest) (int, bool) {
 	if req.highPriority {
 		return 0, false
 	}
+	// 长耗时命令（如拨号 60s）超时并不代表设备卡死，不计入连续超时计数。
+	if req.timeout > longCommandTimeout {
+		return 0, false
+	}
 	m.atTimeoutMu.Lock()
 	defer m.atTimeoutMu.Unlock()
 	m.atTimeoutStreak++
-	return m.atTimeoutStreak, m.atTimeoutStreak >= atTimeoutWatchdogThreshold
+	return m.atTimeoutStreak, m.atTimeoutStreak >= m.atTimeoutWatchdogThreshold
 }
 
 func (m *Manager) tripATTimeoutWatchdog(cmd string, failures int) {
@@ -352,7 +391,7 @@ func (m *Manager) tripATTimeoutWatchdog(cmd string, failures int) {
 		"cmd", cmd,
 		"port", m.atPort,
 		"failures", failures,
-		"threshold", atTimeoutWatchdogThreshold)
+		"threshold", m.atTimeoutWatchdogThreshold)
 	m.healthy = false
 	m.Stop()
 	m.notifyDisconnect("at_timeout_threshold")
@@ -498,6 +537,10 @@ func (m *Manager) runLoop() {
 	go m.initModem()
 
 	for {
+		// 若上一个命令超时后进入隔离，先等待其终结响应或传输恢复，
+		// 期间 URC 照常分发；未解除隔离前不接受任何新命令。
+		m.waitForQuarantineRecovery()
+
 		// 优先级调度逻辑
 		select {
 		case <-m.stop:
@@ -554,6 +597,10 @@ RespLoop:
 	for {
 		select {
 		case <-timeoutTimer.C:
+			// 超时：先尽力排空已排队的数据（URC 照常分发），随后将命令流隔离，
+			// 直到本命令的终结响应（OK/ERROR）被观测到，或传输恢复期限触发
+			// 关闭/重连。迟到的 OK 或残余数据因此永远不会被下一个命令消费。
+			m.drainResidualLines()
 			// 超时时尝试发送 ESC (0x1B) 以取消可能的挂起操作（如短信输入）
 			m.port.Write([]byte{0x1B})
 			logger.Warn(fmt.Sprintf("[%s] 命令执行超时，已发送 ESC 尝试恢复", m.cfg.ID), "port", m.atPort, "cmd", req.cmd, "cost", time.Since(startTime).String())
@@ -561,6 +608,7 @@ RespLoop:
 			if failures, tripped := m.recordATTimeout(req); tripped {
 				m.tripATTimeoutWatchdog(req.cmd, failures)
 			}
+			m.enterQuarantine()
 			return
 
 		case msg := <-m.rxChan:
@@ -593,29 +641,9 @@ RespLoop:
 				}
 				req.errChan <- fmt.Errorf("设备返回错误: %s", strings.Join(fullResponse, "\n"))
 				break RespLoop
-			} else if strings.Contains(line, ">") {
-				m.resetATTimeoutWatchdog()
-				fullResponse = append(fullResponse, line)
-				if !req.silent {
-					logger.Debug(fmt.Sprintf("[%s] AT 收到提示", m.cfg.ID),
-						"cmd", req.cmd,
-						"resp", ">",
-						"cost", time.Since(startTime).Truncate(time.Millisecond).String())
-				}
-
-				if req.interactive && req.waitPrompt && req.followUp != "" {
-					// 收到提示符，立即发送后续指令
-					m.port.Write([]byte(req.followUp))
-					// 继续等待最终响应 (OK/ERROR)
-					// 重置 waitPrompt 防止重复触发
-					req.waitPrompt = false
-					continue
-				}
-
-				req.respChan <- "> "
-				break RespLoop
 			} else if m.isURC(line) {
-				// 对于确认为 URC 的行，始终分发出去
+				// URC 判定先于提示符分支：包含 > 的 URC/USSD 行被分发为 URC，
+				// 绝不会终止当前命令。
 				m.handleURC(line)
 
 				// 但仅当它是某些明确的、完全异步的事件（如短信通知、来电、USSD、插拔卡）时，才将其从当前命令的 fullResponse 中剔除，以免污染解析器
@@ -632,9 +660,120 @@ RespLoop:
 				if !isPureAsyncURC(line) {
 					fullResponse = append(fullResponse, line)
 				}
+			} else if req.interactive && req.waitPrompt && isBarePrompt(line) {
+				// 提示符仅在交互命令正在等待时识别，且必须是裸 "> "/">" 行。
+				m.resetATTimeoutWatchdog()
+				if !req.silent {
+					logger.Debug(fmt.Sprintf("[%s] AT 收到提示", m.cfg.ID),
+						"cmd", req.cmd,
+						"resp", ">",
+						"cost", time.Since(startTime).Truncate(time.Millisecond).String())
+				}
+
+				if req.followUp != "" {
+					// 收到提示符，立即发送后续指令
+					m.port.Write([]byte(req.followUp))
+					// 继续等待最终响应 (OK/ERROR)
+					// 重置 waitPrompt 防止重复触发
+					req.waitPrompt = false
+					continue
+				}
+
+				req.respChan <- "> "
+				break RespLoop
 			} else {
 				fullResponse = append(fullResponse, line)
 			}
+		}
+	}
+}
+
+// isBarePrompt 报告 line 是否为裸提示符行（"> " 或 ">"）。
+func isBarePrompt(line string) bool {
+	return strings.TrimSpace(line) == ">"
+}
+
+// enterQuarantine 将命令流隔离：新命令不被接受，直到被隔离命令的终结响应
+// 被观测到或超过传输恢复期限。
+func (m *Manager) enterQuarantine() {
+	m.atQuarantineMu.Lock()
+	defer m.atQuarantineMu.Unlock()
+	m.atQuarantined = true
+	m.atQuarantineDeadline = time.Now().Add(atQuarantineRecoveryDeadline)
+}
+
+// clearQuarantine 解除命令流隔离。
+func (m *Manager) clearQuarantine() {
+	m.atQuarantineMu.Lock()
+	defer m.atQuarantineMu.Unlock()
+	m.atQuarantined = false
+	m.atQuarantineDeadline = time.Time{}
+}
+
+// isQuarantined 报告命令流当前是否处于隔离状态。
+func (m *Manager) isQuarantined() bool {
+	m.atQuarantineMu.Lock()
+	defer m.atQuarantineMu.Unlock()
+	return m.atQuarantined
+}
+
+// drainResidualLines 尽力排空 rxChan 中已排队但未消费的行；URC 照常分发。
+// 这只是隔离正确性之外的优化，不构成超时后残余数据的隔离保证。
+func (m *Manager) drainResidualLines() {
+	for {
+		select {
+		case msg := <-m.rxChan:
+			if msg.Err != nil {
+				continue
+			}
+			if m.isURC(msg.Data) {
+				m.handleURC(msg.Data)
+			}
+		default:
+			return
+		}
+	}
+}
+
+// waitForQuarantineRecovery 在隔离期间消费 rxChan：观测到被隔离命令的终结响应
+// （OK/ERROR）即解除隔离；URC 照常分发（隔离窗口内的 +CMTI/+CUSD 被投递而不
+// 是被丢弃或归因于被隔离命令）；超过传输恢复期限则关闭传输并交给运行时重新
+// 初始化，之后才能接受新命令。
+func (m *Manager) waitForQuarantineRecovery() {
+	m.atQuarantineMu.Lock()
+	if !m.atQuarantined {
+		m.atQuarantineMu.Unlock()
+		return
+	}
+	deadline := m.atQuarantineDeadline
+	m.atQuarantineMu.Unlock()
+	for {
+		select {
+		case <-m.stop:
+			return
+		case msg := <-m.rxChan:
+			if msg.Err != nil {
+				m.handleFatalSerialRuntimeErr(msg.Err, "quarantine", "")
+				return
+			}
+			line := msg.Data
+			if line == "OK" || strings.Contains(line, "ERROR") {
+				m.clearQuarantine()
+				logger.Debug(fmt.Sprintf("[%s] 隔离解除：观测到超时命令的终结响应", m.cfg.ID), "resp", line)
+				return
+			}
+			if m.isURC(line) {
+				m.handleURC(line)
+			}
+			// 其余行归因于被隔离的命令，丢弃。
+		case <-time.After(time.Until(deadline)):
+			logger.Warn(fmt.Sprintf("[%s] 隔离期限内未观测到终结响应，关闭传输触发重连", m.cfg.ID),
+				"deadline", atQuarantineRecoveryDeadline.String())
+			m.clearQuarantine()
+			m.healthy = false
+			m.Stop()
+			m.notifyDisconnect("at_quarantine_recovery")
+			return
 		}
 	}
 }
@@ -694,26 +833,13 @@ func (m *Manager) readLoop() {
 
 		if n > 0 {
 			m.eofCount = 0 // 成功读取数据，重置 EOF 计数
-			// 处理读取到的数据
 			for i := 0; i < n; i++ {
 				b := buf[i]
-				lineBuf.WriteByte(b)
-
-				// 遇到换行符，或者遇到 '>' 提示符
-				// 判定为行结束 (注意处理 > )
-				// 这里的逻辑有点 tricky，因为 "> " 通常是最后两个字符
-				// 简化逻辑：遇到 \n 发送；遇到 > 且前一个是 \r 或 \n 或者是行首？
-				// 为了稳健，只要遇到 \n 就发送。
-			}
-
-			// 重新实现更简单的逻辑：
-			// 循环处理所有换行符
-			data := lineBuf.String()
-			for {
-				idx := strings.IndexByte(data, '\n')
-				if idx >= 0 {
-					// 有换行符，将前面的内容发送出去
-					line := strings.TrimSpace(data[:idx+1])
+				if b == '\n' {
+					// 行结束：TrimSpace 后的非空行上抛；含提示符的 "\r\n> " 行
+					// 在此被规范化为 ">"。
+					line := strings.TrimSpace(lineBuf.String())
+					lineBuf.Reset()
 					if line != "" {
 						select {
 						case m.rxChan <- rxMsg{Data: line}:
@@ -721,21 +847,30 @@ func (m *Manager) readLoop() {
 							return
 						}
 					}
-					// 更新数据，继续处理剩余部分
-					data = data[idx+1:]
-				} else {
-					break
+					m.overLimitBytes = 0
+					continue
 				}
+				// 行缓冲上限：超过 maxATLineBytes 的字节被丢弃，绝不进入任何
+				// 命令的 fullResponse；持续的超限输入视为设备异常，触发恢复。
+				if lineBuf.Len() >= maxATLineBytes {
+					m.overLimitBytes++
+					if m.overLimitBytes >= maxATOverLimitBytes {
+						logger.Warn(fmt.Sprintf("[%s] 串口超长行持续超限，判定设备异常", m.cfg.ID),
+							"port", m.atPort, "dropped_bytes", m.overLimitBytes)
+						m.healthy = false
+						m.Stop()
+						m.notifyDisconnect("at_over_limit_input")
+						return
+					}
+					continue
+				}
+				lineBuf.WriteByte(b)
 			}
 
-			// 重置 buffer 并写入剩余数据
-			lineBuf.Reset()
-			lineBuf.WriteString(data)
-
-			// 检查剩余部分是否是特殊提示符
-			// 注意：有些模组返回 "\r\n> "，上面的循环会处理掉 "\r\n"，剩下 "> "
-			if strings.HasSuffix(data, "> ") || data == "> " || strings.HasSuffix(data, ">") {
-				// 遇到特殊提示符
+			// 只把独立的提示符行（"> " 或 ">"，如 "\r\n> "）作为提示符上抛；
+			// 不再使用包含 > 的半行启发式判定，避免把 URC/数据中的 > 误判为
+			// 提示符。其余半行保留在缓冲区等待换行。
+			if strings.TrimSpace(lineBuf.String()) == ">" {
 				select {
 				case m.rxChan <- rxMsg{Data: "> "}:
 				case <-m.stop:
@@ -1274,22 +1409,17 @@ func (m *Manager) handleURC(line string) {
 	}
 
 	if fr.Key == "+CMTI" && fr.CMTIIndex != "" {
-		index := fr.CMTIIndex
-		storage := fr.CMTIStorage
 		m.infoMu.RLock()
-		disabled := m.disableURCRead
 		handler := m.newSMSHandler
 		m.infoMu.RUnlock()
-
 		if handler != nil {
-			go handler(index)
+			// 消费者已注册：仅上抛存储引用，读取/持久化/确认删除全部由消费者负责。
+			go handler(fr.CMTIStorage, fr.CMTIIndex)
 			return
 		}
-		if !disabled {
-			go m.readAndProcessSMSFromStorage(storage, index)
-		} else {
-			logger.Debug(fmt.Sprintf("[%s] 收到 URC 但已禁用自动读取 (QMI 接管)", m.cfg.ID), "index", index, "storage", storage)
-		}
+		// 无消费者：不自动读取也不删除，条目保留在模组存储中。
+		logger.Debug(fmt.Sprintf("[%s] 收到 +CMTI 但无消费者注册，保留短信条目", m.cfg.ID),
+			"index", fr.CMTIIndex, "storage", fr.CMTIStorage)
 	}
 
 	// 分发 RING 来电事件
@@ -1375,59 +1505,82 @@ func (m *Manager) readAndProcessSMSFromStorage(storage, index string) {
 		logger.Warn(fmt.Sprintf("[%s] 短信索引非法，跳过读取", m.cfg.ID), "index", index)
 		return
 	}
-
-	normalizedStorage, hasStorage := normalizeSMSStorage(storage)
-	if hasStorage {
-		restore, switched := m.switchSMSStorageForRead(normalizedStorage)
-		if !switched {
-			logger.Warn(fmt.Sprintf("[%s] 切换短信存储失败，跳过读取以避免误删其他存储短信", m.cfg.ID), "index", index, "storage", normalizedStorage)
-			return
-		}
-		if restore != nil {
-			defer restore()
-		}
-	}
-
-	fields := []any{"index", index}
-	if hasStorage {
-		fields = append(fields, "storage", normalizedStorage)
-	}
-	logger.Info(fmt.Sprintf("[%s] 读取短信 (AT)", m.cfg.ID), fields...)
-
-	// 读取短信 PDU
-	resp, err := m.ExecuteAT("AT+CMGR="+index, 5*time.Second)
+	idx, err := strconv.ParseUint(index, 10, 32)
 	if err != nil {
-		logger.Error(fmt.Sprintf("[%s] 读取短信失败", m.cfg.ID), "index", index, "err", err)
+		logger.Warn(fmt.Sprintf("[%s] 短信索引非法，跳过读取", m.cfg.ID), "index", index)
+		return
+	}
+	normalizedStorage, _ := normalizeSMSStorage(storage)
+
+	logger.Info(fmt.Sprintf("[%s] 读取短信 (AT)", m.cfg.ID), "index", index, "storage", normalizedStorage)
+
+	pduHex, err := m.ReadSMSFromStorage(normalizedStorage, uint32(idx))
+	if err != nil {
+		logger.Error(fmt.Sprintf("[%s] 读取短信失败", m.cfg.ID), "index", index, "storage", normalizedStorage, "err", err)
 		return
 	}
 
-	// 解析 PDU
-	pduHex, _ := extractSMSPDUAfterPrefix(resp, "+CMGR:")
-
-	if pduHex == "" || pduHex == "OK" {
-		logger.Warn(fmt.Sprintf("[%s] 未找到 PDU 数据", m.cfg.ID))
-		return
-	}
-
-	// 解码 PDU
 	sender, content, timestamp := m.decodePDU(pduHex)
 
-	// 如果内容为空（说明是分片且未完成），则不进行回调
+	// 分片未完成时不做回调，也不删除条目，等待后续分片或刷新重试。
 	if content == "" {
-		// 删除已读分片 (非常重要，否则SIM卡满了)
-		m.ExecuteAT("AT+CMGD="+index, 3*time.Second)
+		logger.Debug(fmt.Sprintf("[%s] 短信分片未完成，保留条目", m.cfg.ID), "index", index, "storage", normalizedStorage)
 		return
 	}
 
 	logger.Debug(fmt.Sprintf("[%s] 短信内容", m.cfg.ID), "sender", sender, "content", content)
 
-	// 回调通知
 	if m.smsCallback != nil {
 		m.smsCallback(sender, content, timestamp)
 	}
 
-	// 删除已读短信
-	m.ExecuteAT("AT+CMGD="+index, 3*time.Second)
+	if err := m.DeleteSMSFromStorage(normalizedStorage, uint32(idx)); err != nil {
+		logger.Warn(fmt.Sprintf("[%s] 删除已读短信失败", m.cfg.ID), "index", index, "err", err)
+	}
+}
+
+// ReadSMSFromStorage 从指定 AT 存储读取索引对应的短信 PDU（十六进制）。
+// 整个切换存储/读取/恢复序列由 smsReadMu 串行化，并发的 +CMTI 通知不会交错。
+func (m *Manager) ReadSMSFromStorage(storage string, index uint32) (string, error) {
+	m.smsReadMu.Lock()
+	defer m.smsReadMu.Unlock()
+	restore, ok := m.switchSMSStorageForRead(storage)
+	if !ok {
+		return "", fmt.Errorf("切换短信存储失败: %s", storage)
+	}
+	if restore != nil {
+		defer restore()
+	}
+	resp, err := m.ExecuteAT(fmt.Sprintf("AT+CMGR=%d", index), 5*time.Second)
+	if err != nil {
+		return "", err
+	}
+	pduHex, _ := extractSMSPDUAfterPrefix(resp, "+CMGR:")
+	if pduHex == "" || pduHex == "OK" {
+		return "", fmt.Errorf("短信 %d 不存在或为空", index)
+	}
+	return pduHex, nil
+}
+
+// DeleteSMSFromStorage 从指定 AT 存储删除索引对应的短信条目，与读取共享
+// smsReadMu 串行化。
+func (m *Manager) DeleteSMSFromStorage(storage string, index uint32) error {
+	m.smsReadMu.Lock()
+	defer m.smsReadMu.Unlock()
+	normalized, hasStorage := normalizeSMSStorage(storage)
+	if !hasStorage {
+		_, err := m.ExecuteAT(fmt.Sprintf("AT+CMGD=%d", index), 3*time.Second)
+		return err
+	}
+	restore, ok := m.switchSMSStorageForRead(normalized)
+	if !ok {
+		return fmt.Errorf("切换短信存储失败: %s", normalized)
+	}
+	if restore != nil {
+		defer restore()
+	}
+	_, err := m.ExecuteAT(fmt.Sprintf("AT+CMGD=%d", index), 3*time.Second)
+	return err
 }
 
 func normalizeSMSIndex(index string) (string, bool) {
@@ -1547,25 +1700,9 @@ func (m *Manager) cleanupOldFragments() {
 func (m *Manager) decodePDU(raw string) (sender, content string, timestamp time.Time) {
 	timestamp = time.Now()
 
-	b, err := hex.DecodeString(raw)
+	sender, content, msgTime, concat, err := smscodec.DecodeDeliverPDUHex(raw)
 	if err != nil {
-		logger.Error(fmt.Sprintf("[%s] PDU 十六进制解码失败", m.cfg.ID), "err", err)
-		content = fmt.Sprintf("[解码失败] %s", raw)
-		return
-	}
-
-	// 跳过 SMSC 头部
-	if len(b) > 0 {
-		smscLen := int(b[0])
-		if len(b) > smscLen+1 {
-			b = b[smscLen+1:]
-		}
-	}
-
-	var concat smscodec.ConcatInfo
-	sender, content, msgTime, concat, err := smscodec.DecodeDeliverTPDU(b)
-	if err != nil {
-		logger.Error(fmt.Sprintf("[%s] TPDU 解析失败", m.cfg.ID), "err", err)
+		logger.Error(fmt.Sprintf("[%s] PDU 解析失败", m.cfg.ID), "err", err)
 		content = fmt.Sprintf("[PDU 解析失败] %s", raw)
 		return
 	}
@@ -1714,6 +1851,22 @@ func (m *Manager) SetAPDUArbiter(arbiter *apduarbiter.Arbiter) {
 	}
 	clear(m.apduSessions)
 	m.apduArbiter = arbiter
+	if arbiter == nil {
+		return
+	}
+	// 本管理器是 AT 传输的所有者：接收隔离上报，并在（重）注册时确认恢复，
+	// 因为重新注册意味着新传输已就绪。
+	arbiter.SetTransportOwner(m)
+	arbiter.ConfirmTransportRecovery()
+}
+
+// OnTransportQuarantine 由 APDU 仲裁器在传输恢复期限到期时调用：关闭 AT 传输，
+// 运行时重连即完成关闭/重新初始化序列。仲裁器从不直接关闭它不拥有的传输。
+func (m *Manager) OnTransportQuarantine(reason string) {
+	logger.Warn(fmt.Sprintf("[%s] APDU 传输被仲裁器隔离，触发控制面恢复", m.cfg.ID), "reason", reason, "port", m.atPort)
+	m.healthy = false
+	m.Stop()
+	m.notifyDisconnect("apdu_quarantine")
 }
 
 func (m *Manager) acquireAPDUTransportLease(timeout time.Duration, owner string, class apduarbiter.APDUClass, channel int) (*apduarbiter.Lease, error) {
@@ -1845,8 +1998,8 @@ func (m *Manager) CheckAllSMS() {
 		return
 	}
 
-	for _, pduHex := range pdus {
-		sender, content, timestamp := m.decodePDU(pduHex)
+	for _, entry := range pdus {
+		sender, content, timestamp := m.decodePDU(entry.PDU)
 		if m.smsCallback != nil && content != "" {
 			m.smsCallback(sender, content, timestamp)
 		}
