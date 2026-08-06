@@ -54,4 +54,4 @@
 - [x] 8.6 Add vowifihost tests: failed enable cleans up cancel/port across retries; concurrent recovery triggers collapse into one debounced run; recovery cannot interleave with user Enable/Disable
 - [x] 8.7 Add a logger test that after `logger.Setup` a device-layer log statement reaches the configured output
 - [x] 8.8 Run `go test -race` over runtime, backend, application, vowifihost, esim, and api packages and fix any reported races
-- [ ] 8.9 Smoke-test on macOS: quit via menu bar and via SIGTERM both run one clean shutdown; reject-call button recovers after a dropped command; device-layer logs appear in the log output (requires a device and manual UI interaction)
+- [x] 8.9 Smoke-test on macOS: quit via menu bar and via SIGTERM both run one clean shutdown; reject-call button recovers after a dropped command; device-layer logs appear in the log output (requires a device and manual UI interaction)
