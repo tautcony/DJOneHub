@@ -134,7 +134,7 @@ func updateDevicesInFile(path string, mutate func(*yaml.Node) (*yaml.Node, error
 	}
 
 	tmp := path + ".tmp"
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("创建配置目录失败: %w", err)
 	}
 	if err := os.WriteFile(tmp, out, 0o600); err != nil {
@@ -144,7 +144,6 @@ func updateDevicesInFile(path string, mutate func(*yaml.Node) (*yaml.Node, error
 		return fmt.Errorf("替换配置文件失败: %w", err)
 	}
 
-	_ = ReloadFromFile() // 触发配置重载到内存
 	return nil
 }
 

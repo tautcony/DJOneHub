@@ -52,7 +52,7 @@ func TestMBIMAPDUTransport(t *testing.T) {
 func TestMBIMAPDUTransportAcquiresExclusiveLease(t *testing.T) {
 	f := &fakeUICC{}
 	tr := NewMBIMAPDUTransport(f)
-	arb := apduarbiter.New("mbim-dev", apduarbiter.Options{MaxSessions: 3, MaxQMITransports: 3})
+	arb := apduarbiter.New("mbim-dev", apduarbiter.Options{MaxQMITransports: 3})
 	tr.SetAPDUArbiter(arb)
 
 	ch, err := tr.OpenEUICCLogicalChannel(context.Background(), 1, []byte{0xA0})
@@ -76,7 +76,7 @@ func TestMBIMAPDUTransportAcquiresExclusiveLease(t *testing.T) {
 func TestMBIMAPDUTransportForwardsArbiterToSource(t *testing.T) {
 	f := &arbiterAwareFakeUICC{}
 	tr := NewMBIMAPDUTransport(f)
-	arb := apduarbiter.New("mbim-dev", apduarbiter.Options{MaxSessions: 3, MaxQMITransports: 3})
+	arb := apduarbiter.New("mbim-dev", apduarbiter.Options{MaxQMITransports: 3})
 	tr.SetAPDUArbiter(arb)
 	if f.gotArbiter != arb {
 		t.Fatal("SetAPDUArbiter 应转发给底层 src")

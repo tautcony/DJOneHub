@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, h, onBeforeUnmount, onMounted, provide, ref, watch } from 'vue'
+import { storeToRefs } from 'pinia'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { notification } from 'ant-design-vue'
@@ -9,9 +10,12 @@ import { APIError } from './services/api'
 import { persistLocale } from './i18n'
 import { AT_PRESETS, parseATResponse } from './services/at'
 import { useDeviceStore } from './stores/device'
+import { useEsimStore } from './stores/esim'
+import { useNetworkStore } from './stores/network'
+import { useSmsStore } from './stores/sms'
+import { useVowifiStore } from './stores/vowifi'
 import type {
   CallStatus,
-  EsimOverview,
   FirmwareStatus,
   NotificationDebugEvent,
   NotificationDebugInfo,
@@ -19,12 +23,7 @@ import type {
   NotificationPermissionStatus,
   NotificationPreferences,
   OperationStatus,
-  NetworkStatus,
-  NetworkTrafficRange,
-  NetworkTrafficUpdate,
-  SMSMessage,
   StartupStatus,
-  VowifiStatus,
 } from './types'
 import AppShell, { type ShellNavGroup } from './components/AppShell.vue'
 import PageHeader from './components/PageHeader.vue'
@@ -49,66 +48,65 @@ const route = useRoute()
 const router = useRouter()
 const active = computed<ViewID>(() => viewFromRoute(route.path))
 const viewError = ref('')
-const smsTo = ref('')
-const smsBody = ref('')
-const smsOperationID = ref('')
-const smsOperation = computed(() =>
-  smsOperationID.value ? device.operations[smsOperationID.value] : undefined,
-)
-const smsItems = ref<SMSMessage[]>([])
-const smsSentItems = ref<SMSMessage[]>([])
 const loadedViews = ref<Partial<Record<ViewID, boolean>>>({})
-const smsQuery = ref('')
-const selectedSmsPeer = ref('')
-const smsComposeNew = ref(false)
-const esim = ref<EsimOverview | null>(null)
-const esimDownloadOpen = ref(false)
-const esimSettingsOpen = ref(false)
-const esimSettingsICCID = ref('')
-const esimActivationCode = ref('')
-const esimConfirmationCode = ref('')
-const esimMatchingID = ref('')
-const esimLabels = ref<Record<string, string>>({})
-const esimOperationID = ref('')
-const esimOperation = computed(() =>
-  esimOperationID.value ? device.operations[esimOperationID.value] : undefined,
-)
-const esimReloadedOperationID = ref('')
 const calls = ref<CallStatus | null>(null)
-const esimNotes = ref<Record<string, { label: string; phone: string; tags: string }>>({})
-const esimHealth = ref<Record<string, unknown> | null>(null)
-const noteICCID = ref('')
-const noteLabel = ref('')
-const notePhone = ref('')
-const noteTags = ref('')
 const pageVisible = ref(document.visibilityState === 'visible')
 const pendingViewRefreshes = new Map<ViewID, { timer: number; dueAt: number }>()
 const viewLoadInFlight = new Map<ViewID, Promise<void>>()
 const queuedViewRefreshes = new Set<ViewID>()
 const lastViewRefreshAt = new Map<ViewID, number>()
 let activeFallbackTimer: number | undefined
-const network = ref<NetworkStatus | null>(null)
-const overviewNetwork = ref<NetworkStatus | null>(null)
-const networkMode = ref('')
-const networkTraffic = ref({
-  rxRate: 0,
-  txRate: 0,
-  rxBytes: 0,
-  txBytes: 0,
-  dailyAvailable: false,
-  sampledAt: '',
-  date: '',
-})
+
+// 域状态按 domain 拆分到 Pinia stores (SMS/eSIM/network/VoWiFi); 此处仅
+// 保留 shell 编排 (导航、连接、能力门控、刷新调度、通知) 与未拆分域。
+const sms = useSmsStore()
+const {
+  items: smsItems,
+  sentItems: smsSentItems,
+  query: smsQuery,
+  selectedPeer: selectedSmsPeer,
+  composeNew: smsComposeNew,
+  to: smsTo,
+  body: smsBody,
+  operation: smsOperation,
+  threads: smsThreads,
+  filteredThreads: filteredSmsThreads,
+  selectedThread: selectedSmsThread,
+} = storeToRefs(sms)
+
+const esimStore = useEsimStore()
+const {
+  overview: esim,
+  downloadOpen: esimDownloadOpen,
+  settingsOpen: esimSettingsOpen,
+  settingsICCID: esimSettingsICCID,
+  activationCode: esimActivationCode,
+  confirmationCode: esimConfirmationCode,
+  matchingID: esimMatchingID,
+  labels: esimLabels,
+  operation: esimOperation,
+  reloadedOperationID: esimReloadedOperationID,
+  notes: esimNotes,
+  health: esimHealth,
+  noteICCID,
+  noteLabel,
+  notePhone,
+  noteTags,
+} = storeToRefs(esimStore)
+
+const networkStore = useNetworkStore()
+const {
+  status: network,
+  overviewStatus: overviewNetwork,
+  mode: networkMode,
+  traffic: networkTraffic,
+  trafficHistory,
+  trafficRangeData,
+} = storeToRefs(networkStore)
 type TrafficRange = 'day' | 'week' | 'month'
-const trafficHistory = ref<Array<{ at: number; rxRate: number; txRate: number }>>([])
-const trafficRangeData = ref<NetworkTrafficRange | null>(null)
-let trafficRangeRequest = 0
-let previousTrafficSample: { rx: number; tx: number; at: number } | undefined
-const vowifi = ref<VowifiStatus | null>(null)
-const vowifiOperationID = ref('')
-const vowifiOperation = computed(() =>
-  vowifiOperationID.value ? device.operations[vowifiOperationID.value] : undefined,
-)
+
+const vowifiStore = useVowifiStore()
+const { status: vowifi, operation: vowifiOperation } = storeToRefs(vowifiStore)
 const firmware = ref<FirmwareStatus | null>(null)
 const firmwareOperationID = ref('')
 const firmwareOperationModalOpen = ref(false)
@@ -219,8 +217,13 @@ const usbNetworkModeOptions = computed(() => [
   { value: '2', label: t('network.modes.mbim') },
   { value: '3', label: t('network.modes.rndis') },
 ])
+// 文档语言属性与激活 locale 保持同步 (BCP 47 标签)。
+function syncDocumentLang(value: string) {
+  document.documentElement.lang = value
+}
 watch(locale, (value) => {
   persistLocale(value)
+  syncDocumentLang(value)
   notifySuccess(t('settings.saved'))
 })
 watch(showSensitive, (value) => {
@@ -324,17 +327,9 @@ function applyATPreset() {
   if (preset) rawATCommand.value = preset.command
 }
 
-async function updateSMS() {
-  const result = await api.smsRefresh()
-  const items = Array.isArray(result.items) ? result.items : []
-  smsItems.value = items
-  reconcileSentSMS(items)
-  syncSmsSelection()
-}
-
 async function loadSMS() {
   try {
-    await updateSMS()
+    await sms.refresh()
     viewError.value = ''
   } catch (error) {
     viewError.value = errorText(error, 'sms.unableLoad')
@@ -345,7 +340,7 @@ async function loadSMS() {
 
 async function refreshSMS() {
   try {
-    await updateSMS()
+    await sms.refresh()
     notifySuccess(t('sms.refreshed'))
     viewError.value = ''
   } catch (error) {
@@ -356,117 +351,24 @@ async function refreshSMS() {
 
 async function clearModuleSMS() {
   try {
-    await api.smsClear()
+    await sms.clear()
     notifySuccess(t('sms.cleared'))
   } catch (error) {
     notifyError('view', errorText(error, 'sms.unableClear'))
   }
 }
 
-function smsPeer(item: SMSMessage) {
-  return item.sender || item.recipient || t('sms.unknownSender')
-}
-
-function smsThreadKey(item: SMSMessage) {
-  return item.sender || item.recipient || 'unknown'
-}
-
-function reconcileSentSMS(items: SMSMessage[]) {
-  smsSentItems.value = smsSentItems.value.filter((local) => {
-    const localTime = local.received_at ? Date.parse(local.received_at) : NaN
-    return !items.some((remote) => {
-      if (!remote.recipient || remote.recipient !== local.recipient || remote.body !== local.body) {
-        return false
-      }
-      const remoteTime = remote.received_at ? Date.parse(remote.received_at) : NaN
-      return Number.isFinite(localTime) && Number.isFinite(remoteTime)
-        ? Math.abs(remoteTime - localTime) < 60_000
-        : true
-    })
-  })
-}
-
-// smsOrderingKey resolves the ordering key of a message. The backend sorts by
-// recorded_at (device-local insertion time, one clock for both directions);
-// received_at stays a display attribute because the SMSC clock is not synced
-// with the device clock.
-function smsOrderingKey(item: SMSMessage): number {
-  const value = item.recorded_at ?? item.received_at
-  const parsed = value ? Date.parse(value) : NaN
-  return Number.isFinite(parsed) ? parsed : 0
-}
-
-const smsThreads = computed(() => {
-  const groups = new Map<string, { key: string; peer: string; items: SMSMessage[]; latest?: SMSMessage }>()
-  for (const item of [...smsItems.value, ...smsSentItems.value]) {
-    const key = smsThreadKey(item)
-    const group = groups.get(key) || { key, peer: smsPeer(item), items: [] }
-    group.items.push(item)
-    if (!group.latest || smsOrderingKey(item) > smsOrderingKey(group.latest)) group.latest = item
-    groups.set(key, group)
-  }
-  const threads = [...groups.values()].sort((a, b) => smsOrderingKey(b.latest!) - smsOrderingKey(a.latest!))
-  for (const thread of threads) thread.items.sort((a, b) => smsOrderingKey(b) - smsOrderingKey(a))
-  return threads
-})
-
-const filteredSmsThreads = computed(() => {
-  const query = smsQuery.value.trim().toLowerCase()
-  if (!query) return smsThreads.value
-  return smsThreads.value.filter(
-    (thread) =>
-      thread.peer.toLowerCase().includes(query) ||
-      thread.items.some((item) => item.body.toLowerCase().includes(query)),
-  )
-})
-
-const selectedSmsThread = computed(() =>
-  smsComposeNew.value
-    ? undefined
-    : smsThreads.value.find((thread) => thread.key === selectedSmsPeer.value) || smsThreads.value[0],
-)
-
-function syncSmsSelection() {
-  if (smsComposeNew.value) return
-  const thread = smsThreads.value.find((item) => item.key === selectedSmsPeer.value) || smsThreads.value[0]
-  if (!thread) {
-    selectedSmsPeer.value = ''
-    smsTo.value = ''
-    return
-  }
-  selectedSmsPeer.value = thread.key
-  smsTo.value = thread.peer
-}
-
 function startNewSMS() {
-  smsComposeNew.value = true
-  selectedSmsPeer.value = ''
-  smsTo.value = ''
-  smsBody.value = ''
-  smsOperationID.value = ''
+  sms.startNew()
 }
 
 function resetSMSOperation() {
-  smsOperationID.value = ''
+  sms.resetOperation()
 }
 
 async function loadEsim() {
   try {
-    const result = await api.esim()
-    esim.value = { ...result, profiles: Array.isArray(result.profiles) ? result.profiles : [] }
-    const [notes, health] = await Promise.all([
-      api.esimNotes().catch(() => ({ notes: {} })),
-      api.esimHealth().catch(() => null),
-    ])
-    esimNotes.value = notes.notes
-    esimHealth.value = health
-    if (!noteICCID.value) noteICCID.value = esim.value.profiles[0]?.iccid || ''
-    syncSelectedNote()
-    for (const profile of esim.value.profiles) {
-      if (profile.iccid && esimLabels.value[profile.iccid] === undefined) {
-        esimLabels.value[profile.iccid] = profile.label || ''
-      }
-    }
+    await esimStore.load()
     viewError.value = ''
   } catch (error) {
     viewError.value = errorText(error, 'esim.unableLoad')
@@ -495,44 +397,21 @@ async function rejectCall() {
   }
 }
 function localProfileNote(iccid?: string) {
-  return iccid ? esimNotes.value[iccid] : undefined
+  return esimStore.localProfileNote(iccid)
 }
 function noteSummary(note?: { label?: string; phone?: string; tags?: string; profile_class?: string }) {
-  return note ? [note.label, note.phone, note.tags || note.profile_class].filter(Boolean).join(' · ') : ''
-}
-function syncSelectedNote() {
-  const note = localProfileNote(noteICCID.value)
-  noteLabel.value = note?.label || ''
-  notePhone.value = note?.phone || ''
-  noteTags.value = note?.tags || ''
+  return esimStore.noteSummary(note)
 }
 function openEsimSettings(iccid?: string) {
-  if (!iccid) return
-  esimSettingsICCID.value = iccid
-  noteICCID.value = iccid
-  syncSelectedNote()
-  esimSettingsOpen.value = true
+  esimStore.openSettings(iccid)
 }
 function closeEsimSettings() {
-  esimSettingsOpen.value = false
-  esimSettingsICCID.value = ''
+  esimStore.closeSettings()
 }
 async function saveProfileNote() {
   if (!noteICCID.value) return
   try {
-    const profile = esim.value?.profiles.find((item) => item.iccid === noteICCID.value)
-    const label = (esimLabels.value[noteICCID.value] || '').trim()
-    if (label && label !== profile?.label) await api.esimRename(noteICCID.value, label)
-    await api.saveEsimNote(noteICCID.value, {
-      label: noteLabel.value,
-      phone: notePhone.value,
-      tags: noteTags.value,
-    })
-    esimNotes.value[noteICCID.value] = {
-      label: noteLabel.value,
-      phone: notePhone.value,
-      tags: noteTags.value,
-    }
+    await esimStore.saveNote()
     notifySuccess(t('esim.noteSaved'))
     closeEsimSettings()
   } catch (error) {
@@ -689,8 +568,7 @@ watch(
 async function enableEsim(iccid?: string) {
   if (!iccid) return
   try {
-    const result = await api.esimEnable(iccid)
-    esimOperationID.value = result.operation_id
+    const result = await esimStore.enable(iccid)
     notifySuccess(t('esim.operationAccepted', { id: result.operation_id }))
   } catch (error) {
     notifyError('view', errorText(error, 'esim.unableEnable'))
@@ -700,8 +578,7 @@ async function enableEsim(iccid?: string) {
 async function deleteEsim(iccid?: string) {
   if (!iccid) return
   try {
-    const result = await api.esimDelete(iccid)
-    esimOperationID.value = result.operation_id
+    const result = await esimStore.remove(iccid)
     notifySuccess(t('esim.operationAccepted', { id: result.operation_id }))
   } catch (error) {
     notifyError('view', errorText(error, 'esim.unableDelete'))
@@ -709,21 +586,16 @@ async function deleteEsim(iccid?: string) {
 }
 
 function openEsimDownload() {
-  esimDownloadOpen.value = true
+  esimStore.openDownload()
 }
 
 function closeEsimDownload() {
-  esimDownloadOpen.value = false
+  esimStore.closeDownload()
 }
 
 async function downloadEsim() {
   try {
-    const result = await api.esimDownload(
-      esimActivationCode.value,
-      esimConfirmationCode.value,
-      esimMatchingID.value,
-    )
-    esimOperationID.value = result.operation_id
+    const result = await esimStore.download()
     notifySuccess(t('esim.operationAccepted', { id: result.operation_id }))
     closeEsimDownload()
   } catch (error) {
@@ -733,8 +605,7 @@ async function downloadEsim() {
 
 async function loadNetwork() {
   try {
-    network.value = await api.network()
-    networkMode.value = network.value.mode || ''
+    await networkStore.load()
     viewError.value = ''
   } catch (error) {
     viewError.value = errorText(error, 'network.unableLoad')
@@ -744,70 +615,24 @@ async function loadNetwork() {
 }
 
 async function loadOverviewNetwork() {
-  try {
-    overviewNetwork.value = await api.network()
-  } catch {
-    overviewNetwork.value = null
-  }
+  await networkStore.loadOverview()
 }
 
 async function loadOverviewTraffic() {
-  try {
-    const result = await api.networkTrafficDaily()
-    networkTraffic.value = {
-      ...networkTraffic.value,
-      rxBytes: result.rx_bytes,
-      txBytes: result.tx_bytes,
-      dailyAvailable: result.available,
-      sampledAt: result.sampled_at || '',
-      date: result.date,
-    }
-  } catch {
-    networkTraffic.value = { ...networkTraffic.value, dailyAvailable: false }
-  }
+  await networkStore.loadTrafficDaily()
 }
 
 async function loadTrafficRange(period: TrafficRange) {
-  const requestID = ++trafficRangeRequest
-  try {
-    const result = await api.networkTrafficRange(period)
-    if (requestID === trafficRangeRequest) trafficRangeData.value = result
-  } catch {
-    if (requestID === trafficRangeRequest) trafficRangeData.value = null
-  }
+  await networkStore.loadTrafficRange(period)
 }
 
 function applyNetworkTraffic(data: unknown) {
-  if (!data || typeof data !== 'object') return
-  const sample = data as Partial<NetworkTrafficUpdate>
-  if (typeof sample.rx_bytes !== 'number' || typeof sample.tx_bytes !== 'number') return
-  const parsedAt = typeof sample.sampled_at === 'string' ? Date.parse(sample.sampled_at) : NaN
-  const at = Number.isFinite(parsedAt) ? parsedAt : Date.now()
-  const previous = previousTrafficSample
-  const seconds = previous ? Math.max((at - previous.at) / 1000, 0.1) : 0
-  const dailyAvailable = sample.daily_available === true
-  const dailyRX = typeof sample.daily_rx_bytes === 'number' ? sample.daily_rx_bytes : sample.rx_bytes
-  const dailyTX = typeof sample.daily_tx_bytes === 'number' ? sample.daily_tx_bytes : sample.tx_bytes
-  networkTraffic.value = {
-    rxBytes: dailyAvailable ? dailyRX : sample.rx_bytes,
-    txBytes: dailyAvailable ? dailyTX : sample.tx_bytes,
-    rxRate: previous ? Math.max(0, sample.rx_bytes - previous.rx) / seconds : 0,
-    txRate: previous ? Math.max(0, sample.tx_bytes - previous.tx) / seconds : 0,
-    dailyAvailable,
-    sampledAt: sample.sampled_at || '',
-    date: dailyAvailable ? new Date(at).toLocaleDateString() : '',
-  }
-  const rxRate = previous ? Math.max(0, sample.rx_bytes - previous.rx) / seconds : 0
-  const txRate = previous ? Math.max(0, sample.tx_bytes - previous.tx) / seconds : 0
-  trafficHistory.value = [...trafficHistory.value, { at, rxRate, txRate }].filter(
-    (point) => point.at >= at - 30_000,
-  )
-  previousTrafficSample = { rx: sample.rx_bytes, tx: sample.tx_bytes, at }
+  networkStore.applyTraffic(data)
 }
 
 async function loadVowifi() {
   try {
-    vowifi.value = await api.vowifi()
+    await vowifiStore.load()
     viewError.value = ''
   } catch (error) {
     viewError.value = errorText(error, 'vowifi.unableLoad')
@@ -1145,26 +970,10 @@ function handleVisibilityChange() {
 }
 
 async function sendSMS() {
-  const recipient = smsTo.value.trim()
-  const body = smsBody.value.trim()
-  if (!recipient || !body) return
+  if (!smsTo.value.trim() || !smsBody.value.trim()) return
   try {
-    const result = await api.sendSMS(recipient, body)
-    smsOperationID.value = result.operation_id
-    smsSentItems.value = [
-      ...smsSentItems.value,
-      {
-        index: -Date.now(),
-        recipient,
-        body,
-        received_at: new Date().toISOString(),
-        recorded_at: new Date().toISOString(),
-      },
-    ]
-    selectedSmsPeer.value = recipient
-    smsComposeNew.value = false
+    const result = await sms.send()
     notifySuccess(t('sms.accepted', { id: result.operation_id }))
-    smsBody.value = ''
   } catch (error) {
     notifyError('view', errorText(error, 'sms.unableSend'))
   }
@@ -1172,14 +981,9 @@ async function sendSMS() {
 
 async function runVowifi(action: 'enable' | 'disable' | 'reconnect') {
   try {
-    const result =
-      action === 'enable'
-        ? await api.vowifiEnable()
-        : action === 'disable'
-          ? await api.vowifiDisable()
-          : await api.vowifiReconnect()
-    vowifiOperationID.value = result.operation_id
-    notifySuccess(t('esim.operationAccepted', { id: result.operation_id }))
+    const result = await vowifiStore.run(action)
+    // VoWiFi 操作文案使用专用 vowifi 命名空间, 不复用 eSIM 的键。
+    notifySuccess(t('vowifi.operationAccepted', { id: result.operation_id }))
   } catch (error) {
     notifyError('view', errorText(error, 'vowifi.unableUpdate'))
   }
@@ -1199,7 +1003,7 @@ async function rebootModule() {
   if (!window.confirm(t('network.rebootConfirm'))) return
   notifyInfo(t('network.rebooting'))
   try {
-    await api.reboot()
+    await networkStore.reboot()
     notifySuccess(t('network.rebootAccepted'))
     window.setTimeout(() => void device.refresh(), 8000)
     scheduleViewRefresh('network', 12000)
@@ -1210,7 +1014,7 @@ async function rebootModule() {
 
 async function checkNetwork() {
   try {
-    const result = await api.networkCheck()
+    const result = await networkStore.check()
     const message = result.detail ? `${result.summary}: ${result.detail}` : result.summary
     if (result.ok) notifySuccess(message)
     else notifyError('view', message)
@@ -1221,7 +1025,7 @@ async function checkNetwork() {
 
 async function setNetworkMode() {
   try {
-    const result = await api.networkMode(networkMode.value)
+    const result = await networkStore.setMode()
     notifySuccess(t('network.accepted', { id: result.operation_id }))
   } catch (error) {
     notifyError('view', errorText(error, 'network.unableChange'))
@@ -1352,6 +1156,7 @@ provide(viewContextKey, {
 })
 
 onMounted(async () => {
+  syncDocumentLang(locale.value)
   document.addEventListener('visibilitychange', handleVisibilityChange)
   await device.refresh()
   device.connect()

@@ -151,7 +151,7 @@ func TestConsumerPersistsThenAcknowledgesSingleMessage(t *testing.T) {
 		t.Fatalf("deleted = %#v, want ref {SM 5}", backendInstance.deleted)
 	}
 	waitForEvent(t, events, "sms.received")
-	records, err := service.store.ListSMS("inbound")
+	records, err := service.store.ListSMS("inbound", 0, 0)
 	if err != nil || len(records) != 1 {
 		t.Fatalf("stored inbound records = %d, err = %v", len(records), err)
 	}
@@ -237,7 +237,7 @@ func TestConsumerMultipartRetainsSegmentsThenAcknowledgesAllRefs(t *testing.T) {
 	if !indexes[1] || !indexes[2] {
 		t.Fatalf("deleted refs = %#v, want indexes 1 and 2", backendInstance.deleted)
 	}
-	records, err := service.store.ListSMS("inbound")
+	records, err := service.store.ListSMS("inbound", 0, 0)
 	if err != nil || len(records) != 1 {
 		t.Fatalf("stored inbound records = %d, err = %v", len(records), err)
 	}
@@ -330,7 +330,7 @@ func TestMultipartReassemblesAcrossRefreshCycles(t *testing.T) {
 	if len(backendInstance.deleted) != 3 {
 		t.Fatalf("deleted = %#v, want all three refs after completion", backendInstance.deleted)
 	}
-	records, err := service.store.ListSMS("inbound")
+	records, err := service.store.ListSMS("inbound", 0, 0)
 	if err != nil || len(records) != 1 || records[0].Body != "firstsecondthird" {
 		t.Fatalf("reassembled record = %+v, err = %v", records, err)
 	}

@@ -494,10 +494,11 @@ func TestDoForEachEUICCScansPastThreeFailuresAndStopsAtFirstUsableVendorAID(t *t
 	mgr.closeClient = func(client *lpa.Client) error { return nil }
 
 	var callbackAID string
-	found, err := mgr.doForEachEUICC(context.Background(), AIDs, func(client *lpa.Client, aid []byte, eidStr string) error {
+	outcome := mgr.doForEachEUICC(context.Background(), AIDs, func(client *lpa.Client, aid []byte, eidStr string) error {
 		callbackAID = strings.ToUpper(hex.EncodeToString(aid))
 		return nil
 	})
+	found, err := outcome.foundAny, outcome.lastErr
 
 	if err != nil {
 		t.Fatalf("doForEachEUICC() error=%v, opened=%v", err, opened)
@@ -534,10 +535,11 @@ func TestDoForEachEUICCRecoversFromCallbackPanic(t *testing.T) {
 	}, nil, nil, nil)
 	mgr.closeClient = func(client *lpa.Client) error { return nil }
 
-	found, err := mgr.doForEachEUICC(context.Background(), AIDs, func(client *lpa.Client, aid []byte, eidStr string) error {
+	outcome := mgr.doForEachEUICC(context.Background(), AIDs, func(client *lpa.Client, aid []byte, eidStr string) error {
 		var nilTLV *bertlv.TLV
 		return nilTLV.UnmarshalValue(nil) // panics: nil pointer dereference, mirrors the upstream euicc-go bug
 	})
+	found, err := outcome.foundAny, outcome.lastErr
 
 	// found=true/err=nil matches the existing "already discovered an eUICC, so
 	// don't fail the whole scan over one bad AID" contract (see the lastErr
@@ -569,9 +571,10 @@ func TestDoForEachEUICCContinuesESTKPairThenStopsBeforeGSMA(t *testing.T) {
 	}, nil, nil, nil)
 	mgr.closeClient = func(client *lpa.Client) error { return nil }
 
-	found, err := mgr.doForEachEUICC(context.Background(), AIDs, func(client *lpa.Client, aid []byte, eidStr string) error {
+	outcome := mgr.doForEachEUICC(context.Background(), AIDs, func(client *lpa.Client, aid []byte, eidStr string) error {
 		return nil
 	})
+	found, err := outcome.foundAny, outcome.lastErr
 
 	if err != nil {
 		t.Fatalf("doForEachEUICC() error=%v, opened=%v", err, opened)
@@ -3179,9 +3182,10 @@ func TestDoForEachEUICCReattemptsAfterPartialFailure(t *testing.T) {
 	}, nil, nil, nil)
 	mgr.closeClient = func(client *lpa.Client) error { return nil }
 
-	foundAny, err := mgr.doForEachEUICC(context.Background(), [][]byte{aid1, aid2}, func(client *lpa.Client, aid []byte, eidStr string) error {
+	outcome := mgr.doForEachEUICC(context.Background(), [][]byte{aid1, aid2}, func(client *lpa.Client, aid []byte, eidStr string) error {
 		return nil
 	})
+	foundAny, err := outcome.foundAny, outcome.lastErr
 
 	if !foundAny {
 		t.Fatal("doForEachEUICC returned foundAny=false, want true (aid1 succeeded)")
@@ -3192,9 +3196,10 @@ func TestDoForEachEUICCReattemptsAfterPartialFailure(t *testing.T) {
 	}
 
 	attempts = make(map[string]int)
-	foundAny2, _ := mgr.doForEachEUICC(context.Background(), [][]byte{aid1, aid2}, func(client *lpa.Client, aid []byte, eidStr string) error {
+	outcome2 := mgr.doForEachEUICC(context.Background(), [][]byte{aid1, aid2}, func(client *lpa.Client, aid []byte, eidStr string) error {
 		return nil
 	})
+	foundAny2 := outcome2.foundAny
 	if !foundAny2 {
 		t.Fatal("second scan returned foundAny=false")
 	}

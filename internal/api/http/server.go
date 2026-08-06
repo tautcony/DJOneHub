@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/gorilla/websocket"
 
@@ -24,7 +25,6 @@ import (
 	"github.com/iniwex5/vohive/internal/application/sms"
 	"github.com/iniwex5/vohive/internal/application/vowifi"
 	"github.com/iniwex5/vohive/internal/backend"
-	domain "github.com/iniwex5/vohive/internal/domain/device"
 	derrors "github.com/iniwex5/vohive/internal/domain/errors"
 	"github.com/iniwex5/vohive/internal/platform/startup"
 	"github.com/iniwex5/vohive/internal/runtime"
@@ -169,14 +169,14 @@ func (s *Server) deviceStatus(w nethttp.ResponseWriter, r *nethttp.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, nethttp.StatusOK, publicDeviceStatus(status))
+	writeJSON(w, nethttp.StatusOK, sanitizeDeviceStatus(status))
 }
 
 func (s *Server) deviceCapabilities(w nethttp.ResponseWriter, r *nethttp.Request) {
 	if !s.requireMethod(w, r, nethttp.MethodGet) || !s.protected(w, r) {
 		return
 	}
-	snapshot := publicSnapshot(s.config.Runtime.Snapshot())
+	snapshot := sanitizeSnapshot(s.config.Runtime.Snapshot())
 	writeJSON(w, nethttp.StatusOK, map[string]any{
 		"backend":        snapshot.Backend,
 		"backend_reason": snapshot.BackendReason,
@@ -192,7 +192,7 @@ func (s *Server) rescan(w nethttp.ResponseWriter, r *nethttp.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, nethttp.StatusOK, map[string]any{"state": publicSnapshot(s.config.Runtime.Snapshot())})
+	writeJSON(w, nethttp.StatusOK, map[string]any{"state": sanitizeSnapshot(s.config.Runtime.Snapshot())})
 }
 
 func (s *Server) reboot(w nethttp.ResponseWriter, r *nethttp.Request) {
@@ -1091,7 +1091,7 @@ func (s *Server) operationStatus(w nethttp.ResponseWriter, r *nethttp.Request) {
 		writeError(w, derrors.New(derrors.NotFound, "operation not found", false, nil))
 		return
 	}
-	writeJSON(w, nethttp.StatusOK, publicOperationStatus(status))
+	writeJSON(w, nethttp.StatusOK, sanitizeOperationStatus(status))
 }
 
 func (s *Server) openapi(w nethttp.ResponseWriter, r *nethttp.Request) {
@@ -1182,7 +1182,7 @@ func (s *Server) websocket(w nethttp.ResponseWriter, r *nethttp.Request) {
 	// 初始快照查询失败(模组暂不可用)时不得中断事件流:连接已升级,
 	// 后续 device.status.changed 事件仍会推送,前端也会定期通过 HTTP 刷新状态。
 	if status, err := s.config.Device.Status(r.Context()); err == nil {
-		snapshot := runtime.Event{ID: sub.Watermark, Type: "snapshot", Version: 1, OccurredAt: time.Now().UTC(), Data: publicDeviceStatus(status)}
+		snapshot := runtime.Event{ID: sub.Watermark, Type: "snapshot", Version: 1, OccurredAt: time.Now().UTC(), Data: sanitizeDeviceStatus(status)}
 		if err := write(snapshot); err != nil {
 			return
 		}
@@ -1205,7 +1205,7 @@ func (s *Server) websocket(w nethttp.ResponseWriter, r *nethttp.Request) {
 			if sub.DropCount() > 0 {
 				return
 			}
-			if err := write(publicEvent(event)); err != nil {
+			if err := write(sanitizeEvent(event)); err != nil {
 				return
 			}
 		case <-pingTicker.C:
@@ -1292,6 +1292,8 @@ func logRequests(next nethttp.Handler) nethttp.Handler {
 	})
 }
 
+// toStructuredError 将错误映射为结构化 API 错误。错误消息属于 API 契约
+// (设备侧原因的客户端可读文本), 不受事件流净化器 (sanitize.go) 约束。
 func toStructuredError(err error) *derrors.Error {
 	var structured *derrors.Error
 	if errors.As(err, &structured) {
@@ -1304,29 +1306,13 @@ func toStructuredError(err error) *derrors.Error {
 	return derrors.New(derrors.Internal, derrors.PublicMessage(derrors.Internal), true, nil)
 }
 
-func publicDeviceStatus(value device.Status) device.Status {
-	value.Snapshot = publicSnapshot(value.Snapshot)
-	return value
-}
-
-func publicSnapshot(value domain.Snapshot) domain.Snapshot {
-	value.BackendReason = publicText(value.BackendReason, "backend selection failed")
-	value.LastError = publicText(value.LastError, "device error")
-	if value.Capabilities != nil {
-		capabilities := make(domain.CapabilitySet, len(value.Capabilities))
-		for capability, reason := range value.Capabilities {
-			capabilities[capability] = publicText(reason, "capability is unavailable")
+func containsCJK(value string) bool {
+	for _, r := range value {
+		if unicode.Is(unicode.Han, r) {
+			return true
 		}
-		value.Capabilities = capabilities
 	}
-	return value
-}
-
-func publicOperationStatus(value operation.Status) operation.Status {
-	if value.Error != nil {
-		value.Error = toStructuredError(value.Error)
-	}
-	return value
+	return false
 }
 
 func publicESIMOverview(value map[string]any) map[string]any {
@@ -1335,45 +1321,12 @@ func publicESIMOverview(value map[string]any) map[string]any {
 		copy[key] = item
 	}
 	if probeError, ok := copy["probe_error"].(string); ok {
-		copy["probe_error"] = publicText(probeError, "eUICC profile probe failed")
+		copy["probe_error"] = fallbackText(probeError, "eUICC profile probe failed")
 	}
 	if message, ok := copy["message"].(string); ok {
-		copy["message"] = publicText(message, "eUICC profile service is unavailable")
+		copy["message"] = fallbackText(message, "eUICC profile service is unavailable")
 	}
 	return copy
-}
-
-func publicEvent(value runtime.Event) runtime.Event {
-	switch data := value.Data.(type) {
-	case device.Status:
-		value.Data = publicDeviceStatus(data)
-	case domain.Snapshot:
-		value.Data = publicSnapshot(data)
-	case operation.Status:
-		value.Data = publicOperationStatus(data)
-	case *operation.Status:
-		if data != nil {
-			copy := publicOperationStatus(*data)
-			value.Data = copy
-		}
-	}
-	return value
-}
-
-func publicText(value, fallback string) string {
-	if containsCJK(value) {
-		return fallback
-	}
-	return value
-}
-
-func containsCJK(value string) bool {
-	for _, r := range value {
-		if (r >= '\u3400' && r <= '\u4dbf') || (r >= '\u4e00' && r <= '\u9fff') {
-			return true
-		}
-	}
-	return false
 }
 
 func errorStatus(code derrors.Code) int {

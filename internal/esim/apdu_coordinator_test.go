@@ -50,7 +50,7 @@ func TestAPDUCoordinatorAcquireLeaseNilArbiterReturnsNil(t *testing.T) {
 
 func TestAPDUCoordinatorAcquireLeaseUsesArbiterAndMode(t *testing.T) {
 	c := newAPDUCoordinator("MBIM")
-	arb := apduarbiter.New("test-dev", apduarbiter.Options{MaxSessions: 3, MaxQMITransports: 3})
+	arb := apduarbiter.New("test-dev", apduarbiter.Options{MaxQMITransports: 3})
 	c.setArbiter(arb)
 	lease, err := c.acquireLease(context.Background(), 0, "esim_session_open", apduarbiter.APDUClassEUICCWrite, 0, apduarbiter.TransportScopeExclusive)
 	if err != nil {

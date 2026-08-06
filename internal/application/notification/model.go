@@ -92,6 +92,10 @@ type NotificationPreferences struct {
 	SMS           string `json:"sms"`
 	DeviceOffline string `json:"device_offline"`
 	ShowDebug     bool   `json:"show_debug"`
+	// SenderOnly 是 macOS 通知 "仅显示发送方" 偏好: 缺失 (nil) 时通知不携带
+	// 短信正文 (默认开启, 短信正文常含一次性验证码), 显式 false 表示用户
+	// 选择显示正文。指针保证存在性感知, 缺失与显式 false 语义不同。
+	SenderOnly *bool `json:"sender_only,omitempty"`
 }
 
 func DefaultNotificationPreferences() NotificationPreferences {
@@ -118,6 +122,7 @@ func (p NotificationPreferences) Normalize() NotificationPreferences {
 	if p.DeviceOffline != NotificationPresentationCustom {
 		p.DeviceOffline = defaults.DeviceOffline
 	}
+	// SenderOnly 原样保留: nil 表示缺失 (macOS 端默认开启), 显式 false 保留。
 	return p
 }
 

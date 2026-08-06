@@ -69,7 +69,9 @@ func NewService(devices *device.Service, ops *operation.Manager, runtime *runtim
 		return service
 	}
 	service.store = store[0]
-	records, err := service.store.ListSMS("outbound")
+	// 有界分页内部迭代: 存储层返回有界页, 应用服务逐页取全, 公共契约不变
+	// (design D16)。
+	records, err := listAllSMS(store[0], "outbound")
 	if err == nil {
 		for _, record := range records {
 			service.sent = append(service.sent, backend.SMSMessage{
@@ -85,7 +87,7 @@ func NewService(devices *device.Service, ops *operation.Manager, runtime *runtim
 		service.cache = clone(service.sent)
 		// Restore inbound history too: their created_at is the stable ordering
 		// key, so restarting never reshuffles threads by SMSC clock skew.
-		inbound, err := service.store.ListSMS("inbound")
+		inbound, err := listAllSMS(store[0], "inbound")
 		if err == nil {
 			for _, record := range inbound {
 				service.cache = append(service.cache, backend.SMSMessage{
@@ -101,6 +103,26 @@ func NewService(devices *device.Service, ops *operation.Manager, runtime *runtim
 		}
 	}
 	return service
+}
+
+// listAllSMS 逐页迭代存储层的有界列表, 返回该方向的全部记录。
+func listAllSMS(store *storage.SQLiteStore, direction string) ([]storage.SMSRecord, error) {
+	var all []storage.SMSRecord
+	offset := 0
+	for {
+		page, err := store.ListSMS(direction, 0, offset)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, page...)
+		if len(page) == 0 {
+			return all, nil
+		}
+		if len(page) < storage.SMSListDefaultLimit {
+			return all, nil
+		}
+		offset += len(page)
+	}
 }
 
 // MigrateLegacySentHistory imports the pre-SQLite JSON array once. Inserts
@@ -124,10 +146,15 @@ func MigrateLegacySentHistory(store *storage.SQLiteStore, path string) error {
 		if message.Body == "" || message.ReceivedAt.IsZero() {
 			continue
 		}
-		if err := store.InsertSMS(storage.SMSRecord{
+		err := store.InsertSMS(storage.SMSRecord{
 			Direction: "outbound", ProviderID: message.Index, Recipient: message.Recipient,
 			Body: message.Body, ReceivedAt: message.ReceivedAt, RecordedAt: message.ReceivedAt,
-		}); err != nil {
+		})
+		if errors.Is(err, storage.ErrSMSIdentityMissing) {
+			// 旧格式历史没有 SIM 身份, 不归入共享空身份键 (design D16)。
+			continue
+		}
+		if err != nil {
 			return err
 		}
 	}
@@ -321,6 +348,8 @@ func (s *Service) merge(items []backend.SMSMessage, iccid string) ([]backend.SMS
 			if item.Sender != "" {
 				direction = "inbound"
 			}
+			// 身份缺失时拒绝写入 (storage.ErrSMSIdentityMissing): 消息保留在
+			// 缓存与模组存储中, 下次刷新重试身份获取, 绝不归入空身份键。
 			_ = s.store.InsertSMS(storage.SMSRecord{
 				Direction: direction, ProviderID: item.Index, Sender: item.Sender,
 				Recipient: item.Recipient, Body: item.Body, ReceivedAt: item.ReceivedAt,
@@ -393,6 +422,8 @@ func (s *Service) recordSent(ctx context.Context, recipient, body string) {
 	}
 	s.mu.Unlock()
 	if s.store != nil {
+		// 身份缺失时不落库 (storage.ErrSMSIdentityMissing): 消息保留在发送
+		// 缓存, 不归入共享空身份键 (design D16)。
 		_ = s.store.InsertSMS(storage.SMSRecord{
 			Direction: "outbound", ProviderID: message.Index, Recipient: message.Recipient,
 			Body: message.Body, ReceivedAt: message.ReceivedAt, RecordedAt: message.RecordedAt,

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { SendOutlined } from '@ant-design/icons-vue'
 import EmptyState from '../components/EmptyState.vue'
@@ -7,6 +7,10 @@ import LoadingState from '../components/LoadingState.vue'
 import StatusLight from '../components/StatusLight.vue'
 import { formatDateTime } from '../utils/date'
 import { useViewContext } from './context'
+
+// 会话列表惰性渲染: 超过阈值时不挂载全部行, 分批展开。
+const SMS_THREAD_LAZY_THRESHOLD = 100
+const SMS_THREAD_LAZY_BATCH = 50
 
 const { t } = useI18n()
 const {
@@ -30,6 +34,21 @@ const chronologicalMessages = computed(() =>
   selectedSmsThread.value ? [...selectedSmsThread.value.items].reverse() : [],
 )
 const canSend = computed(() => device.has('sms_send') && !!smsTo.value.trim() && !!smsBody.value.trim())
+
+// threadListLazy 报告会话数是否超过惰性阈值; visibleThreads 只挂载前 N 行。
+const threadListLazy = computed(() => filteredSmsThreads.value.length > SMS_THREAD_LAZY_THRESHOLD)
+const visibleThreadCount = ref(SMS_THREAD_LAZY_BATCH)
+const visibleThreads = computed(() => filteredSmsThreads.value.slice(0, visibleThreadCount.value))
+watch(
+  filteredSmsThreads,
+  () => {
+    if (!threadListLazy.value) visibleThreadCount.value = SMS_THREAD_LAZY_BATCH
+  },
+  { immediate: true },
+)
+function showMoreThreads() {
+  visibleThreadCount.value += SMS_THREAD_LAZY_BATCH
+}
 const operationLabel = computed(() => {
   if (!smsOperation.value) return ''
   if (smsOperation.value.state === 'succeeded') return t('sms.sent')
@@ -84,7 +103,7 @@ function threadDate(value?: string) {
       <LoadingState v-if="!loadedViews.sms" />
       <div v-else class="sms-thread-list">
         <button
-          v-for="thread in filteredSmsThreads"
+          v-for="thread in visibleThreads"
           :key="thread.key"
           type="button"
           :class="['sms-thread-item', { active: !smsComposeNew && selectedSmsThread?.key === thread.key }]"
@@ -98,6 +117,15 @@ function threadDate(value?: string) {
             </span>
             <small>{{ thread.latest?.body || t('sms.backendContent') }}</small>
           </span>
+        </button>
+
+        <button
+          v-if="threadListLazy && visibleThreads.length < filteredSmsThreads.length"
+          type="button"
+          class="sms-thread-more"
+          @click="showMoreThreads"
+        >
+          {{ t('sms.showMoreThreads', { remaining: filteredSmsThreads.length - visibleThreads.length }) }}
         </button>
 
         <EmptyState

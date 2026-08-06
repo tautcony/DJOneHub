@@ -4,6 +4,12 @@ import { APIError, api } from '../services/api'
 import { i18n } from '../i18n'
 import type { DeviceStatus, Envelope, OperationLog, OperationStatus, Snapshot } from '../types'
 
+// terminalOperationTTL 是终态 operation 在客户端保留的时间: 终态后延迟清除,
+// 使长会话中的 operations map 与 operationLogs 保持有界。
+const terminalOperationTTL = 5 * 60_000
+const RECONNECT_BASE_MS = 1000
+const RECONNECT_MAX_MS = 30_000
+
 export const useDeviceStore = defineStore('device', () => {
   const status = ref<DeviceStatus | null>(null)
   const error = ref('')
@@ -15,6 +21,8 @@ export const useDeviceStore = defineStore('device', () => {
   const lastEventData = ref<unknown>(undefined)
   let lastEventID = 0
   let socket: WebSocket | undefined
+  let reconnectAttempt = 0
+  const terminalCleanupTimers = new Map<string, number>()
 
   const snapshot = computed<Snapshot | null>(() => status.value?.snapshot || null)
   const capabilities = computed(() => snapshot.value?.capabilities || {})
@@ -102,8 +110,34 @@ export const useDeviceStore = defineStore('device', () => {
       envelope.type === 'operation.changed'
     ) {
       const operation = envelope.data as OperationStatus
-      if (operation?.operation_id) operations.value[operation.operation_id] = operation
+      if (operation?.operation_id) {
+        operations.value[operation.operation_id] = operation
+        scheduleTerminalCleanup(operation)
+      }
     }
+  }
+
+  // scheduleTerminalCleanup 在 operation 到达终态后延迟清除其条目,
+  // 使客户端 operations map / operationLogs 在长会话中保持有界。
+  function scheduleTerminalCleanup(operation: OperationStatus) {
+    if (!['succeeded', 'failed', 'cancelled'].includes(operation.state)) return
+    const id = operation.operation_id
+    const existing = terminalCleanupTimers.get(id)
+    if (existing !== undefined) window.clearTimeout(existing)
+    const timer = window.setTimeout(() => {
+      terminalCleanupTimers.delete(id)
+      delete operations.value[id]
+      delete operationLogs.value[id]
+    }, terminalOperationTTL)
+    terminalCleanupTimers.set(id, timer)
+  }
+
+  // reconnectDelay 计算指数退避 + 抖动: 延迟随连续失败增长, 上限
+  // RECONNECT_MAX_MS; 连接成功时计数器归零。
+  function reconnectDelay() {
+    const base = Math.min(RECONNECT_BASE_MS * 2 ** reconnectAttempt, RECONNECT_MAX_MS)
+    reconnectAttempt++
+    return Math.round(base * (0.5 + Math.random() * 0.5))
   }
 
   function connect() {
@@ -112,10 +146,11 @@ export const useDeviceStore = defineStore('device', () => {
     socket = new WebSocket(`${protocol}://${location.host}${basePath()}/events/ws`)
     socket.onopen = () => {
       connected.value = true
+      reconnectAttempt = 0
     }
     socket.onclose = () => {
       connected.value = false
-      window.setTimeout(connect, 2500)
+      window.setTimeout(connect, reconnectDelay())
     }
     socket.onerror = () => {
       connected.value = false

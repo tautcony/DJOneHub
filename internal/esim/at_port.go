@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/damonto/euicc-go/driver"
+	"github.com/iniwex5/vohive/internal/apduarbiter"
 	"github.com/iniwex5/vohive/internal/backend"
 )
 
@@ -19,16 +20,19 @@ type esimPort struct {
 
 // NewATPort 创建基于纯 AT 命令传输的 eSIM 服务端口。command 由调用方注入：
 // darwin 走 CommandBackend 的 USB AT 传输，Linux/Windows 走 modem.Manager 的
-// 串口 AT 通道（ExecuteAT），因此两个平台路径共用同一实现。
-func NewATPort(candidateID string, command func(string, time.Duration) (string, error), imei func(context.Context) (string, error), iccid func(context.Context) (string, error)) (backend.ESIMPort, error) {
+// 串口 AT 通道（ExecuteAT），因此两个平台路径共用同一实现。arbiter 必须是
+// 设备级 APDU 仲裁器（与 modem manager 共享的同一实例）；它为纯 AT 路径启用
+// SIM 切换 barrier 与 APDU idle 等待，而不是让这些防护成为空操作。
+func NewATPort(candidateID string, arbiter *apduarbiter.Arbiter, command func(string, time.Duration) (string, error), imei func(context.Context) (string, error), iccid func(context.Context) (string, error)) (backend.ESIMPort, error) {
 	manager, err := NewManager(ManagerOptions{
 		DeviceID:             candidateID,
 		Transport:            "custom",
 		IMEIProvider:         imei,
 		ICCIDProvider:        iccid,
+		APDUArbiter:          arbiter,
 		SwitchUseRefreshTrue: true,
 		SmartCardChannelFactory: func() (driver.SmartCardChannel, error) {
-			return NewATSmartCardChannel(command), nil
+			return NewSmartCardChannel(newATCommandTransport(command)), nil
 		},
 	})
 	if err != nil {

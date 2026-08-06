@@ -27,6 +27,8 @@ type Service struct {
 
 	mu            sync.Mutex
 	lastPublished *notification.NetworkUpdateEvent
+	// lastTrafficPublished 记录上一个已发布的流量样本, 用于去重发布。
+	lastTrafficPublished *TrafficUpdateEvent
 	iccid         string
 	iccidChecked  time.Time
 
@@ -164,6 +166,23 @@ func (s *Service) publishTraffic(ctx context.Context) {
 				event.DailyAvailable = true
 			}
 		}
+	}
+	// 采样值未变化时不重复发布事件 (design D17): 1s 轮询下不变化的样本
+	// 不应制造无意义的 WS 流量与前端重绘。
+	s.mu.Lock()
+	unchanged := s.lastTrafficPublished != nil &&
+		s.lastTrafficPublished.RXBytes == event.RXBytes &&
+		s.lastTrafficPublished.TXBytes == event.TXBytes &&
+		s.lastTrafficPublished.DailyRXBytes == event.DailyRXBytes &&
+		s.lastTrafficPublished.DailyTXBytes == event.DailyTXBytes &&
+		s.lastTrafficPublished.DailyAvailable == event.DailyAvailable
+	if !unchanged {
+		copy := event
+		s.lastTrafficPublished = &copy
+	}
+	s.mu.Unlock()
+	if unchanged {
+		return
 	}
 	s.ops.Publish(EventTrafficUpdated, event)
 }

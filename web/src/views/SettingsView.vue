@@ -140,6 +140,16 @@ const {
               ><small>{{ t('settings.showNotificationDebugDetail') }}</small></span
             >
           </div>
+          <div class="setting-toggle notification-sender-only-toggle">
+            <a-switch
+              :checked="notificationPreferences?.sender_only ?? true"
+              :loading="notificationPreferencesBusy"
+              @change="(value: boolean) => { if (notificationPreferences) { notificationPreferences.sender_only = value; saveNotificationPreferences() } }"
+            /><span
+              ><strong>{{ t('settings.senderOnly') }}</strong
+              ><small>{{ t('settings.senderOnlyDetail') }}</small></span
+            >
+          </div>
           <div class="notification-preference-row">
             <div>
               <strong>{{ t('settings.incomingCall') }}</strong

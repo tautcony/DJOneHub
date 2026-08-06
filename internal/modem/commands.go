@@ -59,12 +59,18 @@ func (m *Manager) QueryICCID() (string, error) {
 }
 
 func (m *Manager) QueryOperator() (string, error) {
-	_, _ = m.ExecuteATSilent("AT+COPS=3,2", 2*time.Second)
-	resp, err := m.ExecuteATSilent("AT+COPS?", 2*time.Second)
+	return queryOperator(m.ExecuteATSilent)
+}
+
+// queryOperator 是纯查询路径: 只发出 AT+COPS?, 解析 modem 报告的格式。
+// 它绝不发出 AT+COPS=3,2 或任何格式改写命令, 因此重复轮询不会改变用户的
+// 格式选择; 显式运营商格式命令 (operator_selection.go) 是唯一允许的改写路径。
+func queryOperator(exec func(string, time.Duration) (string, error)) (string, error) {
+	resp, err := exec("AT+COPS?", 2*time.Second)
 	if err != nil {
 		return "", err
 	}
-	return parseCOPSOperator(resp), nil
+	return parseCOPSOperatorResponse(resp)
 }
 
 func (m *Manager) QueryRegistration() (int, string, string, string, error) {
@@ -713,11 +719,11 @@ func (m *Manager) queryNativeMCCMNCFromIMSI() (mcc string, mnc string, err error
 	return mcc, mnc, nil
 }
 
-func (m *Manager) queryIMSIFromEF() (string, error) {
-	imsiBytes, err := m.readSIMTransparentEF(efIMSI, 9)
-	if err != nil {
-		return "", fmt.Errorf("read EF_IMSI failed: %w", err)
-	}
+// decodeEFIMSI 将 EF_IMSI 原始字节解码为完整 IMSI 字符串。
+// 首个字节为数据长度（设备实测布局），后续为 swapped-BCD 数据。
+// 按 3GPP TS 31.102 标准布局不存在 parity 前缀，绝不截断首位数字；
+// 参见 docs/code-review-report.md 3.2 H1（实测标准布局，截断前解码即完整正确）。
+func decodeEFIMSI(imsiBytes []byte) (string, error) {
 	if len(imsiBytes) <= 1 {
 		return "", fmt.Errorf("EF_IMSI data too short")
 	}
@@ -727,13 +733,18 @@ func (m *Manager) queryIMSIFromEF() (string, error) {
 		bcd = imsiBytes[1 : 1+int(imsiBytes[0])]
 	}
 	imsiStr := DecodeSwappedBCD(bcd)
-	if len(imsiStr) > 0 {
-		imsiStr = imsiStr[1:] // 移除 parity 位
-	}
 
 	if len(imsiStr) < 5 {
 		return "", fmt.Errorf("decoded IMSI too short: %s", imsiStr)
 	}
 
 	return imsiStr, nil
+}
+
+func (m *Manager) queryIMSIFromEF() (string, error) {
+	imsiBytes, err := m.readSIMTransparentEF(efIMSI, 9)
+	if err != nil {
+		return "", fmt.Errorf("read EF_IMSI failed: %w", err)
+	}
+	return decodeEFIMSI(imsiBytes)
 }

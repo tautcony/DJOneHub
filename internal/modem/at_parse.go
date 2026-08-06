@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	derrors "github.com/iniwex5/vohive/internal/domain/errors"
 	"github.com/iniwex5/vohive/pkg/smscodec"
 )
 
@@ -126,16 +127,39 @@ func parseQCCID(resp string) string {
 	return ""
 }
 
-func parseCOPSOperator(resp string) string {
+// errCOPSFormatUnsupported 是 AT+COPS? 响应携带不支持 format 时的分类错误。
+// 查询路径绝不发出 AT+COPS=3,2 改写用户的格式选择，因此无法解析的格式必须
+// 显式报错而不是猜测。
+var errCOPSFormatUnsupported = derrors.New(derrors.InvalidRequest, "modem reported an unsupported operator format", false, nil)
+
+// parseCOPSOperatorResponse 解析 AT+COPS? 响应, 按 modem 报告的 format
+// (0=long 1=short 2=numeric) 返回运营商显示名。format 不在 {0,1,2} 或响应
+// 缺少 +COPS: 行时返回分类解析错误。运营商缺失 (未注册) 返回空串。
+func parseCOPSOperatorResponse(resp string) (string, error) {
 	line, ok := findLineWithPrefix(resp, "+COPS:")
 	if !ok {
-		return ""
+		return "", fmt.Errorf("%w: no +COPS: line in response", errCOPSFormatUnsupported)
 	}
-	fields := extractQuotedFields(line)
-	if len(fields) < 1 {
-		return ""
+
+	// 未加引号前缀为 <mode>,<format>; 运营商名是第一个引号字段, 其本身可含逗号。
+	prefix := line
+	if idx := strings.Index(line, "\""); idx >= 0 {
+		prefix = line[:idx]
 	}
-	return ResolveServingOperatorNameFromPLMN(fields[0])
+	fields := strings.Split(strings.TrimRight(prefix, " \t,"), ",")
+	if len(fields) < 2 {
+		return "", fmt.Errorf("%w: malformed response %q", errCOPSFormatUnsupported, line)
+	}
+	format, err := strconv.Atoi(strings.TrimSpace(fields[1]))
+	if err != nil || format < 0 || format > 2 {
+		return "", fmt.Errorf("%w: format=%q", errCOPSFormatUnsupported, strings.TrimSpace(fields[1]))
+	}
+
+	quoted := extractQuotedFields(line)
+	if len(quoted) == 0 {
+		return "", nil // 未注册或运营商字段缺失
+	}
+	return ResolveServingOperatorNameFromPLMN(quoted[0]), nil
 }
 
 func parseCOPSAct(resp string) (string, bool) {

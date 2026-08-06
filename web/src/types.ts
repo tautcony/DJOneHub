@@ -222,6 +222,8 @@ export interface NotificationPreferences {
   sms: NotificationPresentationMode
   device_offline: NotificationPresentationMode
   show_debug: boolean
+  // sender_only 缺失时 macOS 端默认开启 (仅显示发送方); 显式 false 显示正文。
+  sender_only?: boolean
 }
 export interface NotificationPreferencesResponse {
   native_ui: boolean

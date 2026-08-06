@@ -71,7 +71,15 @@ type Service struct {
 	settings Settings
 	adbList  ADBLister
 	mu       sync.Mutex
+	// statusCache 是固件状态短 TTL 缓存 (design D17): 读取不重复运行
+	// AT + ADB 探测序列。
+	statusCacheMu sync.Mutex
+	cachedStatus  *Status
+	cachedAt      time.Time
 }
+
+// firmwareStatusCacheTTL 是固件状态缓存的存活时间。
+const firmwareStatusCacheTTL = 1500 * time.Millisecond
 
 func NewService(at ATExecutor, ops *operation.Manager, rt *runtime.Runtime, config Config) *Service {
 	service := &Service{at: at, ops: ops, runtime: rt, config: config}
@@ -179,7 +187,27 @@ type BackupStatus struct {
 	DefaultDir string `json:"default_dir,omitempty"`
 }
 
+// Status 从短 TTL 缓存提供固件状态; 缓存过期时才运行完整探测序列。
 func (s *Service) Status(ctx context.Context) (Status, error) {
+	s.statusCacheMu.Lock()
+	if s.cachedStatus != nil && time.Since(s.cachedAt) < firmwareStatusCacheTTL {
+		cached := *s.cachedStatus
+		s.statusCacheMu.Unlock()
+		return cached, nil
+	}
+	s.statusCacheMu.Unlock()
+	status, err := s.statusFresh(ctx)
+	if err == nil {
+		s.statusCacheMu.Lock()
+		copy := status
+		s.cachedStatus = &copy
+		s.cachedAt = time.Now()
+		s.statusCacheMu.Unlock()
+	}
+	return status, err
+}
+
+func (s *Service) statusFresh(ctx context.Context) (Status, error) {
 	status := Status{Mode: "unknown", Backup: s.backupStatus()}
 	if s.config.DetectEDL != nil {
 		detected, err := s.config.DetectEDL(ctx)

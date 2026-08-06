@@ -12,9 +12,9 @@ import (
 func TestArbiterFIFO(t *testing.T) {
 	arb := New("dev-1", Options{})
 
-	first, err := arb.AcquireSession(context.Background(), "first", "AT")
+	first, err := arb.AcquireTransport(context.Background(), Request{Owner: "first", Mode: "AT", Class: APDUClassEUICCWrite})
 	if err != nil {
-		t.Fatalf("AcquireSession(first) failed: %v", err)
+		t.Fatalf("AcquireTransport(first) failed: %v", err)
 	}
 	defer first.Release()
 
@@ -24,9 +24,9 @@ func TestArbiterFIFO(t *testing.T) {
 
 	go func() {
 		defer wg.Done()
-		lease, acquireErr := arb.AcquireSession(context.Background(), "second", "AT")
+		lease, acquireErr := arb.AcquireTransport(context.Background(), Request{Owner: "second", Mode: "AT", Class: APDUClassEUICCWrite})
 		if acquireErr != nil {
-			t.Errorf("AcquireSession(second) failed: %v", acquireErr)
+			t.Errorf("AcquireTransport(second) failed: %v", acquireErr)
 			return
 		}
 		order <- "second"
@@ -37,9 +37,9 @@ func TestArbiterFIFO(t *testing.T) {
 
 	go func() {
 		defer wg.Done()
-		lease, acquireErr := arb.AcquireSession(context.Background(), "third", "AT")
+		lease, acquireErr := arb.AcquireTransport(context.Background(), Request{Owner: "third", Mode: "AT", Class: APDUClassEUICCWrite})
 		if acquireErr != nil {
-			t.Errorf("AcquireSession(third) failed: %v", acquireErr)
+			t.Errorf("AcquireTransport(third) failed: %v", acquireErr)
 			return
 		}
 		order <- "third"
@@ -66,15 +66,15 @@ func TestArbiterFIFO(t *testing.T) {
 func TestArbiterTimeout(t *testing.T) {
 	arb := New("dev-1", Options{})
 
-	lease, err := arb.AcquireSession(context.Background(), "holder", "QMI")
+	lease, err := arb.AcquireTransport(context.Background(), Request{Owner: "holder", Mode: "QMI", Class: APDUClassEUICCWrite})
 	if err != nil {
-		t.Fatalf("AcquireSession(holder) failed: %v", err)
+		t.Fatalf("AcquireTransport(holder) failed: %v", err)
 	}
 	defer lease.Release()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
 	defer cancel()
-	_, err = arb.AcquireSession(ctx, "waiter", "QMI")
+	_, err = arb.AcquireTransport(ctx, Request{Owner: "waiter", Mode: "QMI", Class: APDUClassEUICCWrite})
 	if err == nil {
 		t.Fatal("expected timeout error, got nil")
 	}
@@ -85,9 +85,9 @@ func TestArbiterTimeout(t *testing.T) {
 
 func TestArbiterWaitIdle(t *testing.T) {
 	arb := New("dev-1", Options{})
-	lease, err := arb.AcquireSession(context.Background(), "holder", "AT")
+	lease, err := arb.AcquireTransport(context.Background(), Request{Owner: "holder", Mode: "AT", Class: APDUClassEUICCWrite})
 	if err != nil {
-		t.Fatalf("AcquireSession(holder) failed: %v", err)
+		t.Fatalf("AcquireTransport(holder) failed: %v", err)
 	}
 
 	done := make(chan struct{})
@@ -520,156 +520,40 @@ func TestSnapshotReportsTransportAndBarrier(t *testing.T) {
 	}
 }
 
-func TestLeaseTouchExtendsSessionWatchdog(t *testing.T) {
-	arb := New("dev-1", Options{MaxLeaseHold: 40 * time.Millisecond})
-
-	lease, err := arb.AcquireSession(context.Background(), "holder", "QMI")
+func TestLeaseWatchdogForceReleasesWithoutTouch(t *testing.T) {
+	arb := New("dev-1", Options{MaxLeaseHold: 30 * time.Millisecond})
+	lease, err := arb.AcquireTransport(context.Background(), Request{Owner: "holder", Mode: "QMI", Class: APDUClassEUICCWrite})
 	if err != nil {
-		t.Fatalf("AcquireSession(holder) failed: %v", err)
+		t.Fatalf("acquire failed: %v", err)
 	}
 	defer lease.Release()
 
-	acquired := make(chan struct{})
-	done := make(chan struct{})
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	defer cancel()
-	go func() {
-		defer close(done)
-		waiter, acquireErr := arb.AcquireOneShot(ctx, "waiter", "AT")
-		if acquireErr != nil {
-			return
-		}
-		close(acquired)
-		waiter.Release()
-	}()
-
-	deadline := time.After(130 * time.Millisecond)
-	ticker := time.NewTicker(15 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ticker.C:
-			lease.Touch()
-		case <-deadline:
-			goto touchedEnough
-		}
-	}
-
-touchedEnough:
+	// 强制释放必须通知持有方。
 	select {
-	case <-acquired:
-		t.Fatal("oneshot acquired while session lease was being touched")
-	default:
+	case <-lease.Forced():
+	case <-time.After(time.Second):
+		t.Fatal("lease holder was not notified of force release")
+	}
+	// transport 租约的 APDU 在持有方报告完成前仍占用设备：Release 即完成信号。
+	lease.Release()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	if err := arb.WaitIdle(ctx); err != nil {
+		t.Fatalf("WaitIdle() error=%v", err)
 	}
 	stats := arb.Stats()
-	if stats.ForcedReleases != 0 {
-		t.Fatalf("ForcedReleases=%d want 0", stats.ForcedReleases)
+	if stats.ForcedReleases != 1 {
+		t.Fatalf("ForcedReleases=%d want 1", stats.ForcedReleases)
 	}
-	if stats.ActiveSessions != 1 || stats.ActiveOneshot {
-		t.Fatalf("unexpected stats after touch: %+v", stats)
+	if stats.ActiveTransport {
+		t.Fatalf("unexpected active lease stats: %+v", stats)
 	}
-
-	lease.Release()
-	select {
-	case <-acquired:
-	case <-time.After(150 * time.Millisecond):
-		t.Fatal("oneshot did not acquire after session release")
+	if lease.Active() {
+		t.Fatal("lease.Active()=true after watchdog force release, want false")
 	}
-	<-done
-}
-
-func TestLeaseTouchExtendsOneShotWatchdog(t *testing.T) {
-	arb := New("dev-1", Options{MaxLeaseHold: 40 * time.Millisecond})
-
-	lease, err := arb.AcquireOneShot(context.Background(), "holder", "AT")
-	if err != nil {
-		t.Fatalf("AcquireOneShot(holder) failed: %v", err)
-	}
-	defer lease.Release()
-
-	deadline := time.After(130 * time.Millisecond)
-	ticker := time.NewTicker(15 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ticker.C:
-			lease.Touch()
-		case <-deadline:
-			stats := arb.Stats()
-			if stats.ForcedReleases != 0 {
-				t.Fatalf("ForcedReleases=%d want 0", stats.ForcedReleases)
-			}
-			if !stats.ActiveOneshot || stats.ActiveSessions != 0 {
-				t.Fatalf("unexpected stats after touch: %+v", stats)
-			}
-			return
-		}
-	}
-}
-
-func TestLeaseWatchdogForceReleasesWithoutTouch(t *testing.T) {
-	tests := []struct {
-		name    string
-		acquire func(*Arbiter) (*Lease, error)
-	}{
-		{
-			name: "session",
-			acquire: func(arb *Arbiter) (*Lease, error) {
-				return arb.AcquireSession(context.Background(), "holder", "QMI")
-			},
-		},
-		{
-			name: "oneshot",
-			acquire: func(arb *Arbiter) (*Lease, error) {
-				return arb.AcquireOneShot(context.Background(), "holder", "AT")
-			},
-		},
-		{
-			name: "transport",
-			acquire: func(arb *Arbiter) (*Lease, error) {
-				return arb.AcquireTransport(context.Background(), Request{Owner: "holder", Mode: "QMI", Class: APDUClassEUICCWrite})
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			arb := New("dev-1", Options{MaxLeaseHold: 30 * time.Millisecond})
-			lease, err := tt.acquire(arb)
-			if err != nil {
-				t.Fatalf("acquire failed: %v", err)
-			}
-			defer lease.Release()
-
-			// 强制释放必须通知持有方。
-			select {
-			case <-lease.Forced():
-			case <-time.After(time.Second):
-				t.Fatal("lease holder was not notified of force release")
-			}
-			// transport 租约的 APDU 在持有方报告完成前仍占用设备：Release 即
-			// 完成信号。
-			lease.Release()
-
-			ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-			defer cancel()
-			if err := arb.WaitIdle(ctx); err != nil {
-				t.Fatalf("WaitIdle() error=%v", err)
-			}
-			stats := arb.Stats()
-			if stats.ForcedReleases != 1 {
-				t.Fatalf("ForcedReleases=%d want 1", stats.ForcedReleases)
-			}
-			if stats.ActiveSessions != 0 || stats.ActiveOneshot || stats.ActiveTransport {
-				t.Fatalf("unexpected active lease stats: %+v", stats)
-			}
-			if lease.Active() {
-				t.Fatal("lease.Active()=true after watchdog force release, want false")
-			}
-			if lease.Touch() {
-				t.Fatal("lease.Touch()=true after watchdog force release, want false")
-			}
-		})
+	if lease.Touch() {
+		t.Fatal("lease.Touch()=true after watchdog force release, want false")
 	}
 }
 

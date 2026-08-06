@@ -3,6 +3,7 @@ package esim
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -493,7 +494,9 @@ func NewManager(opts ManagerOptions) (*Manager, error) {
 			return nil, fmt.Errorf("AT 传输需要 modem 管理器")
 		}
 		mgr.smartCardChannelFactory = func() (driver.SmartCardChannel, error) {
-			return NewModemChannel(opts.Modem), nil
+			// modem.Manager 原生实现 logicalChannelTransport, 其内部 APDU
+			// 透传已通过设备级仲裁器取 transport lease。
+			return NewSmartCardChannel(opts.Modem), nil
 		}
 		mgr.clearChannels = func() {
 			if opts.Modem != nil {
@@ -866,26 +869,24 @@ func (m *Manager) forEachEUICC(ctx context.Context, fn func(client *lpa.Client, 
 		"policy", plan.Policy,
 		"candidate_count", len(aids),
 		"candidate_aids", aidHexesForLog(aids))
-	foundAny, err := m.doForEachEUICC(ctx, aids, fn)
-	if foundAny {
-		return err
+	outcome := m.doForEachEUICC(ctx, aids, fn)
+	if outcome.foundAny {
+		return outcome.lastErr
 	}
 
+	// channelsOpened/eidReadOK 区分两类失败: 通道打不开通常是模组不支持
+	// AT+CCHO/APDU, 而通道打开后 EID 读取失败则需要关注 AT+CGLA 或卡片兼容性。
+	// 报错信息带出逐 AID 探测明细, 单看最后一个 AID 的错误(例如 deprecated
+	// AUX AID 的 CCHO ERROR)会彻底掩盖真实原因。
+	msg := outcome.failureMessage(len(aids))
 	logger.Warn("AID 扫描未发现 eUICC",
 		"device", m.deviceID,
 		"policy", plan.Policy,
 		"triedCount", len(aids),
-		"err", err)
-	if err != nil {
-		// 模组对 AT+CCHO 直接返回 ERROR 说明 eUICC 不可用（未插入/未启用
-		// eUICC，或固件不支持 APDU 命令），与“AID 不匹配”是不同的问题，
-		// 给出可操作的提示而不是笼统的“未发现 eUICC”。
-		if strings.Contains(err.Error(), "设备返回错误") {
-			return fmt.Errorf("未发现任何 eUICC: 模组拒绝了全部 %d 个 ISD-R AID 的 AT+CCHO 尝试（最后一次错误: %v）。请确认模组已启用 eUICC（如 eSTK.me / 5ber 卡）且固件支持 AT+CCHO/AT+CGLA", len(aids), err)
-		}
-		return fmt.Errorf("未发现任何 eUICC: %w", err)
-	}
-	return fmt.Errorf("未发现任何 eUICC")
+		"channelsOpened", outcome.channelsOpened,
+		"eidReadOK", outcome.eidReadOK,
+		"err", msg)
+	return errors.New(msg)
 }
 
 // waitForWriteCompletion 等待当前写操作完成：先订阅完成通知 channel 再尝试
@@ -1016,11 +1017,91 @@ func (m *Manager) runEUICCCallback(aidHex, eidStr string, client *lpa.Client, ai
 	return fn(client, aid, eidStr)
 }
 
-func (m *Manager) doForEachEUICC(ctx context.Context, aids [][]byte, fn func(client *lpa.Client, aid []byte, eidStr string) error) (bool, error) {
+// aidScanOutcome 汇总一轮 AID 扫描的中间结果: channelsOpened 是 AT+CCHO
+// 成功打开的 logical channel 数, eidReadOK 是成功读取 EID 的 AID 数。
+// 二者对比可区分“模组不支持 APDU 通道”与“通道正常但 EID/APDU 交互失败”。
+// 逐-AID 失败原因按类别收集, 供最终报错时带出真实原因——此前只展示最后一个
+// AID 的错误(往往是 deprecated AUX AID 的 CCHO ERROR), 会彻底掩盖 EID/APDU
+// 失败这类真正的问题。
+type aidScanOutcome struct {
+	foundAny       bool
+	channelsOpened int
+	eidReadOK      int
+	lastErr        error
+	eidReadErrors  []string // 通道打开成功但 EID 读取失败 (最多 maxAIDErrorDetail 条)
+	openErrors     []string // AT+CCHO 打开失败 (最多 maxAIDErrorDetail 条)
+}
+
+// maxAIDErrorDetail 每类失败在报错摘要里保留的最大条数, 避免 10 个候选 AID
+// 的探测失败把日志与错误信息撑爆。
+const maxAIDErrorDetail = 3
+
+func (o *aidScanOutcome) recordOpenError(s string) {
+	if len(o.openErrors) < maxAIDErrorDetail {
+		o.openErrors = append(o.openErrors, s)
+	}
+}
+
+func (o *aidScanOutcome) recordEIDError(s string) {
+	if len(o.eidReadErrors) < maxAIDErrorDetail {
+		o.eidReadErrors = append(o.eidReadErrors, s)
+	}
+}
+
+// perAIDDetail 汇总逐 AID 失败原因。EID 读取失败排在最前——通道已打开说明
+// APDU 通道本身可用, 问题指向 AT+CGLA 或卡片兼容性; 通道打开失败通常只是
+// 该 AID 不在卡上。
+func (o aidScanOutcome) perAIDDetail() string {
+	parts := make([]string, 0, 2*maxAIDErrorDetail)
+	for _, e := range o.eidReadErrors {
+		parts = append(parts, "EID读取失败 "+e)
+	}
+	for _, e := range o.openErrors {
+		parts = append(parts, "通道打开失败 "+e)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, "; ")
+}
+
+// failureMessage 生成可操作的扫描失败信息: 先给出通道/EID 成功数概览, 再带出
+// 逐 AID 探测明细, 替代原先只展示最后一个 AID 错误的模糊提示。
+func (o aidScanOutcome) failureMessage(tried int) string {
+	if o.lastErr != nil && strings.Contains(o.lastErr.Error(), "设备返回错误") {
+		return fmt.Sprintf("未发现任何 eUICC: 模组拒绝了全部 %d 个 ISD-R AID 的 AT+CCHO 尝试（最后一次错误: %v）。请确认模组已启用 eUICC（如 eSTK.me / 5ber 卡）且固件支持 AT+CCHO/AT+CGLA", tried, o.lastErr)
+	}
+	base := fmt.Sprintf("未发现任何 eUICC（打开通道 %d/%d, EID 读取成功 %d）", o.channelsOpened, tried, o.eidReadOK)
+	if detail := o.perAIDDetail(); detail != "" {
+		return base + "；逐 AID 探测: " + detail
+	}
+	if o.lastErr != nil {
+		return base + ": " + o.lastErr.Error()
+	}
+	return base
+}
+
+// shortenAIDError 提取错误链最内层的原因用于摘要展示, 并压缩换行, 避免把
+// AT 命令回显等长文本灌满错误信息。
+func shortenAIDError(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := strings.TrimSpace(err.Error())
+	if i := strings.LastIndex(msg, ": "); i >= 0 {
+		msg = strings.TrimSpace(msg[i+2:])
+	}
+	msg = strings.ReplaceAll(msg, "\n", " ")
+	if len(msg) > 120 {
+		msg = msg[:120] + "…"
+	}
+	return msg
+}
+
+func (m *Manager) doForEachEUICC(ctx context.Context, aids [][]byte, fn func(client *lpa.Client, aid []byte, eidStr string) error) aidScanOutcome {
 	seenEIDs := make(map[string]bool)
 	var successAIDs [][]byte
-	foundAny := false
-	var lastErr error
+	var outcome aidScanOutcome
 
 	for _, aid := range aids {
 		// 取消的读请求在逐-AID APDU 步骤之间停止，释放 opMu/仲裁器。
@@ -1028,7 +1109,8 @@ func (m *Manager) doForEachEUICC(ctx context.Context, aids [][]byte, fn func(cli
 			logger.Debug("eUICC AID 扫描被取消",
 				"device", m.deviceID,
 				"err", err)
-			return foundAny, err
+			outcome.lastErr = err
+			return outcome
 		}
 		if !shouldContinueAIDScanAfterSuccess(successAIDs, aid) {
 			logger.Debug("命中可用 AID 后停止剩余 AID 扫描",
@@ -1047,9 +1129,11 @@ func (m *Manager) doForEachEUICC(ctx context.Context, aids [][]byte, fn func(cli
 					"stage", "select_open_failed",
 					"AID", aidHex,
 					"err", err)
+				outcome.recordOpenError(fmt.Sprintf("AID=%s: %s", aidHex, shortenAIDError(err)))
 				return err
 			}
 			defer m.closeLPAClientForOperation("for_each_euicc", client)
+			outcome.channelsOpened++
 			logger.Debug("eUICC AID 扫描阶段",
 				"device", m.deviceID,
 				"stage", "select_open_ok",
@@ -1062,10 +1146,12 @@ func (m *Manager) doForEachEUICC(ctx context.Context, aids [][]byte, fn func(cli
 					"stage", "eid_failed",
 					"AID", aidHex,
 					"err", err)
+				outcome.recordEIDError(fmt.Sprintf("AID=%s: %s", aidHex, shortenAIDError(err)))
 				return err
 			}
 
 			eidStr := hex.EncodeToString(eid)
+			outcome.eidReadOK++
 			logger.Debug("eUICC AID 扫描阶段",
 				"device", m.deviceID,
 				"stage", "eid_ok",
@@ -1079,29 +1165,27 @@ func (m *Manager) doForEachEUICC(ctx context.Context, aids [][]byte, fn func(cli
 			seenEIDs[eidStr] = true
 			successAIDs = append(successAIDs, aid)
 			m.SeedDiscoveredEUICCs([]EUICCInfo{buildDiscoveredEUICCInfo(aid, eidStr)})
-			foundAny = true
+			outcome.foundAny = true
 
 			return m.runEUICCCallback(aidHex, eidStr, client, aid, fn)
 		}()
 
 		if err != nil {
-			lastErr = err
+			outcome.lastErr = err
 		}
 	}
 
-	if !foundAny {
-		return false, lastErr
-	}
-
-	if lastErr != nil {
+	if outcome.lastErr != nil && outcome.foundAny {
+		// 已发现 eUICC 时, 逐-AID 失败(如部分候选 AID 不在卡上)按约定吞掉,
+		// 不因此让整个扫描失败; 后续读取仍会重新全量扫描。
 		logger.Debug("AID 扫描过程中有错误，本轮已发现 eUICC，后续读取仍会重新全量扫描",
 			"device", m.deviceID,
 			"success_aids_count", len(successAIDs),
-			"err", lastErr)
-		return true, nil
+			"err", outcome.lastErr)
+		outcome.lastErr = nil
 	}
 
-	return true, nil
+	return outcome
 }
 
 // GetEIDs 获取所有 eUICC 的 EID 列表
@@ -3042,6 +3126,16 @@ func (m *Manager) RetryNotification(sequenceNumber int64, aidHex string) error {
 
 // DownloadProfile 下载 eSIM profile 到指定 SE
 // aidHex 为目标 AID（hex 字符串），为空则使用第一个可用 AID
+// digestMatchingID 计算 matchingID 的 SHA-256 摘要前 8 位十六进制,
+// 用于日志关联而不暴露一次性激活码成分。
+func digestMatchingID(matchingID string) string {
+	if strings.TrimSpace(matchingID) == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(strings.TrimSpace(matchingID)))
+	return hex.EncodeToString(sum[:])[:8]
+}
+
 // smdp 为 SM-DP+ 服务器地址，matchingID 和 confirmationCode 可选
 // downloadIMEI 为可选的前端指定 IMEI；为空时使用设备真实 IMEI
 // progressFn 为可选进度回调，为 nil 时静默执行
@@ -3134,10 +3228,12 @@ func (m *Manager) DownloadProfile(ctx context.Context, aidHex, smdp, matchingID,
 		ConfirmationCode: strings.TrimSpace(confirmationCode),
 	}
 
+	// matchingID 是一次性激活码成分, 日志只记录摘要 (前 8 位十六进制),
+	// 绝不落盘完整值 (openspec 变更 cleanup-architectural-debt D7)。
 	logger.Info("开始下载 eSIM profile",
 		"device", m.deviceID,
 		"smdp", parsedURL.Host,
-		"matchingID", matchingID,
+		"matchingID_digest", digestMatchingID(matchingID),
 		"AID", aidHex)
 
 	installStarted := false
@@ -3160,7 +3256,7 @@ func (m *Manager) DownloadProfile(ctx context.Context, aidHex, smdp, matchingID,
 		logger.Warn("下载 eSIM profile 失败",
 			"device", m.deviceID,
 			"smdp", parsedURL.Host,
-			"matchingID", matchingID,
+			"matchingID_digest", digestMatchingID(matchingID),
 			"AID", aidHex,
 			"freeNvram_before", beforeFreeNvramBytes,
 			"error_code", downloadErr.Code,

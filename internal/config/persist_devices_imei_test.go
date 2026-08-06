@@ -17,15 +17,11 @@ func TestUpdateDeviceIMEIInFileWritesOnlyIMEI(t *testing.T) {
 		t.Fatalf("UpdateDeviceIMEIInFile() error = %v", err)
 	}
 
-	updated, err := Load(path)
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
-	}
-	got := updated.Devices[0]
+	got := readDevicesFromFile(t, path)[0]
 	if got.ModemIMEI != "867383058993207" {
 		t.Fatalf("ModemIMEI = %q, want 867383058993207", got.ModemIMEI)
 	}
-	// 零路径架构: Load() 绝不从文件回填运行时路径字段(mapstructure:"-")。
+	// 零路径架构: 读取绝不从文件回填运行时路径字段(mapstructure:"-")。
 	if got.ControlDevice != "" || got.Interface != "" || got.ATPort != "" {
 		t.Fatalf("runtime path fields must not be loaded from file, got: %+v", got)
 	}
@@ -42,11 +38,8 @@ func TestUpdateDeviceIMEIInFileSkipsEmptyIMEI(t *testing.T) {
 		t.Fatalf("UpdateDeviceIMEIInFile() error = %v", err)
 	}
 
-	afterCfg, err := Load(path)
-	if err != nil {
-		t.Fatalf("Load() after error = %v", err)
-	}
-	if len(afterCfg.Devices) != 1 || afterCfg.Devices[0].ModemIMEI != "123456789012345" {
-		t.Fatalf("ModemIMEI was changed or erased: %+v", afterCfg.Devices)
+	afterCfg := readDevicesFromFile(t, path)
+	if len(afterCfg) != 1 || afterCfg[0].ModemIMEI != "123456789012345" {
+		t.Fatalf("ModemIMEI was changed or erased: %+v", afterCfg)
 	}
 }

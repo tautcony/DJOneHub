@@ -13,6 +13,49 @@ const (
 	urcLogWarn
 )
 
+// LogMessageContent 控制是否记录短信内容、USSD 文本、PDU 与通话号码等敏感
+// 内容 (openspec 变更 cleanup-architectural-debt D7)。默认关闭; 只有显式
+// 开启时这些字段才会出现在默认日志输出中。身份标识 (IMEI/ICCID) 不受此
+// 开关影响, 始终按 maskIdentity 掩码记录。
+var LogMessageContent = false
+
+// maskIdentity 掩码 IMEI/ICCID 等身份标识: 仅保留前 3 位与后 4 位, 其余以
+// 星号填充。完整值只在 Debug 级别日志中记录。
+func maskIdentity(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) < 8 {
+		return "****"
+	}
+	return value[:3] + strings.Repeat("*", len(value)-7) + value[len(value)-4:]
+}
+
+// sensitiveLogFieldKeys 是日志输出时统一过滤的敏感字段: 短信内容/USSD 文本/
+// PDU/通话号码及其原始行。URC 分发器仍从完整 Fields 读取数据, 只有写入日志
+// 前经过 filterSensitiveLogFields。
+var sensitiveLogFieldKeys = map[string]bool{
+	"text":    true,
+	"number":  true,
+	"content": true,
+	"sender":  true,
+	"pdu":     true,
+	"raw":     true,
+}
+
+// filterSensitiveLogFields 在 LogMessageContent 关闭时移除敏感字段。
+func filterSensitiveLogFields(fields []any) []any {
+	if LogMessageContent {
+		return fields
+	}
+	out := make([]any, 0, len(fields))
+	for i := 0; i+1 < len(fields); i += 2 {
+		if key, ok := fields[i].(string); ok && sensitiveLogFieldKeys[key] {
+			continue
+		}
+		out = append(out, fields[i], fields[i+1])
+	}
+	return out
+}
+
 type urcFormatResult struct {
 	Level       urcLogLevel
 	Key         string
@@ -189,6 +232,8 @@ func (m *Manager) formatURC(line string) urcFormatResult {
 		}
 		out.Level = urcLogInfo
 		out.Msg = "URC: USSD"
+		// text 字段同时被 USSD 分发器消费 (manager.go dispatchURC), 不能在此
+		// 过滤; 敏感字段在日志输出点统一过滤 (filterSensitiveLogFields)。
 		out.Fields = append(out.Fields, "n", n, "dcs", dcs, "text", text)
 		return out
 

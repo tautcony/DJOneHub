@@ -30,32 +30,6 @@ func SugarLogger() *zap.SugaredLogger {
 	return Sugar
 }
 
-var readerIMSIRegistry = struct {
-	mu sync.RWMutex
-	m  map[string]string
-}{
-	m: make(map[string]string),
-}
-
-// LookupIMSIByReader 根据 reader 查找绑定的 IMSI。
-func LookupIMSIByReader(reader string) (string, bool) {
-	reader = strings.TrimSpace(reader)
-	if reader == "" {
-		return "", false
-	}
-	readerIMSIRegistry.mu.RLock()
-	imsi, ok := readerIMSIRegistry.m[reader]
-	readerIMSIRegistry.mu.RUnlock()
-	if !ok {
-		return "", false
-	}
-	imsi = strings.TrimSpace(imsi)
-	if imsi == "" {
-		return "", false
-	}
-	return imsi, true
-}
-
 // fixedWidthColorLevelEncoder 固定宽度（5字符）的彩色日志等级编码器
 func fixedWidthColorLevelEncoder(level zapcore.Level, enc zapcore.PrimitiveArrayEncoder) {
 	s := level.CapitalString()
@@ -90,10 +64,10 @@ type LogConfig struct {
 	Debug    bool
 	Filename string // 主日志软链名称（如 logs/app.log）
 	MaxAge   int    // 保留天数，默认 30 天
-	// 以下字段为了向后兼容暂时保留，但不再起作用
+	// MaxSize and MaxBackups are retained for compatibility and are not used.
 	MaxSize    int
 	MaxBackups int
-	Compress   bool
+	Compress   bool // 压缩轮转后的旧日志为 .gz
 }
 
 type devicePrefixCore struct {
@@ -135,39 +109,12 @@ func resolveDeviceID(contextFields, callFields []zapcore.Field) (string, bool) {
 	if v, ok := extractDeviceID(contextFields); ok {
 		return v, true
 	}
-	if reader, ok := extractReader(callFields); ok {
-		if device, ok := LookupIMSIByReader(reader); ok {
-			return device, true
-		}
-	}
-	if reader, ok := extractReader(contextFields); ok {
-		if device, ok := LookupIMSIByReader(reader); ok {
-			return device, true
-		}
-	}
 	return "", false
 }
 
 func extractDeviceID(fields []zapcore.Field) (string, bool) {
 	for _, field := range fields {
 		if field.Key != "device" && field.Key != "device_id" {
-			continue
-		}
-		enc := zapcore.NewMapObjectEncoder()
-		field.AddTo(enc)
-		if v, ok := enc.Fields[field.Key].(string); ok {
-			v = strings.TrimSpace(v)
-			if v != "" {
-				return v, true
-			}
-		}
-	}
-	return "", false
-}
-
-func extractReader(fields []zapcore.Field) (string, bool) {
-	for _, field := range fields {
-		if field.Key != "reader" {
 			continue
 		}
 		enc := zapcore.NewMapObjectEncoder()
@@ -231,8 +178,8 @@ func Setup(cfg LogConfig) {
 		cfg.MaxAge = 30
 	}
 
-	// 确保日志目录存在
-	_ = os.MkdirAll(filepath.Dir(cfg.Filename), 0755)
+	// 确保日志目录存在 (0700: 日志可能含敏感内容,不允许其他本地用户读取)
+	_ = os.MkdirAll(filepath.Dir(cfg.Filename), 0o700)
 
 	// 提取后缀来生成如 logs/app-%Y-%m-%d.log 的模式
 	ext := filepath.Ext(cfg.Filename) // 比如 .log
@@ -240,12 +187,15 @@ func Setup(cfg LogConfig) {
 	logPattern := base + "-%Y-%m-%d" + ext
 
 	// 文件输出 (使用 file-rotatelogs 按天进行轮转)
-	rl, err := rotatelogs.New(
-		logPattern,
+	options := []rotatelogs.Option{
 		rotatelogs.WithLinkName(cfg.Filename), // 维持软链（如 logs/app.log）
-		rotatelogs.WithMaxAge(time.Duration(cfg.MaxAge)*24*time.Hour),
-		rotatelogs.WithRotationTime(24*time.Hour), // 每天切割
-	)
+		rotatelogs.WithMaxAge(time.Duration(cfg.MaxAge) * 24 * time.Hour),
+		rotatelogs.WithRotationTime(24 * time.Hour), // 每天切割
+	}
+	if cfg.Compress {
+		options = append(options, rotatelogs.WithHandler(newCompressionHandler(cfg.Filename, cfg.MaxAge)))
+	}
+	rl, err := rotatelogs.New(logPattern, options...)
 
 	var fileWriter zapcore.WriteSyncer
 	if err != nil {

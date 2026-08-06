@@ -7,19 +7,22 @@ import Panel from '../components/Panel.vue'
 import { formatDateTime } from '../utils/date'
 import { useViewContext } from './context'
 
-const { t } = useI18n()
+const { t, te } = useI18n()
 const { calls, device, loadedViews, rejectCall } = useViewContext()
 
 function displayNumber(number?: string) {
   return number?.trim() || t('calls.unknownNumber')
 }
 
+// 状态/方向经 i18n 目录解析, 缺失时渲染回退文案而非原始 key。
 function callState(state: string) {
-  return t(`calls.state.${state}`)
+  const key = `calls.state.${state}`
+  return te(key) ? t(key) : t('calls.state.unknown')
 }
 
 function callDirection(direction: string) {
-  return t(`calls.direction.${direction}`)
+  const key = `calls.direction.${direction}`
+  return te(key) ? t(key) : t('common.unknown')
 }
 </script>
 

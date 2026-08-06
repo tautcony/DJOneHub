@@ -1,9 +1,8 @@
 // Package pki 提供 eUICC 芯片的 PKI 公开数据查询能力
 // 数据来源：https://euicc-manual.osmocom.org
-// 使用 go:generate 更新内嵌的 JSON 字典：
+// 使用 go:generate 更新内嵌的 JSON 字典（下载经 SHA-256 校验后原子替换）：
 //
-//go:generate curl -sL -o ci.json https://euicc-manual.osmocom.org/docs/pki/ci/manifest.json
-//go:generate curl -sL -o accredited.json https://euicc-manual.osmocom.org/docs/pki/eum/accredited.json
+//go:generate sh ./update_pki_data.sh
 package pki
 
 import (

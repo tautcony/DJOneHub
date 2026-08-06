@@ -32,6 +32,10 @@ type Runtime struct {
 	locks     *ResourceLocks
 	config    Config
 	retryAt   time.Time
+	// scanMu 是扫描与生命周期关闭共享的串行化锁: 轮询扫描、HTTP rescan、
+	// disconnect 与 Stop 全部经过它, 使并发扫描不可能在关闭之后重新安装
+	// 一个已关闭的后端 (design D14)。
+	scanMu sync.Mutex
 }
 
 func New(config Config) (*Runtime, error) {
@@ -64,6 +68,10 @@ func (r *Runtime) Start(parent context.Context) {
 }
 
 func (r *Runtime) Stop() {
+	// 与扫描互斥: 取走后端并取消上下文后再等待 worker。注意不能在持有
+	// scanMu 时等待 workerWG — 轮询循环的下一次 scan 需要 scanMu, 会死锁。
+	// 取消上下文后, 迟到的 scan 由 scanLocked 的运行时上下文检查拒绝。
+	r.scanMu.Lock()
 	r.mu.Lock()
 	cancel := r.cancel
 	r.cancel = nil
@@ -76,6 +84,7 @@ func (r *Runtime) Stop() {
 	if b != nil {
 		_ = b.Close()
 	}
+	r.scanMu.Unlock()
 	r.workerWG.Wait()
 }
 
@@ -108,13 +117,29 @@ func (r *Runtime) loop(ctx context.Context) {
 	}
 }
 
+// scan 是轮询循环与 HTTP rescan 共用的唯一扫描入口, 经 scanMu 串行化;
+// 并发扫描不会相互交错, 也不会与生命周期关闭交错。
 func (r *Runtime) scan(ctx context.Context) error {
+	r.scanMu.Lock()
+	defer r.scanMu.Unlock()
+	return r.scanLocked(ctx)
+}
+
+func (r *Runtime) scanLocked(ctx context.Context) error {
+	// 已停止的运行时拒绝扫描: 一个在关闭后到达的 HTTP rescan 不会重新安装
+	// 已关闭的后端。未启动 (ctx 为空, 测试路径) 时照常运行。
+	r.mu.RLock()
+	runtimeCtx := r.ctx
+	r.mu.RUnlock()
+	if runtimeCtx != nil && runtimeCtx.Err() != nil {
+		return derrors.New(derrors.Unavailable, "runtime is stopped", true, nil)
+	}
 	candidates, err := r.config.Discovery.Discover(ctx)
 	if err != nil {
 		return err
 	}
 	if len(candidates) == 0 {
-		r.disconnect(derrors.New(derrors.DeviceOffline, "no managed device was discovered", true, nil))
+		r.disconnectLocked(derrors.New(derrors.DeviceOffline, "no managed device was discovered", true, nil))
 		return nil
 	}
 	candidate := candidates[0]
@@ -129,10 +154,10 @@ func (r *Runtime) scan(ctx context.Context) error {
 			r.mu.Unlock()
 			return nil
 		}
-		r.disconnect(derrors.New(derrors.DeviceOffline, "managed device was re-enumerated", true, nil))
+		r.disconnectLocked(derrors.New(derrors.DeviceOffline, "managed device was re-enumerated", true, nil))
 	}
 	if currentState == device.StateDegraded && currentID != candidate.StableID() {
-		r.disconnect(derrors.New(derrors.DeviceOffline, "managed device identity changed", true, nil))
+		r.disconnectLocked(derrors.New(derrors.DeviceOffline, "managed device identity changed", true, nil))
 	}
 	if currentState == device.StateDegraded && currentID == candidate.StableID() {
 		r.mu.RLock()
@@ -267,7 +292,15 @@ func isOfflineState(state device.State) bool {
 	return false
 }
 
+// disconnect 由后端事件循环等扫描外部路径调用: 与扫描互斥后执行断开。
 func (r *Runtime) disconnect(reason error) {
+	r.scanMu.Lock()
+	defer r.scanMu.Unlock()
+	r.disconnectLocked(reason)
+}
+
+// disconnectLocked 假定调用方已持有 scanMu (扫描内部路径直接调用)。
+func (r *Runtime) disconnectLocked(reason error) {
 	r.mu.Lock()
 	b := r.backend
 	r.backend = nil

@@ -47,9 +47,6 @@ type Options struct {
 	// MaxLeaseHold 是单条 APDU transport lease 的无进展 watchdog 超时。
 	// 持有方应在长耗时单条 APDU 前后调用 Touch；logical channel 生命周期不应再持有该 lease。
 	MaxLeaseHold time.Duration
-	// MaxSessions 是 legacy 兼容字段，仅服务旧 AcquireSession 接口。
-	// 新生产路径应使用 AcquireTransport，默认单设备同一时刻只允许一个 active transport APDU。
-	MaxSessions int
 	// MaxQMITransports 限制 QMI logical-channel transport 并发数量。
 	// 只有显式使用 TransportScopeQMIChannel 的 QMI channel APDU 会使用该并发窗口。
 	MaxQMITransports int
@@ -213,9 +210,6 @@ func New(deviceID string, opts Options) *Arbiter {
 	if opts.MaxLeaseHold <= 0 {
 		opts.MaxLeaseHold = 2 * time.Minute
 	}
-	if opts.MaxSessions <= 0 {
-		opts.MaxSessions = 1
-	}
 	if opts.MaxQMITransports <= 0 {
 		opts.MaxQMITransports = 1
 	}
@@ -330,14 +324,6 @@ func (a *Arbiter) BeginBarrier(ctx context.Context, req Request, policy BarrierP
 			a.mu.Lock()
 		}
 	}
-}
-
-func (a *Arbiter) AcquireSession(ctx context.Context, owner, mode string) (*Lease, error) {
-	return a.acquire(ctx, Request{Owner: owner, Mode: mode}, LeaseTypeSession)
-}
-
-func (a *Arbiter) AcquireOneShot(ctx context.Context, owner, mode string) (*Lease, error) {
-	return a.acquire(ctx, Request{Owner: owner, Mode: mode}, LeaseTypeOneShot)
 }
 
 func (a *Arbiter) WaitIdle(ctx context.Context) error {
@@ -551,14 +537,7 @@ func (a *Arbiter) canAcquireLeaseLocked(ticket waitTicket) bool {
 	}
 
 	switch ticket.leaseType {
-	case LeaseTypeSession:
-		return a.queueHeadIsLocked(ticket.id) && a.activeOneshot == nil && !a.hasActiveTransportLocked() && len(a.activeSessions) < a.opts.MaxSessions
-	case LeaseTypeOneShot:
-		return a.queueHeadIsLocked(ticket.id) && len(a.activeSessions) == 0 && a.activeOneshot == nil && !a.hasActiveTransportLocked()
 	case LeaseTypeTransport:
-		if len(a.activeSessions) > 0 || a.activeOneshot != nil {
-			return false
-		}
 		return a.selectedTransportLocked() == ticket.id
 	default:
 		return false
@@ -1032,6 +1011,12 @@ func normalizeRequest(req Request, leaseType LeaseType) Request {
 	return req
 }
 
+// normalizeTransportScope 收敛传输作用域模型:
+// QMI 支持 per-channel 并发 (TransportScopeQMIChannel, 仅显式请求且 channel>0);
+// 其他传输 (含 MBIM, 见 mbim_apdu_transport.go TransmitEUICCAPDU) 一律退回
+// TransportScopeExclusive — MBIM 数据源未证明并发 logical channel 彼此独立
+// 安全, 因此 MBIM 有意与 QMI 保持不同: 所有 MBIM APDU 串行化, 仍共享设备级
+// SIM 切换 barrier。两种模型均受同一设备级仲裁器协调。
 func normalizeTransportScope(scope TransportScope, mode string, channel int, leaseType LeaseType) TransportScope {
 	if leaseType != LeaseTypeTransport {
 		return TransportScopeExclusive

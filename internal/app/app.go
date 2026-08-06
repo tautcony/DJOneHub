@@ -20,6 +20,7 @@ import (
 	"github.com/iniwex5/vohive/internal/application/rawat"
 	"github.com/iniwex5/vohive/internal/application/sms"
 	"github.com/iniwex5/vohive/internal/application/vowifi"
+	"github.com/iniwex5/vohive/internal/apduarbiter"
 	"github.com/iniwex5/vohive/internal/backend"
 	domain "github.com/iniwex5/vohive/internal/domain/device"
 	djiesim "github.com/iniwex5/vohive/internal/esim"
@@ -38,10 +39,12 @@ import (
 // serialESIMPortBuilder 为串口 AT 路径（Linux/Windows）构建 eSIM 服务端口。
 // 模组暴露为操作系统串口，eUICC APDU 通道走 modem.Manager 的串口 AT 通道
 // （AT+CCHO/AT+CGLA/AT+CCHC），与 darwin 的 USB AT 路径共用 internal/esim.NewATPort。
-func serialESIMPortBuilder() func(*modem.Manager, domain.Candidate) (backend.ESIMPort, error) {
-	return func(m *modem.Manager, candidate domain.Candidate) (backend.ESIMPort, error) {
+// arbiter 与 modem manager 共享同一设备级 APDU 仲裁器实例。
+func serialESIMPortBuilder() func(*modem.Manager, *apduarbiter.Arbiter, domain.Candidate) (backend.ESIMPort, error) {
+	return func(m *modem.Manager, arbiter *apduarbiter.Arbiter, candidate domain.Candidate) (backend.ESIMPort, error) {
 		return djiesim.NewATPort(
 			candidate.Identity.StableID,
+			arbiter,
 			func(cmd string, timeout time.Duration) (string, error) { return m.ExecuteAT(cmd, timeout) },
 			func(context.Context) (string, error) { return m.QueryIMEI() },
 			func(context.Context) (string, error) { return m.QueryICCID() },

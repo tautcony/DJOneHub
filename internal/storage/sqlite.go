@@ -190,16 +190,73 @@ func (s *SQLiteStore) applyMigrations() error {
 					return err
 				}
 			}
-		}
-		if _, err := s.db.Exec(`INSERT INTO schema_migrations(version, applied_at) VALUES(?, ?)`, version, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
-			return fmt.Errorf("record sqlite schema migration: %w", err)
+			if err := s.recordMigration(version); err != nil {
+				return err
+			}
+		case 3:
+			if err := s.migrateSMSUniquenessWithIdentity(); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
 }
 
 // migrationVersion is the newest schema version this binary understands.
-const migrationVersion = 2
+const migrationVersion = 3
+
+func (s *SQLiteStore) recordMigration(version int) error {
+	if _, err := s.db.Exec(`INSERT INTO schema_migrations(version, applied_at) VALUES(?, ?)`, version, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		return fmt.Errorf("record sqlite schema migration: %w", err)
+	}
+	return nil
+}
+
+// migrateSMSUniquenessWithIdentity 在单个事务中重建 sms_messages 表: 把表级
+// 唯一约束从 (direction, sender, recipient, body, received_at) 替换为含 SIM
+// 身份的 (direction, iccid, sender, recipient, body, received_at), 使同一
+// 消息在第二张 SIM 上被存储而不是被 IGNORE。SQLite 无法原地删除表级约束,
+// 因此: 建新表 → 复制全部行与 ID → 重建索引 → 换表 → 记录迁移。任一步失败
+// 整体回滚, 旧表与数据保持不变; 版本记录只在换表成功后写入 (同一事务)。
+func (s *SQLiteStore) migrateSMSUniquenessWithIdentity() error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin sms v3 migration: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	statements := []string{
+		`CREATE TABLE sms_messages_v3 (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			direction TEXT NOT NULL CHECK (direction IN ('inbound', 'outbound')),
+			provider_id INTEGER,
+			sender TEXT NOT NULL DEFAULT '',
+			recipient TEXT NOT NULL DEFAULT '',
+			body TEXT NOT NULL,
+			received_at TEXT NOT NULL,
+			iccid TEXT NOT NULL DEFAULT '',
+			concat_ref INTEGER,
+			part_number INTEGER,
+			total_parts INTEGER,
+			created_at TEXT NOT NULL,
+			UNIQUE (direction, iccid, sender, recipient, body, received_at)
+		)`,
+		`INSERT INTO sms_messages_v3 (id, direction, provider_id, sender, recipient, body, received_at, iccid, concat_ref, part_number, total_parts, created_at)
+			SELECT id, direction, provider_id, sender, recipient, body, received_at, iccid, concat_ref, part_number, total_parts, created_at FROM sms_messages`,
+		`DROP TABLE sms_messages`,
+		`ALTER TABLE sms_messages_v3 RENAME TO sms_messages`,
+		`CREATE INDEX idx_sms_messages_received_at ON sms_messages(received_at DESC)`,
+		`CREATE INDEX idx_sms_messages_peer_time ON sms_messages(sender, recipient, received_at DESC)`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.Exec(statement); err != nil {
+			return fmt.Errorf("migrate sms uniqueness to v3: %w", err)
+		}
+	}
+	if _, err := tx.Exec(`INSERT INTO schema_migrations(version, applied_at) VALUES(3, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		return fmt.Errorf("record sms v3 migration: %w", err)
+	}
+	return tx.Commit()
+}
 
 // ensureColumn adds a column unless it already exists.
 func (s *SQLiteStore) ensureColumn(table, name, definition string) error {
@@ -277,9 +334,19 @@ func (s *SQLiteStore) Exists() (bool, error) {
 	return exists == 1, err
 }
 
+// ErrSMSIdentityMissing 是 InsertSMS 在 SIM 身份为空时返回的分类错误: 调用方
+// (modem 路径) 保留模组条目并重试身份获取, 而不是把消息静默归入共享空身份键。
+var ErrSMSIdentityMissing = errors.New("sms sim identity is missing")
+
+// InsertSMS 写入一条消息。去重唯一键含 SIM 身份 (direction, iccid, sender,
+// recipient, body, received_at), 因此 iccid 必须非空: 身份缺失时拒绝写入,
+// 由调用方保留条目并重试。
 func (s *SQLiteStore) InsertSMS(record SMSRecord) error {
 	if record.Direction != "inbound" && record.Direction != "outbound" {
 		return fmt.Errorf("unsupported sms direction %q", record.Direction)
+	}
+	if strings.TrimSpace(record.ICCID) == "" {
+		return ErrSMSIdentityMissing
 	}
 	if record.Body == "" || record.ReceivedAt.IsZero() {
 		return fmt.Errorf("sms body and received_at are required")
@@ -303,11 +370,24 @@ func (s *SQLiteStore) InsertSMS(record SMSRecord) error {
 	return nil
 }
 
-func (s *SQLiteStore) ListSMS(direction string) ([]SMSRecord, error) {
+// SMSListDefaultLimit 是 ListSMS 的默认页大小: 非正 limit 使用该有界默认值,
+// 内部列表永远有界, 由应用服务逐页迭代 (design D16)。
+const SMSListDefaultLimit = 200
+
+// ListSMS 按方向返回一页消息 (created_at DESC, id DESC)。limit<=0 使用
+// defaultSMSListLimit; offset<0 视为 0。调用方 (SMS 应用服务) 内部迭代全部
+// 页, 公共 HTTP 契约不变。
+func (s *SQLiteStore) ListSMS(direction string, limit, offset int) ([]SMSRecord, error) {
+	if limit <= 0 {
+		limit = SMSListDefaultLimit
+	}
+	if offset < 0 {
+		offset = 0
+	}
 	rows, err := s.db.Query(`
 		SELECT provider_id, sender, recipient, body, received_at, iccid, concat_ref, part_number, total_parts, created_at
-		FROM sms_messages WHERE direction = ? ORDER BY created_at DESC, id DESC
-	`, direction)
+		FROM sms_messages WHERE direction = ? ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?
+	`, direction, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("list sms records: %w", err)
 	}

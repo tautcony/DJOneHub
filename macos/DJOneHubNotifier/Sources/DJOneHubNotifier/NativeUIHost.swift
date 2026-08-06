@@ -17,8 +17,15 @@ public func nativeUIStart(
     onCommand: NativeUICommandCallback?,
     onReady: NativeUIReadyCallback?
 ) {
-    // The Go bridge guarantees this runs on the process main thread (the Go
-    // main goroutine pins it with runtime.LockOSThread before calling in).
+    // 线程契约 (见 bridge.h): Go 侧 main goroutine 用 runtime.LockOSThread
+    // 钉住进程主线程后才调用 native_ui_start。这里显式校验契约, 破坏时报出
+    // 可读错误而不是无诊断地假设主线程。
+    guard Thread.isMainThread else {
+        fatalError(
+            "native_ui_start must run on the process main thread: the Go bridge pins it "
+                + "with runtime.LockOSThread before calling in (see bridge.h)"
+        )
+    }
     let config = configJSON.map { String(cString: $0) }
     MainActor.assumeIsolated {
         NativeUIHost.shared.start(configJSON: config, onCommand: onCommand, onReady: onReady)
@@ -142,7 +149,6 @@ final class UIAppDelegate: NSObject, NSApplicationDelegate, @MainActor UNUserNot
     private let notificationService = NativeNotificationService()
     private let panel = NotifierPanel()
     private var notificationPreferences = NotificationPreferences.system
-    private var webURL: URL?
 
     private var statusItem: NSStatusItem?
     private var deviceStatus = DeviceStatusEvent(state: "absent", identity: nil, backend: nil, lastError: nil)
@@ -166,9 +172,8 @@ final class UIAppDelegate: NSObject, NSApplicationDelegate, @MainActor UNUserNot
         else {
             return
         }
-        if let urlString = object["web_url"] as? String {
-            webURL = URL(string: urlString)
-        }
+        // web_url was previously parsed here but is unused by the native UI;
+        // the Go side owns the HTTP boundary and passes the URL to Start().
         if let preferencesObject = object["notification_preferences"] as? [String: Any],
            let preferencesData = try? JSONSerialization.data(withJSONObject: preferencesObject),
            let preferences = try? JSONDecoder().decode(NotificationPreferences.self, from: preferencesData) {
@@ -190,6 +195,12 @@ final class UIAppDelegate: NSObject, NSApplicationDelegate, @MainActor UNUserNot
     func applicationWillTerminate(_ notification: Notification) {
         removeStatusItem()
         panel.hide()
+    }
+
+    // 系统状态恢复 (窗口/菜单栏状态) 在安全模式下保存, 避免把敏感状态写入
+    // 未加密的恢复文件 (3.9 L5)。
+    func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {
+        true
     }
 
     // MARK: - Bridge event handling
@@ -255,16 +266,18 @@ final class UIAppDelegate: NSObject, NSApplicationDelegate, @MainActor UNUserNot
             guard let message = event.decode(SMSMessageEvent.self) else { return }
             if notificationPreferences.sms == "custom" {
                 NSSound(named: "Glass")?.play()
+                // "仅显示发送方" 偏好同时约束自定义面板: 开启时不展示短信预览。
+                let preview = notificationPreferences.senderOnlyEnabled ? "" : NotificationText.smsPreview(message)
                 panel.show(
                     .sms(
                         sender: (message.sender?.isEmpty == false) ? message.sender! : "未知发送方",
-                        preview: NotificationText.smsPreview(message)
+                        preview: preview
                     ),
                     onReject: {},
                     onOpen: { [weak self] in self?.openDashboard() }
                 )
             } else {
-                notificationService.showSMS(message, eventID: event.id)
+                notificationService.showSMS(message, eventID: event.id, senderOnly: notificationPreferences.senderOnlyEnabled)
             }
         case BridgeEventType.deviceOffline:
             guard let offline = event.decode(DeviceOfflineEvent.self) else { return }

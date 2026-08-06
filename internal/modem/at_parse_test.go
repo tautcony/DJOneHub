@@ -1,6 +1,7 @@
 package modem
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -217,21 +218,31 @@ func TestParseQNWInfoRadioIncludesBandAndChannel(t *testing.T) {
 	}
 }
 
-func TestParseCOPSOperator(t *testing.T) {
+func TestParseCOPSOperatorResponse(t *testing.T) {
 	tests := []struct {
 		name string
 		resp string
 		want string
 	}{
 		{
-			name: "known plmn mapped to display name",
+			name: "numeric format plmn mapped to display name",
 			resp: "\r\n+COPS: 0,2,\"46011\",7\r\n\r\nOK\r\n",
 			want: "中国电信",
 		},
 		{
-			name: "unknown plmn falls back to raw code",
+			name: "numeric format unknown plmn falls back to raw code",
 			resp: "\r\n+COPS: 0,2,\"99999\",7\r\n\r\nOK\r\n",
 			want: "99999",
+		},
+		{
+			name: "long alphanumeric format passes name through",
+			resp: "\r\n+COPS: 0,0,\"CHN-UNICOM\",7\r\n\r\nOK\r\n",
+			want: "CHN-UNICOM",
+		},
+		{
+			name: "short alphanumeric format passes name through",
+			resp: "\r\n+COPS: 0,1,\"UNICOM\",7\r\n\r\nOK\r\n",
+			want: "UNICOM",
 		},
 		{
 			name: "missing operator payload",
@@ -242,9 +253,31 @@ func TestParseCOPSOperator(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := parseCOPSOperator(tt.resp)
+			got, err := parseCOPSOperatorResponse(tt.resp)
+			if err != nil {
+				t.Fatalf("parseCOPSOperatorResponse() error = %v", err)
+			}
 			if got != tt.want {
-				t.Fatalf("parseCOPSOperator()=%q want=%q", got, tt.want)
+				t.Fatalf("parseCOPSOperatorResponse()=%q want=%q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseCOPSOperatorResponseClassifiesUnsupportedFormat(t *testing.T) {
+	for name, resp := range map[string]string{
+		"format 3":       "\r\n+COPS: 0,3,\"46011\",7\r\n\r\nOK\r\n",
+		"format garbage": "\r\n+COPS: 0,xyz,\"46011\",7\r\n\r\nOK\r\n",
+		"no cops line":   "\r\nOK\r\n",
+		"no format field": "\r\n+COPS: 0\r\n\r\nOK\r\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := parseCOPSOperatorResponse(resp)
+			if err == nil {
+				t.Fatalf("parseCOPSOperatorResponse() = %q, want classified error", got)
+			}
+			if !errors.Is(err, errCOPSFormatUnsupported) {
+				t.Fatalf("error = %v, want %v", err, errCOPSFormatUnsupported)
 			}
 		})
 	}

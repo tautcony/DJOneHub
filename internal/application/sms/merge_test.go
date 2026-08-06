@@ -77,13 +77,30 @@ func TestRecordSentPersistsAndRestoresHistory(t *testing.T) {
 	}
 	defer store.Close()
 	service := NewService(nil, nil, nil, store)
+	// 设备身份未知: 消息保留在内存发送缓存, 不落库 (design D16)。
 	service.recordSent(context.Background(), "13800138000", "hello")
+	if len(service.sent) != 1 || len(service.cache) != 1 {
+		t.Fatalf("in-memory sent=%d cache=%d, want one message", len(service.sent), len(service.cache))
+	}
 
 	restored := NewService(nil, nil, nil, store)
-	if len(restored.sent) != 1 || len(restored.cache) != 1 {
-		t.Fatalf("restored sent=%d cache=%d, want one message", len(restored.sent), len(restored.cache))
+	if len(restored.sent) != 0 || len(restored.cache) != 0 {
+		t.Fatalf("message without identity must not be persisted; restored sent=%d cache=%d", len(restored.sent), len(restored.cache))
 	}
-	message := restored.sent[0]
+
+	// 身份已知时持久化并可恢复。
+	now := time.Now().UTC()
+	if err := store.InsertSMS(storage.SMSRecord{
+		Direction: "outbound", Recipient: "13800138000", Body: "hello",
+		ReceivedAt: now, RecordedAt: now, ICCID: "8901",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	restored2 := NewService(nil, nil, nil, store)
+	if len(restored2.sent) != 1 || len(restored2.cache) != 1 {
+		t.Fatalf("restored sent=%d cache=%d, want one message", len(restored2.sent), len(restored2.cache))
+	}
+	message := restored2.sent[0]
 	if message.Sender != "" || message.Recipient != "13800138000" || message.Body != "hello" {
 		t.Fatalf("restored message = %+v", message)
 	}

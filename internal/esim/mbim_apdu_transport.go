@@ -81,6 +81,12 @@ func (t *MBIMAPDUTransport) CloseEUICCLogicalChannel(ctx context.Context, slot, 
 	return nil
 }
 
+// TransmitEUICCAPDU 保持 TransportScopeExclusive (每 APDU 独占):
+// MBIM 传输有意与 QMI 的 per-channel 并发模型 (TransportScopeQMIChannel,
+// 见 apduarbiter.arbiter.go normalizeScope) 保持不同 — 当前 MBIM 数据源
+// (MBIMEx UICC service) 未证明并发 logical channel 彼此独立安全, 因此所有
+// MBIM APDU 串行化, 且仍共享设备级 SIM 切换 barrier。若未来 MBIM 数据源
+// 证明 per-channel 安全, 再改为 QMI 模型。
 func (t *MBIMAPDUTransport) TransmitEUICCAPDU(ctx context.Context, slot, channel byte, command []byte) ([]byte, error) {
 	lease, err := t.coord.acquireLease(ctx, 10*time.Second, "esim_apdu", apduarbiter.APDUClassEUICCWrite, channel, apduarbiter.TransportScopeExclusive)
 	if err != nil {

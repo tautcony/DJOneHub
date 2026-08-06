@@ -318,10 +318,18 @@ func (m *Manager) DialCall(number string) error {
 	cmd := fmt.Sprintf("ATD%s;", number)
 	_, err := m.ExecuteAT(cmd, 60*time.Second)
 	if err != nil {
-		logger.Error(fmt.Sprintf("[%s] 拨号失败", m.cfg.ID), "err", err, "number", number)
+		fields := []any{"err", err}
+		if LogMessageContent {
+			fields = append(fields, "number", number)
+		}
+		logger.Error(fmt.Sprintf("[%s] 拨号失败", m.cfg.ID), fields...)
 		return err
 	}
-	logger.Info(fmt.Sprintf("[%s] 拨号指令已发出", m.cfg.ID), "number", number)
+	if LogMessageContent {
+		logger.Info(fmt.Sprintf("[%s] 拨号指令已发出", m.cfg.ID), "number", number)
+	} else {
+		logger.Info(fmt.Sprintf("[%s] 拨号指令已发出", m.cfg.ID))
+	}
 	return nil
 }
 
@@ -919,7 +927,9 @@ func (m *Manager) initModem() {
 
 	// 3. 采集设备信息
 	m.collectDeviceInfo()
-	logger.Info(fmt.Sprintf("[%s] 模组初始化完成", m.cfg.ID), "imei", m.imei, "iccid", m.iccid)
+	// Info 级别只记录掩码身份; 完整 IMEI/ICCID 仅在 Debug 级别输出。
+	logger.Info(fmt.Sprintf("[%s] 模组初始化完成", m.cfg.ID), "imei", maskIdentity(m.imei), "iccid", maskIdentity(m.iccid))
+	logger.Debug(fmt.Sprintf("[%s] 模组初始化完成 (完整身份)", m.cfg.ID), "imei", m.imei, "iccid", m.iccid)
 }
 
 // RefreshDeviceInfo 重新采集设备信息（切卡后需要更新缓存）
@@ -1341,13 +1351,14 @@ func (m *Manager) handleURC(line string) {
 
 	fr := m.formatURC(s)
 	msg := fmt.Sprintf("[%s] %s", m.cfg.ID, fr.Msg)
+	logFields := filterSensitiveLogFields(fr.Fields)
 	switch fr.Level {
 	case urcLogWarn:
-		logger.Warn(msg, fr.Fields...)
+		logger.Warn(msg, logFields...)
 	case urcLogInfo:
-		logger.Info(msg, fr.Fields...)
+		logger.Info(msg, logFields...)
 	default:
-		logger.Debug(msg, fr.Fields...)
+		logger.Debug(msg, logFields...)
 	}
 
 	// 模组重启信号：广播给所有 SubscribeRDY() 的等待方。
@@ -1404,7 +1415,11 @@ func (m *Manager) handleURC(line string) {
 		case m.ussdChan <- result:
 		default:
 			// 没有人在等待，丢弃
-			logger.Debug(fmt.Sprintf("[%s] USSD 响应无人等待，已丢弃", m.cfg.ID), "text", result.Text)
+			if LogMessageContent {
+				logger.Debug(fmt.Sprintf("[%s] USSD 响应无人等待，已丢弃", m.cfg.ID), "text", result.Text)
+			} else {
+				logger.Debug(fmt.Sprintf("[%s] USSD 响应无人等待，已丢弃", m.cfg.ID))
+			}
 		}
 	}
 
@@ -1528,7 +1543,9 @@ func (m *Manager) readAndProcessSMSFromStorage(storage, index string) {
 		return
 	}
 
-	logger.Debug(fmt.Sprintf("[%s] 短信内容", m.cfg.ID), "sender", sender, "content", content)
+	if LogMessageContent {
+		logger.Debug(fmt.Sprintf("[%s] 短信内容", m.cfg.ID), "sender", sender, "content", content)
+	}
 
 	if m.smsCallback != nil {
 		m.smsCallback(sender, content, timestamp)
@@ -2040,7 +2057,11 @@ func (m *Manager) SendSMSWithOptions(phone, message string, opts smscodec.Submit
 
 	for i, pduHex := range pduHexList {
 		tpduLen := tpduLenList[i]
-		logger.Debug(fmt.Sprintf("[%s] PDU 编码完成 (分片 %d/%d)", m.cfg.ID, i+1, len(pduHexList)), "pdu", pduHex, "tpdu_len", tpduLen)
+		if LogMessageContent {
+			logger.Debug(fmt.Sprintf("[%s] PDU 编码完成 (分片 %d/%d)", m.cfg.ID, i+1, len(pduHexList)), "pdu", pduHex, "tpdu_len", tpduLen)
+		} else {
+			logger.Debug(fmt.Sprintf("[%s] PDU 编码完成 (分片 %d/%d)", m.cfg.ID, i+1, len(pduHexList)), "tpdu_len", tpduLen)
+		}
 
 		req := commandRequest{
 			cmd:          fmt.Sprintf("AT+CMGS=%d", tpduLen), // PDU 长度 (不含 SMSC)
@@ -2152,7 +2173,11 @@ func (m *Manager) decodeUSSDText(raw string, dcs int) string {
 		// UCS2: Hex 字符串 -> UTF-16BE -> UTF-8
 		b, err := hex.DecodeString(raw)
 		if err != nil {
-			logger.Debug(fmt.Sprintf("[%s] USSD UCS2 hex 解码失败", m.cfg.ID), "err", err, "raw", raw)
+			if LogMessageContent {
+				logger.Debug(fmt.Sprintf("[%s] USSD UCS2 hex 解码失败", m.cfg.ID), "err", err, "raw", raw)
+			} else {
+				logger.Debug(fmt.Sprintf("[%s] USSD UCS2 hex 解码失败", m.cfg.ID), "err", err)
+			}
 			return raw
 		}
 		if len(b)%2 != 0 {
@@ -2210,7 +2235,11 @@ func (m *Manager) ExecuteUSSD(command string, timeout time.Duration) (*USSDResul
 	// 阻塞等待 +CUSD URC 回调
 	select {
 	case result := <-m.ussdChan:
-		logger.Info(fmt.Sprintf("[%s] 收到 USSD 返回", m.cfg.ID), "status", result.Status, "text", result.Text)
+		if LogMessageContent {
+			logger.Info(fmt.Sprintf("[%s] 收到 USSD 返回", m.cfg.ID), "status", result.Status, "text", result.Text)
+		} else {
+			logger.Info(fmt.Sprintf("[%s] 收到 USSD 返回", m.cfg.ID), "status", result.Status)
+		}
 		return &result, nil
 	case <-time.After(timeout):
 		logger.Warn(fmt.Sprintf("[%s] USSD 响应网络超时（无回调），正在自动取消网络等待", m.cfg.ID), "timeout", timeout.String())

@@ -29,11 +29,7 @@ func TestUpdateDeviceInFileDoesNotPersistRuntimePaths(t *testing.T) {
 		t.Fatalf("UpdateDeviceInFile() error = %v", err)
 	}
 
-	got, err := Load(path)
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
-	}
-	d := got.Devices[0]
+	d := readDevicesFromFile(t, path)[0]
 	if d.ModemIMEI != "867383058993207" || d.DeviceBackend != "qmi" {
 		t.Fatalf("identity/intent fields lost: %+v", d)
 	}
@@ -56,8 +52,7 @@ func TestAddDeviceInFileDoesNotPersistRuntimePaths(t *testing.T) {
 	if err := AddDeviceInFile(path, dev); err != nil {
 		t.Fatalf("AddDeviceInFile() error = %v", err)
 	}
-	got, _ := Load(path)
-	d := got.Devices[0]
+	d := readDevicesFromFile(t, path)[0]
 	if d.ModemIMEI != "861234567890123" || d.DeviceBackend != "mbim" {
 		t.Fatalf("identity/intent lost: %+v", d)
 	}

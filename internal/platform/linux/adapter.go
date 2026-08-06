@@ -60,8 +60,10 @@ func (a *Adapter) Discover(ctx context.Context) ([]device.Candidate, error) {
 	if err != nil {
 		return nil, err
 	}
-	for i := range candidates {
-		a.selectATPort(ctx, &candidates[i])
+	// 单设备契约 (见 transport.DeviceDiscovery): 运行时只消费 candidates[0],
+	// 因此只对将被消费的候选做 AT 探测, 不为其余候选耗费探测工作。
+	if len(candidates) > 0 {
+		a.selectATPort(ctx, &candidates[0])
 	}
 	return candidates, nil
 }

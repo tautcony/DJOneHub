@@ -302,6 +302,16 @@ button:disabled { cursor: not-allowed; }
 .sms-inbox-panel, .sms-conversation-panel { min-width: 0; }
 .sms-search { margin: 17px 0 10px; }
 .sms-thread-list { display: grid; max-height: 580px; gap: 3px; overflow-y: auto; }
+.sms-thread-more {
+  padding: 8px 10px;
+  text-align: left;
+  color: var(--ant-color-primary, #1677ff);
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+}
 .sms-thread-item { display: grid; grid-template-columns: 36px minmax(0, 1fr) auto; gap: 10px; min-width: 0; align-items: center; padding: 11px 9px; border: 0; border-radius: 6px; color: var(--ui-text); background: transparent; text-align: left; }
 .sms-thread-item:hover, .sms-thread-item.active { background: #e6f4ff; }
 .sms-thread-item.active { box-shadow: inset 3px 0 0 var(--ui-primary); }

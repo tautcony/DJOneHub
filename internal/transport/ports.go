@@ -7,6 +7,10 @@ import (
 	"github.com/iniwex5/vohive/internal/domain/device"
 )
 
+// DeviceDiscovery 是平台探测契约。运行时是单设备运行时: 它只消费返回列表中
+// 的第一个候选 (candidates[0]) 并把它作为受管设备。因此平台实现只须为将被
+// 消费的候选做探测工作 (如 AT 端口探测), 不应为其余候选做探测; 探测预算、
+// 冷却与回退行为由各平台自持。
 type DeviceDiscovery interface {
 	Discover(context.Context) ([]device.Candidate, error)
 }

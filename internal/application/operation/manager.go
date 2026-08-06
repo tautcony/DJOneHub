@@ -149,6 +149,9 @@ func (m *Manager) run(ctx context.Context, status *Status, task Task) {
 			m.update(status.ID, func(s *Status) {
 				s.State = Cancelled
 				s.Message = "operation cancelled"
+				// 取消是显式分类错误 (design D15): 客户端可据 error.code 判断,
+				// 而不是把取消误报为通用失败。
+				s.Error = derrors.New(derrors.OperationCancelled, "operation cancelled", false, nil)
 				s.FinishedAt = time.Now().UTC()
 			})
 		} else {

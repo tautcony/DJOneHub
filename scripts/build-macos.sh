@@ -6,22 +6,27 @@ set -eu
 
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 ARCH=${1:-arm64}
-VERSION=v0.1.5-preview
+VERSION=${2:-}
 REDOWNLOAD=0
-case "${2:-}" in
---redownload) REDOWNLOAD=1 ;;
-"") ;;
-*) VERSION=$2 ;;
+case "${VERSION}" in
+"") printf '%s\n' "Usage: $0 <arm64|universal> <version> [--redownload]" >&2; exit 2 ;;
 esac
 case "${3:-}" in
 --redownload) REDOWNLOAD=1 ;;
 "") ;;
-*) printf '%s\n' "Usage: $0 <arm64|universal> [version] [--redownload]" >&2; exit 2 ;;
+*) printf '%s\n' "Usage: $0 <arm64|universal> <version> [--redownload]" >&2; exit 2 ;;
 esac
 case "${ARCH}" in
 arm64|universal) ;;
-*) echo "Usage: $0 <arm64|universal> [version] [--redownload]" >&2; exit 2 ;;
+*) printf '%s\n' "Usage: $0 <arm64|universal> <version> [--redownload]" >&2; exit 2 ;;
 esac
+# VERSION is caller-supplied and must match ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$.
+# The pattern rejects path separators, whitespace, and PlistBuddy separators,
+# so the value is safe to embed in PACKAGE_NAME / dist paths and PlistBuddy keys.
+if ! printf '%s' "${VERSION}" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+	printf '%s\n' "VERSION '${VERSION}' does not match ^v[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.-]+)?\$" >&2
+	exit 2
+fi
 
 if [ "${ARCH}" = "arm64" ] && [ "$(uname -m)" != "arm64" ]; then
 	printf '%s\n' "The arm64 package must be built on Apple Silicon." >&2
@@ -51,14 +56,18 @@ APP_BINARY="${APP_DIR}/Contents/MacOS/djonehub"
 DMG_STAGE="${DIST_DIR}/dmg-stage-${ARCH}"
 DMG="${DIST_DIR}/${PACKAGE_NAME}.dmg"
 CHECKSUM="${DMG}.sha256"
-BUILD_ROOT="${TMPDIR:-/tmp}/djonehub-macos-${ARCH}"
+# Fresh temporary build root: mktemp guarantees a private directory that was
+# never touched by a previous build, so stale artifacts cannot leak in and no
+# pre-existing shared directory is ever removed.
+BUILD_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/djonehub-macos-${ARCH}.XXXXXX")
 LIBUSB_SOURCE="${BUILD_ROOT}/libusb-source"
 LIBUSB_INCLUDE="${BUILD_ROOT}/libusb-include"
 SWIFT_BUILD_ROOT="${BUILD_ROOT}/swift-build"
 SWIFT_CACHE="${BUILD_ROOT}/swift-cache"
+trap 'rm -rf "${BUILD_ROOT}"' EXIT INT TERM
 
-rm -rf "${STAGE_DIR}" "${DMG_STAGE}" "${BUILD_ROOT}"
-mkdir -p "${APP_DIR}/Contents/MacOS" "${APP_DIR}/Contents/Resources" "${APP_DIR}/Contents/lib" "${STAGE_DIR}/licenses" "${BUILD_ROOT}" "${LIBUSB_CACHE_DIR}"
+rm -rf "${STAGE_DIR}" "${DMG_STAGE}"
+mkdir -p "${APP_DIR}/Contents/MacOS" "${APP_DIR}/Contents/Resources" "${APP_DIR}/Contents/lib" "${STAGE_DIR}/licenses" "${LIBUSB_CACHE_DIR}"
 
 if [ "${REDOWNLOAD}" -eq 1 ] || [ ! -f "${LIBUSB_ARCHIVE}" ]; then
 	printf '%s\n' "Downloading libusb ${LIBUSB_VERSION}..."

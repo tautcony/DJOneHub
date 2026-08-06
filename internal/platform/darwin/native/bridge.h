@@ -4,9 +4,12 @@
 // libDJOneHubNotifier.a.
 //
 // Threading contract:
-//   - native_ui_start must be called from the process main thread (the Go
-//     main goroutine pins it with runtime.LockOSThread) and blocks until the
-//     UI run loop exits.
+//   - native_ui_start must be called from the process main thread. The Go
+//     side guarantees this: cmd/djonehub/main.go calls runtime.LockOSThread()
+//     on the main goroutine before any goroutine scheduling, and bridge.Start
+//     blocks on the main thread. The Swift entry point checks Thread.isMainThread
+//     explicitly and fails with a readable error if the contract is violated.
+//     It blocks until the UI run loop exits.
 //   - native_ui_handle_event may be called from any thread; the UI dispatches
 //     to the main thread internally.
 //   - on_command and on_ready fire on the main thread while the run loop is

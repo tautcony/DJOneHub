@@ -153,6 +153,9 @@ final class NativeNotificationService {
             ? "通话开始于 \(timeFormatter.string(from: call.startedAt))。点击通知查看详情。"
             : "收到来电，时间 \(timeFormatter.string(from: call.startedAt))。点击通知查看详情。"
         content.sound = sound
+        // 来电使用 time-sensitive 中断级别: Focus 模式下仍可打断, 最终呈现
+        // 仍受用户的通知授权与 Focus 策略约束。
+        content.interruptionLevel = .timeSensitive
         content.categoryIdentifier = NativeNotificationCategory.incomingCall
         content.userInfo = [
             NativeNotificationUserInfoKey.callID: call.id,
@@ -174,12 +177,16 @@ final class NativeNotificationService {
         enqueue(content, identifier: missedCallIdentifier(call.id))
     }
 
-    func showSMS(_ message: SMSMessageEvent, eventID: UInt64) {
+    func showSMS(_ message: SMSMessageEvent, eventID: UInt64, senderOnly: Bool) {
         let sender = (message.sender?.isEmpty == false) ? message.sender! : "未知发送方"
         let content = UNMutableNotificationContent()
         content.title = sender
         content.subtitle = "DJOneHub 短信"
-        content.body = NotificationText.smsPreview(message)
+        // "仅显示发送方" 偏好开启时通知请求不携带正文, 使 banner/锁屏/通知中心
+        // 均不出现短信内容 (含一次性验证码)。
+        if !senderOnly {
+            content.body = NotificationText.smsPreview(message)
+        }
         content.sound = .default
         content.categoryIdentifier = NativeNotificationCategory.standard
         enqueue(content, identifier: "sms-\(eventID)")

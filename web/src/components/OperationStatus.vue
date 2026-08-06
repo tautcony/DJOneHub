@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import type { OperationStatus } from '../types'
 import StatusLight, { type StatusTone } from './StatusLight.vue'
 
@@ -12,6 +13,14 @@ const props = withDefaults(
     operation: null,
   },
 )
+
+const { t, te } = useI18n()
+
+// 操作状态经 i18n 目录解析, 缺失时渲染回退文案而非原始 key。
+function operationStateLabel(state: string) {
+  const key = `operation.states.${state}`
+  return te(key) ? t(key) : t('operation.states.unknown')
+}
 
 const tone = computed<StatusTone>(() => {
   if (!props.operation) return 'neutral'
@@ -31,7 +40,7 @@ const tone = computed<StatusTone>(() => {
         />
         <span>{{ props.label }}</span>
       </div>
-      <strong>{{ props.operation.state }} · {{ props.operation.progress }}%</strong>
+      <strong>{{ operationStateLabel(props.operation.state) }} · {{ props.operation.progress }}%</strong>
     </div>
     <a-progress
       :percent="props.operation.progress"

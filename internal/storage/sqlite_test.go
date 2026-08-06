@@ -2,6 +2,7 @@ package storage
 
 import (
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -35,19 +36,39 @@ func TestSQLiteSMSRoundTripAndDeduplication(t *testing.T) {
 	defer store.Close()
 
 	receivedAt := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
-	record := SMSRecord{Direction: "outbound", ProviderID: -1, Recipient: "10001", Body: "hello", ReceivedAt: receivedAt}
-	if err := store.InsertSMS(record); err != nil {
-		t.Fatal(err)
+	record := SMSRecord{
+		Direction: "outbound", ProviderID: -1, Recipient: "10001", Body: "hello",
+		ReceivedAt: receivedAt, ICCID: "8901",
 	}
 	if err := store.InsertSMS(record); err != nil {
 		t.Fatal(err)
 	}
-	records, err := store.ListSMS("outbound")
+	if err := store.InsertSMS(record); err != nil {
+		t.Fatal(err)
+	}
+	records, err := store.ListSMS("outbound", 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(records) != 1 || records[0].Body != "hello" || !records[0].ReceivedAt.Equal(receivedAt) {
 		t.Fatalf("records = %+v", records)
+	}
+}
+
+// TestSQLiteInsertSMSRejectsMissingIdentity 身份缺失时拒绝写入 (design D16):
+// 消息不归入共享空身份键, 调用方保留条目并重试。
+func TestSQLiteInsertSMSRejectsMissingIdentity(t *testing.T) {
+	store, err := OpenSQLite(filepath.Join(t.TempDir(), "djonehub.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	record := SMSRecord{
+		Direction: "inbound", Sender: "10086", Body: "验证码", ReceivedAt: time.Now().UTC(),
+	}
+	if err := store.InsertSMS(record); !errors.Is(err, ErrSMSIdentityMissing) {
+		t.Fatalf("InsertSMS() without iccid error = %v, want ErrSMSIdentityMissing", err)
 	}
 }
 
@@ -122,7 +143,7 @@ func TestSQLiteMigratesV1ToV2WithICCID(t *testing.T) {
 	}
 	defer store.Close()
 
-	records, err := store.ListSMS("inbound")
+	records, err := store.ListSMS("inbound", 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +158,7 @@ func TestSQLiteMigratesV1ToV2WithICCID(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	records, err = store.ListSMS("inbound")
+	records, err = store.ListSMS("inbound", 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
