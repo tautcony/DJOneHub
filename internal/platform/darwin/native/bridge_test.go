@@ -16,13 +16,22 @@ type fakeDriver struct {
 	stopped    int
 	events     []map[string]any
 	startCalls int
+	// blockStart mimics the macOS AppKit run loop: when set, start blocks
+	// until stop is called, so the bridge stays "running" like the real UI.
+	blockStart bool
+	stopCh     chan struct{}
+	stopOnce   sync.Once
 }
 
 func (d *fakeDriver) start(configJSON string, bridge *Bridge) {
 	d.mu.Lock()
 	d.started = true
 	d.startCalls++
+	block := d.blockStart
 	d.mu.Unlock()
+	if block {
+		<-d.stopCh
+	}
 }
 
 func (d *fakeDriver) handleEvent(eventJSON string) {
@@ -37,6 +46,11 @@ func (d *fakeDriver) stop() {
 	d.mu.Lock()
 	d.stopped++
 	d.mu.Unlock()
+	d.stopOnce.Do(func() {
+		if d.stopCh != nil {
+			close(d.stopCh)
+		}
+	})
 }
 
 func (d *fakeDriver) hasUI() bool { return true }
@@ -95,13 +109,26 @@ func waitForCommands(t *testing.T, handler *recordingHandler, count int) []notif
 }
 
 func TestBridgeSinkEventsForwardedAsJSON(t *testing.T) {
-	driver := &fakeDriver{}
+	// The blocking driver keeps the bridge in the started state like the real
+	// AppKit run loop, so sink events reach the driver.
+	driver := &fakeDriver{blockStart: true, stopCh: make(chan struct{})}
 	handler := &recordingHandler{}
 	bridge := newWithDriver(handler, driver)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	if err := bridge.Start(ctx, "http://127.0.0.1:7575/"); err != nil {
-		t.Fatalf("start: %v", err)
+	go func() { _ = bridge.Start(ctx, "http://127.0.0.1:7575/") }()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		driver.mu.Lock()
+		started := driver.started
+		driver.mu.Unlock()
+		if started {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("driver never started")
+		}
+		time.Sleep(2 * time.Millisecond)
 	}
 
 	call := notification.CallEvent{ID: "call-1", Direction: "incoming", State: "incoming", Number: "18900007376", StartedAt: time.Now().UTC()}
@@ -158,6 +185,30 @@ func TestBridgeCommandRoutingValidatesAndDispatches(t *testing.T) {
 	}
 }
 
+func TestBridgeLogCommandConsumedWithoutDispatch(t *testing.T) {
+	driver := &fakeDriver{}
+	handler := &recordingHandler{}
+	bridge := newWithDriver(handler, driver)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := bridge.Start(ctx, ""); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	// Valid log commands are consumed by the bridge and never reach the
+	// command handler. Extra params ride as structured fields.
+	bridge.enqueueCommand(`{"name":"log","params":{"level":"info","message":"hello from swift","note":"extra"}}`)
+	// Invalid log commands fail contract validation and are dropped.
+	bridge.enqueueCommand(`{"name":"log","params":{"level":"verbose","message":"noise"}}`)
+	bridge.enqueueCommand(`{"name":"log","params":{"level":"info"}}`)
+
+	time.Sleep(10 * time.Millisecond)
+	if got := handler.snapshot(); len(got) != 0 {
+		t.Errorf("log commands must be consumed by the bridge, handler got %d", len(got))
+	}
+	bridge.Stop()
+}
+
 func TestBridgeWithoutHandlerDropsCommands(t *testing.T) {
 	driver := &fakeDriver{}
 	bridge := newWithDriver(nil, driver)
@@ -181,4 +232,91 @@ func TestBridgeStubReadyNeverCloses(t *testing.T) {
 	default:
 	}
 	bridge.Stop()
+}
+
+// blockingHandler blocks its first dispatched command until release closes,
+// so the command queue fills deterministically.
+type blockingHandler struct {
+	recordingHandler
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (h *blockingHandler) HandleCommand(ctx context.Context, command notification.Command) {
+	h.once.Do(func() { close(h.started) })
+	<-h.release
+	h.recordingHandler.HandleCommand(ctx, command)
+}
+
+// TestBridgeReportsDroppedCommand verifies a Swift-to-Go command rejected by
+// the full queue is reported back as a command.dropped event (with command
+// name and reason) instead of disappearing silently or being claimed as
+// executed.
+func TestBridgeReportsDroppedCommand(t *testing.T) {
+	driver := &fakeDriver{blockStart: true, stopCh: make(chan struct{})}
+	handler := &blockingHandler{started: make(chan struct{}), release: make(chan struct{})}
+	bridge := newWithDriver(handler, driver)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = bridge.Start(ctx, "") }()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		driver.mu.Lock()
+		started := driver.started
+		driver.mu.Unlock()
+		if started {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("driver never started")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	// Block the command loop on the first command, then fill the 16-slot
+	// queue; the next command cannot be enqueued.
+	bridge.enqueueCommand(`{"name":"open_dashboard"}`)
+	select {
+	case <-handler.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("command loop never dispatched the first command")
+	}
+	for i := 0; i < 16; i++ {
+		bridge.enqueueCommand(`{"name":"open_dashboard"}`)
+	}
+	bridge.enqueueCommand(`{"name":"reject_call","params":{"call_id":"call-1"}}`)
+
+	events := waitForEvents(t, driver, 1)
+	if events[0]["type"] != notification.EventCommandDropped {
+		t.Fatalf("event type = %v, want command.dropped", events[0]["type"])
+	}
+	data, ok := events[0]["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("event data = %v", events[0]["data"])
+	}
+	if data["command"] != notification.CommandRejectCall {
+		t.Errorf("dropped command = %v, want %q", data["command"], notification.CommandRejectCall)
+	}
+	if data["reason"] != "queue_full" {
+		t.Errorf("drop reason = %v, want queue_full", data["reason"])
+	}
+	// The dropped command was never executed.
+	if got := handler.snapshot(); len(got) != 0 {
+		t.Errorf("dropped command must not be dispatched, got %d commands", len(got))
+	}
+
+	close(handler.release)
+	bridge.Stop()
+	deadline = time.Now().Add(2 * time.Second)
+	for {
+		_, stopped := driver.snapshot()
+		if stopped == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("bridge never stopped")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
 }

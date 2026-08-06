@@ -14,6 +14,7 @@ const (
 	OperationTimeout         Code = "operation_timeout"
 	BackendUnavailable       Code = "backend_unavailable"
 	TransportUnavailable     Code = "transport_unavailable"
+	Unavailable              Code = "unavailable"
 	CapabilityNotSupported   Code = "capability_not_supported"
 	PacketTunnelNotSupported Code = "packet_tunnel_not_supported"
 	Internal                 Code = "internal_error"
@@ -74,6 +75,8 @@ func PublicMessage(code Code) string {
 		return "the device backend is unavailable"
 	case TransportUnavailable:
 		return "the device transport is unavailable"
+	case Unavailable:
+		return "the application is shutting down"
 	case CapabilityNotSupported:
 		return "the requested capability is not available"
 	case PacketTunnelNotSupported:

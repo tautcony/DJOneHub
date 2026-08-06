@@ -496,10 +496,14 @@ func TestPublicErrorMessageDoesNotExposeLocalizedBackendText(t *testing.T) {
 
 func TestAPIContractOperationStatusIsStable(t *testing.T) {
 	server, ops := newReadyServer(t, allContractCapabilities())
-	id := ops.Start(context.Background(), "test", func(context.Context, func(int, string)) error {
+	var startErr error
+	id, startErr := ops.Start(context.Background(), "test", func(context.Context, func(int, string)) error {
 		time.Sleep(5 * time.Millisecond)
 		return nil
 	})
+	if startErr != nil {
+		t.Fatalf("start: %v", startErr)
+	}
 	recorder := httptest.NewRecorder()
 	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/operations/"+id, nil))
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), id) {

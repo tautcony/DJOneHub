@@ -93,7 +93,7 @@ final class NativeNotificationService {
         }
         center.requestAuthorization(options: [.alert, .sound]) { [weak self] _, error in
             if let error {
-                NSLog("DJOneHub notification authorization failed: %@", error.localizedDescription)
+                nativeBridgeLog(NativeLogLevel.error, "DJOneHub notification authorization failed", ["error": error.localizedDescription])
             }
             Task { @MainActor in
                 self?.refreshAuthorizationStatus()
@@ -223,13 +223,19 @@ final class NativeNotificationService {
     }
 
     private func enqueue(_ content: UNMutableNotificationContent, identifier: String) {
-        guard let center else { return }
+        guard let center else {
+            nativeBridgeLog(NativeLogLevel.warn, "DJOneHub notification skipped: center unavailable", ["identifier": identifier])
+            return
+        }
         center.removePendingNotificationRequests(withIdentifiers: [identifier])
         center.removeDeliveredNotifications(withIdentifiers: [identifier])
         let request = UNNotificationRequest(identifier: identifier, content: content, trigger: nil)
+        nativeBridgeLog(NativeLogLevel.debug, "DJOneHub notification enqueue", ["identifier": identifier])
         center.add(request) { error in
             if let error {
-                NSLog("DJOneHub notification delivery failed: %@", error.localizedDescription)
+                nativeBridgeLog(NativeLogLevel.error, "DJOneHub notification delivery failed", ["identifier": identifier, "error": error.localizedDescription])
+            } else {
+                nativeBridgeLog(NativeLogLevel.info, "DJOneHub notification accepted", ["identifier": identifier])
             }
         }
     }

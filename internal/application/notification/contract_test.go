@@ -174,6 +174,17 @@ func TestContractEventFixturesDecode(t *testing.T) {
 			},
 		},
 		{
+			name:  "command.dropped",
+			file:  "testdata/command_dropped.json",
+			event: EventCommandDropped,
+			assert: func(t *testing.T, data json.RawMessage) {
+				dropped := decode[CommandDropped](t, data)
+				if dropped.Command != CommandRejectCall || dropped.Reason != "queue_full" {
+					t.Errorf("dropped = %+v", dropped)
+				}
+			},
+		},
+		{
 			name:  "call.reject.started",
 			file:  "testdata/call_reject_started.json",
 			event: EventCallRejectStarted,
@@ -235,6 +246,7 @@ func TestContractCommandFixturesDecode(t *testing.T) {
 	}{
 		{name: "reject_call", file: "testdata/command_reject_call.json", command: Command{Name: CommandRejectCall, Params: map[string]string{"call_id": "1783069200000-1"}}},
 		{name: "open_dashboard", file: "testdata/command_open_dashboard.json", command: Command{Name: CommandOpenDashboard}},
+		{name: "log", file: "testdata/command_log.json", command: Command{Name: CommandLog, Params: map[string]string{"level": "debug", "message": "DJOneHub native bridge received event", "type": "device.status.changed", "id": "2"}}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

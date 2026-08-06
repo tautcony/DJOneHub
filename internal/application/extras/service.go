@@ -18,6 +18,7 @@ import (
 	derrors "github.com/iniwex5/vohive/internal/domain/errors"
 	"github.com/iniwex5/vohive/internal/runtime"
 	"github.com/iniwex5/vohive/internal/storage"
+	"github.com/iniwex5/vohive/pkg/logger"
 )
 
 type CallRecord struct {
@@ -31,6 +32,10 @@ type CallRecord struct {
 	EndedAt   *time.Time `json:"ended_at,omitempty"`
 	Missed    bool       `json:"missed"`
 	ICCID     string     `json:"iccid,omitempty"`
+	// NotificationEligible is process-local policy state. It is deliberately
+	// excluded from the API and persistence contracts: notification
+	// reconciliation uses it to distinguish real calls from startup leftovers.
+	NotificationEligible bool `json:"-"`
 }
 
 type callCandidate struct {
@@ -68,8 +73,24 @@ type Service struct {
 	active         *CallRecord
 	history        []CallRecord
 	callConfigured bool
-	lastPoll       time.Time
-	lastPollError  string
+	// baselineDone marks the end of the startup settling window. Calls already
+	// present during that window are presumed to have started before the app did,
+	// so they are tracked as state but never announced: no call.incoming, and no
+	// call.missed/call.ended when they disappear. Only calls first seen after the
+	// baseline publish real events.
+	baselineDone bool
+	// baselineSnapshots counts successful CLCC snapshots consumed during the
+	// startup settling window. Two snapshots avoid treating a modem entry that
+	// appears one poll late as a new user call.
+	baselineSnapshots int
+	lastPoll          time.Time
+	lastPollError     string
+
+	// stopMu guards the cancel/done pair created by Start for the internally
+	// started call poller, following the notification service's Stop pattern.
+	stopMu sync.Mutex
+	cancel context.CancelFunc
+	done   chan struct{}
 }
 
 func NewService(devices *device.Service, ops *operation.Manager, rt *runtime.Runtime, store storage.ValueStore, callStore ...*storage.SQLiteStore) *Service {
@@ -109,8 +130,55 @@ func (s *Service) raw(ctx context.Context, capability domain.Capability, operati
 	return raw, nil
 }
 
+// Start runs the internally started call poller. It stores the cancel/done
+// pair that Stop uses to join the poller before shutdown closes the store.
 func (s *Service) Start(ctx context.Context) {
-	go s.callPoller(ctx)
+	s.stopMu.Lock()
+	if s.cancel != nil {
+		s.stopMu.Unlock()
+		return
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	s.cancel = cancel
+	s.done = done
+	s.stopMu.Unlock()
+	s.callMu.Lock()
+	s.baselineDone = false
+	s.baselineSnapshots = 0
+	if s.active != nil {
+		s.active.NotificationEligible = false
+	}
+	s.callMu.Unlock()
+	logger.Info("[calls] startup baseline reset", "target_snapshots", callBaselineSnapshotCount)
+	go func() {
+		defer close(done)
+		s.callPoller(runCtx)
+	}()
+}
+
+// Stop cancels the call poller and waits for it to join within the deadline.
+// Repeated calls are safe.
+func (s *Service) Stop(ctx context.Context) error {
+	s.stopMu.Lock()
+	cancel := s.cancel
+	done := s.done
+	s.cancel = nil
+	s.done = nil
+	s.stopMu.Unlock()
+	if cancel == nil {
+		return nil
+	}
+	cancel()
+	if done != nil {
+		select {
+		case <-done:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
 }
 
 func (s *Service) callPoller(ctx context.Context) {
@@ -134,7 +202,9 @@ func (s *Service) callPoller(ctx context.Context) {
 func (s *Service) pollCall(ctx context.Context) {
 	raw, err := s.raw(ctx, domain.CapabilityCallMonitor, "call_status")
 	if err != nil {
-		s.setCallPollError(err)
+		if s.setCallPollError(err) {
+			logger.Warn("[calls] poll unavailable", "error", err)
+		}
 		return
 	}
 	iccid := s.devices.CurrentICCID(ctx)
@@ -143,7 +213,9 @@ func (s *Service) pollCall(ctx context.Context) {
 	s.callMu.Unlock()
 	if !configured {
 		if _, err = raw.RawAT(ctx, "AT+CLIP=1"); err != nil {
-			s.setCallPollError(err)
+			if s.setCallPollError(err) {
+				logger.Warn("[calls] AT+CLIP setup failed", "error", err)
+			}
 			return
 		}
 		s.callMu.Lock()
@@ -152,14 +224,41 @@ func (s *Service) pollCall(ctx context.Context) {
 	}
 	response, err := raw.RawAT(ctx, "AT+CLCC")
 	if err != nil {
-		s.setCallPollError(err)
+		if s.setCallPollError(err) {
+			logger.Warn("[calls] CLCC poll failed", "error", err)
+		}
 		return
 	}
-	if err := s.applyCalls(parseCLCC(response), time.Now().UTC(), iccid); err != nil {
-		s.setCallPollError(err)
+	calls := parseCLCC(response)
+	s.callMu.RLock()
+	baselineDone, baselineSnapshots := s.baselineDone, s.baselineSnapshots
+	s.callMu.RUnlock()
+	logger.Debug("[calls] CLCC snapshot",
+		"candidates", len(calls),
+		"baseline_done", baselineDone,
+		"baseline_snapshots", baselineSnapshots,
+		"parsed", callCandidatesSummary(calls),
+	)
+	if err := s.applyCalls(calls, time.Now().UTC(), iccid); err != nil {
+		if s.setCallPollError(err) {
+			logger.Warn("[calls] apply snapshot failed", "error", err)
+		}
 		return
 	}
-	s.setCallPollError(nil)
+	if s.setCallPollError(nil) {
+		logger.Info("[calls] polling recovered")
+	}
+}
+
+func callCandidatesSummary(calls []callCandidate) string {
+	if len(calls) == 0 {
+		return "[]"
+	}
+	parts := make([]string, 0, len(calls))
+	for _, call := range calls {
+		parts = append(parts, fmt.Sprintf("{index=%d direction=%s state=%s number=%q}", call.Index, call.Direction, call.State, call.Number))
+	}
+	return "[" + strings.Join(parts, ", ") + "]"
 }
 
 func parseCLCC(response string) []callCandidate {
@@ -219,6 +318,8 @@ func callPriority(value string) int {
 	}
 }
 
+const callBaselineSnapshotCount = 2
+
 func (s *Service) applyCalls(calls []callCandidate, now time.Time, iccid string) error {
 	var selected *callCandidate
 	for i := range calls {
@@ -227,6 +328,15 @@ func (s *Service) applyCalls(calls []callCandidate, now time.Time, iccid string)
 		}
 	}
 	s.callMu.Lock()
+	baselineDone := s.baselineDone
+	if !baselineDone {
+		s.baselineSnapshots++
+		if s.baselineSnapshots >= callBaselineSnapshotCount {
+			s.baselineDone = true
+			logger.Info("[calls] startup baseline complete", "snapshots", s.baselineSnapshots)
+		}
+	}
+	announced := s.active != nil && s.active.NotificationEligible
 	var archived *CallRecord
 	var active notification.CallEvent
 	var activeType string
@@ -257,12 +367,21 @@ func (s *Service) applyCalls(calls []callCandidate, now time.Time, iccid string)
 			}
 			archived = &record
 		}
-		s.active = &CallRecord{ID: fmt.Sprintf("%d-%d", now.UnixMilli(), selected.Index), Index: selected.Index, Direction: selected.Direction, State: selected.State, Number: selected.Number, StartedAt: now, UpdatedAt: now, ICCID: iccid}
-		active = callEventFor(*s.active)
-		if s.active.Direction == "incoming" && (s.active.State == "incoming" || s.active.State == "waiting") {
-			activeType = notification.EventCallIncoming
-		} else {
-			activeType = notification.EventCallUpdated
+		s.active = &CallRecord{
+			ID: fmt.Sprintf("%d-%d", now.UnixMilli(), selected.Index), Index: selected.Index,
+			Direction: selected.Direction, State: selected.State, Number: selected.Number,
+			StartedAt: now, UpdatedAt: now, ICCID: iccid, NotificationEligible: baselineDone,
+		}
+		// Calls seen while the startup settling window is open are presumed to
+		// have started before the app did and are only tracked, never announced.
+		// Only transitions seen after the baseline publish real events.
+		if baselineDone {
+			active = callEventFor(*s.active)
+			if s.active.Direction == "incoming" && (s.active.State == "incoming" || s.active.State == "waiting") {
+				activeType = notification.EventCallIncoming
+			} else {
+				activeType = notification.EventCallUpdated
+			}
 		}
 	} else {
 		oldState, oldNumber := s.active.State, s.active.Number
@@ -270,11 +389,12 @@ func (s *Service) applyCalls(calls []callCandidate, now time.Time, iccid string)
 		if selected.Number != "" {
 			s.active.Number = selected.Number
 		}
-		if s.active.State != oldState || s.active.Number != oldNumber {
+		if s.active.NotificationEligible && (s.active.State != oldState || s.active.Number != oldNumber) {
 			active = callEventFor(*s.active)
 			activeType = notification.EventCallUpdated
 		}
 	}
+	activeEligibleAfter := s.active != nil && s.active.NotificationEligible
 	s.callMu.Unlock()
 	if archived != nil {
 		if s.callStore != nil {
@@ -286,10 +406,20 @@ func (s *Service) applyCalls(calls []callCandidate, now time.Time, iccid string)
 				return err
 			}
 		}
-		s.publishCallEnd(*archived)
+		// A call whose start was never announced ends silently: no ended/missed
+		// prompt for a leftover call the user was not notified about.
+		if announced {
+			logger.Info("[calls] publish end", "call_id", archived.ID, "index", archived.Index, "direction", archived.Direction, "state", archived.State, "missed", archived.Missed)
+			s.publishCallEnd(*archived)
+		} else {
+			logger.Info("[calls] silent archive", "call_id", archived.ID, "index", archived.Index, "direction", archived.Direction, "state", archived.State, "missed", archived.Missed, "reason", "unannounced_startup_call")
+		}
 	}
 	if activeType != "" {
+		logger.Info("[calls] publish event", "event", activeType, "call_id", active.ID, "direction", active.Direction, "state", active.State, "baseline_done", baselineDone)
 		s.ops.Publish(activeType, active)
+	} else if selected != nil {
+		logger.Debug("[calls] suppress active", "index", selected.Index, "direction", selected.Direction, "state", selected.State, "baseline_done", baselineDone, "notification_eligible", activeEligibleAfter)
 	}
 	return nil
 }
@@ -300,7 +430,11 @@ func CallEventFromRecord(record CallRecord) notification.CallEvent { return call
 
 // callEventFor converts a call record into the bridge DTO.
 func callEventFor(record CallRecord) notification.CallEvent {
-	return notification.CallEvent{ID: record.ID, Direction: record.Direction, State: record.State, Number: record.Number, StartedAt: record.StartedAt, EndedAt: record.EndedAt, Missed: record.Missed}
+	return notification.CallEvent{
+		ID: record.ID, Direction: record.Direction, State: record.State, Number: record.Number,
+		StartedAt: record.StartedAt, EndedAt: record.EndedAt, Missed: record.Missed,
+		NotificationEligible: record.NotificationEligible,
+	}
 }
 
 func (s *Service) publishCallEnd(record CallRecord) {
@@ -312,14 +446,19 @@ func (s *Service) publishCallEnd(record CallRecord) {
 	s.ops.Publish(notification.EventCallEnded, event)
 }
 
-func (s *Service) setCallPollError(err error) {
+// setCallPollError updates diagnostics and reports whether the error state
+// changed, so a stable polling failure is logged once instead of every tick.
+func (s *Service) setCallPollError(err error) bool {
 	s.callMu.Lock()
 	defer s.callMu.Unlock()
 	s.lastPoll = time.Now().UTC()
-	s.lastPollError = ""
+	message := ""
 	if err != nil {
-		s.lastPollError = err.Error()
+		message = err.Error()
 	}
+	changed := s.lastPollError != message
+	s.lastPollError = message
+	return changed
 }
 func (s *Service) Calls(context.Context) Status {
 	s.callMu.RLock()

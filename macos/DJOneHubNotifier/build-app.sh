@@ -30,7 +30,6 @@ export SWIFTPM_CUSTOM_CACHE_PATH="${cache_root}/swiftpm"
 
 swift build --disable-sandbox -c release
 swift run --disable-sandbox -c release DJOneHubNotifierCLI --self-test
-swift test --disable-sandbox 2>/dev/null || true
 
 lib="${build_root}/release/libDJOneHubNotifier.a"
 if [[ ! -f "${lib}" ]]; then

@@ -68,7 +68,11 @@ final class NativeUIHost {
 
     nonisolated func handleEvent(json: String) {
         guard let event = BridgeEvent.parse(json) else {
+            nativeBridgeLog(NativeLogLevel.warn, "DJOneHub native bridge rejected an invalid event")
             return
+        }
+        if event.type.hasPrefix("call.") {
+            nativeBridgeLog(NativeLogLevel.debug, "DJOneHub native bridge received event", ["type": event.type, "id": String(event.id)])
         }
         DispatchQueue.main.async { [weak self] in
             self?.deliver(event)
@@ -114,6 +118,22 @@ final class NativeUIHost {
     }
 }
 
+// nativeBridgeLog routes a UI-layer trace back to the Go process so it lands
+// in the same structured log pipeline as Go-side output instead of NSLog.
+// The message must be a constant: dynamic values travel as structured fields
+// and are only formatted by the Go logger after its level filter passes, so a
+// filtered level costs nothing but the transport. Callable from any thread;
+// delivery hops to the main actor where the command callback lives. Lines
+// emitted before the bridge starts are dropped.
+func nativeBridgeLog(_ level: String, _ message: String, _ fields: [String: String] = [:]) {
+    Task { @MainActor in
+        var params = fields
+        params["level"] = level
+        params["message"] = message
+        NativeUIHost.shared.sendCommand(Command.log, params: params)
+    }
+}
+
 // UIAppDelegate owns system notifications and the persistent DJOneHub menu bar
 // status item. It is driven entirely by bridge events: no polling, no HTTP,
 // no dedup.
@@ -132,6 +152,13 @@ final class UIAppDelegate: NSObject, NSApplicationDelegate, @MainActor UNUserNot
     private var activeCall: CallEvent?
     private var activeCallUsesCustomPanel = false
     private var rejectingCallID: String?
+    private var rejectTimeoutTask: Task<Void, Never>?
+
+    // rejectStateTimeout bounds the in-progress reject state: if no
+    // callRejectSucceeded / callRejectFailed arrives within this window, the
+    // state is cleared so a lost command or unresponsive device can never
+    // strand the panel in "rejecting". Tests shorten it.
+    static var rejectStateTimeout: TimeInterval = 8
 
     func applyConfig(_ json: String) {
         guard let data = json.data(using: .utf8),
@@ -175,11 +202,12 @@ final class UIAppDelegate: NSObject, NSApplicationDelegate, @MainActor UNUserNot
             }
         case BridgeEventType.callIncoming:
             guard let call = event.decode(CallEvent.self) else { return }
+            nativeBridgeLog(NativeLogLevel.debug, "DJOneHub native UI handling call.incoming", ["id": call.id, "state": call.state])
             activeCallID = call.id
             activeCallNumber = call.number
             activeCall = call
             activeCallUsesCustomPanel = notificationPreferences.incomingCall == "custom"
-            rejectingCallID = nil
+            clearRejectingState()
             if activeCallUsesCustomPanel {
                 showCustomIncoming(call, rejecting: false)
             } else {
@@ -206,10 +234,11 @@ final class UIAppDelegate: NSObject, NSApplicationDelegate, @MainActor UNUserNot
                 activeCallNumber = nil
                 activeCall = nil
                 activeCallUsesCustomPanel = false
-                rejectingCallID = nil
+                clearRejectingState()
             }
         case BridgeEventType.callMissed:
             guard let call = event.decode(CallEvent.self) else { return }
+            nativeBridgeLog(NativeLogLevel.debug, "DJOneHub native UI handling call.missed", ["id": call.id])
             if notificationPreferences.missedCall == "custom" {
                 panel.show(
                     .missed(
@@ -253,7 +282,7 @@ final class UIAppDelegate: NSObject, NSApplicationDelegate, @MainActor UNUserNot
             applyNetwork(state)
         case BridgeEventType.callRejectSucceeded:
             if let result = event.decode(RejectResult.self), result.callId == rejectingCallID {
-                rejectingCallID = nil
+                clearRejectingState()
                 if result.callId == activeCallID {
                     activeCallID = nil
                     activeCallNumber = nil
@@ -269,19 +298,31 @@ final class UIAppDelegate: NSObject, NSApplicationDelegate, @MainActor UNUserNot
                 activeCallUsesCustomPanel = false
             }
         case BridgeEventType.callRejectFailed:
-            if let result = event.decode(RejectResult.self), result.callId == rejectingCallID {
-                rejectingCallID = nil
-                if let callID = result.callId {
-                    let message = result.error ?? "拒接失败"
-                    if activeCallUsesCustomPanel {
-                        panel.show(
-                            .error(message: message),
-                            onReject: {},
-                            onOpen: { [weak self] in self?.openDashboard() }
-                        )
-                    } else {
-                        notificationService.showRejectFailure(callID: callID, message: message)
-                    }
+            // The rejecting state is cleared regardless of the call-ID match:
+            // a failure (or a result for a stale call) must never leave the
+            // panel stuck in "rejecting".
+            guard let result = event.decode(RejectResult.self) else { return }
+            clearRejectingState()
+            if let callID = result.callId {
+                let message = result.error ?? "拒接失败"
+                if activeCallUsesCustomPanel {
+                    panel.show(
+                        .error(message: message),
+                        onReject: {},
+                        onOpen: { [weak self] in self?.openDashboard() }
+                    )
+                } else {
+                    notificationService.showRejectFailure(callID: callID, message: message)
+                }
+            }
+        case BridgeEventType.commandDropped:
+            guard let dropped = event.decode(CommandDropped.self) else { return }
+            if dropped.command == Command.rejectCall, rejectingCallID != nil {
+                // The reject command never left the device: restore the
+                // actionable buttons so the user can retry.
+                clearRejectingState()
+                if activeCallUsesCustomPanel, let activeCall {
+                    showCustomIncoming(activeCall, rejecting: false)
                 }
             }
         case BridgeEventType.notificationPreferencesUpdated:
@@ -303,13 +344,21 @@ final class UIAppDelegate: NSObject, NSApplicationDelegate, @MainActor UNUserNot
 
     // MARK: - User actions
 
-    private func rejectCall(callID: String) {
+    func rejectCall(callID: String) {
         guard !callID.isEmpty, rejectingCallID == nil else { return }
         if let activeCallID, activeCallID != callID {
             return
         }
         activeCallID = activeCallID ?? callID
         rejectingCallID = callID
+        // Bound the rejecting state: if no result arrives in time, the state
+        // is cleared and the buttons restored instead of staying stuck.
+        rejectTimeoutTask?.cancel()
+        rejectTimeoutTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(Self.rejectStateTimeout * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            self?.recoverRejectState()
+        }
         if activeCallUsesCustomPanel {
             panel.show(
                 .incoming(
@@ -323,6 +372,25 @@ final class UIAppDelegate: NSObject, NSApplicationDelegate, @MainActor UNUserNot
             )
         }
         NativeUIHost.shared.sendCommand(Command.rejectCall, params: ["call_id": callID])
+    }
+
+    // clearRejectingState cancels the reject timeout and resets the rejecting
+    // state; the buttons are re-enabled by the caller for retry.
+    private func clearRejectingState() {
+        rejectTimeoutTask?.cancel()
+        rejectTimeoutTask = nil
+        rejectingCallID = nil
+    }
+
+    // recoverRejectState runs when the reject result never arrived within the
+    // bounded timeout: the rejecting state is cleared and the actionable
+    // buttons are restored so the user can retry.
+    private func recoverRejectState() {
+        guard rejectingCallID != nil else { return }
+        clearRejectingState()
+        if activeCallUsesCustomPanel, let activeCall {
+            showCustomIncoming(activeCall, rejecting: false)
+        }
     }
 
     private func rejectActiveCall() {

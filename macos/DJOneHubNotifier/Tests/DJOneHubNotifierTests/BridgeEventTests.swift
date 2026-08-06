@@ -125,4 +125,15 @@ final class BridgeEventTests: XCTestCase {
         let params = try XCTUnwrap(object["params"] as? [String: String])
         XCTAssertEqual(params["call_id"], "1783069200000-1")
     }
+
+    func testCommandDroppedEventDecodes() {
+        let json = """
+        {"id": 52, "type": "command.dropped", "version": 1, "occurred_at": "2026-08-02T10:00:10Z", "data": {"command": "reject_call", "reason": "queue_full"}}
+        """
+        let event = try! XCTUnwrap(BridgeEvent.parse(json))
+        XCTAssertEqual(event.type, BridgeEventType.commandDropped)
+        let dropped = try! XCTUnwrap(event.decode(CommandDropped.self))
+        XCTAssertEqual(dropped.command, "reject_call")
+        XCTAssertEqual(dropped.reason, "queue_full")
+    }
 }

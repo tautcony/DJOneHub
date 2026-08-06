@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/iniwex5/quectel-qmi-go/pkg/manager"
@@ -103,6 +104,9 @@ type QMIBackend struct {
 	eventsCh         chan BackendEvent
 	eventsDone       chan struct{}
 	eventsClose      sync.Once
+	// eventsDropped counts events dropped because the subscriber was full;
+	// exposed through EventDrops for diagnostics.
+	eventsDropped atomic.Uint64
 }
 
 type NASRegisterRequest struct {
@@ -205,11 +209,19 @@ func (q *QMIBackend) Events(ctx context.Context) (<-chan BackendEvent, error) {
 			case q.eventsCh <- BackendEvent{Type: "qmi." + event.Type.String(), Data: payload}:
 			case <-q.eventsDone:
 			case <-ctx.Done():
+			default:
+				// A slow event consumer must not stall QMI event dispatch;
+				// count the drop instead of blocking.
+				q.eventsDropped.Add(1)
 			}
 		})
 	})
 	return q.eventsCh, nil
 }
+
+// EventDrops reports the cumulative count of QMI events dropped for a slow
+// subscriber since this backend started.
+func (q *QMIBackend) EventDrops() uint64 { return q.eventsDropped.Load() }
 
 // ============================================================================
 // DeviceInfoProvider 实现

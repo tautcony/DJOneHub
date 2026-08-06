@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/iniwex5/vohive/internal/backend"
 	domain "github.com/iniwex5/vohive/internal/domain/device"
@@ -22,6 +23,11 @@ const (
 	Recovering  State = "recovering"
 	Failed      State = "failed"
 )
+
+// recoveryDebounce collapses event-driven recovery triggers arriving within
+// the window into one run; a flapping network cannot spawn concurrent
+// recovery goroutines.
+const recoveryDebounce = 2 * time.Second
 
 type PortFactory interface {
 	Open(context.Context) (backend.VoWiFiPort, error)
@@ -43,6 +49,10 @@ type EventSource interface {
 	Events(context.Context) (<-chan Event, error)
 }
 
+// Host is the single owner of VoWiFi lifecycle state. All transitions
+// (Enable, Disable, Reconnect, Recover, DeviceRemoved, event-driven recovery)
+// are serialized through transitionMu so no two transitions can interleave on
+// the same port.
 type Host struct {
 	mu      sync.RWMutex
 	state   State
@@ -52,19 +62,46 @@ type Host struct {
 	cancel  context.CancelFunc
 	desired bool
 	ready   bool
+
+	// transitionMu serializes every state transition on the owned port.
+	transitionMu sync.Mutex
+
+	// recovery: single-flight and debounced. recoverRunner is installed by
+	// the application service so recovery runs under the ResourceVoWiFi lock.
+	recoverMu      sync.Mutex
+	recoverPending bool
+	recoverTimer   *time.Timer
+	recoverRunner  func(ctx context.Context) error
+	recoverDelay   time.Duration
 }
 
 func New(factory PortFactory, bus *runtime.EventBus) *Host {
 	if bus == nil {
 		bus = runtime.NewEventBus()
 	}
-	return &Host{state: Disabled, factory: factory, bus: bus}
+	return &Host{state: Disabled, factory: factory, bus: bus, recoverDelay: recoveryDebounce}
 }
 
 func (h *Host) State() State              { h.mu.RLock(); defer h.mu.RUnlock(); return h.state }
 func (h *Host) Events() *runtime.EventBus { return h.bus }
 
+// SetRecoveryRunner installs the function that executes event-driven
+// recovery. The application service sets it so recovery runs under the
+// ResourceVoWiFi lock and through the cancellable operation manager; the
+// default runs Recover directly for host-level tests.
+func (h *Host) SetRecoveryRunner(run func(ctx context.Context) error) {
+	h.mu.Lock()
+	h.recoverRunner = run
+	h.mu.Unlock()
+}
+
 func (h *Host) Enable(ctx context.Context) error {
+	h.transitionMu.Lock()
+	defer h.transitionMu.Unlock()
+	return h.enableLocked(ctx)
+}
+
+func (h *Host) enableLocked(ctx context.Context) error {
 	h.mu.Lock()
 	if h.state == Connected {
 		h.mu.Unlock()
@@ -114,6 +151,8 @@ func (h *Host) Enable(ctx context.Context) error {
 }
 
 func (h *Host) Disable(ctx context.Context) error {
+	h.transitionMu.Lock()
+	defer h.transitionMu.Unlock()
 	h.mu.Lock()
 	cancel, port := h.cancel, h.port
 	h.cancel = nil
@@ -136,6 +175,12 @@ func (h *Host) Disable(ctx context.Context) error {
 }
 
 func (h *Host) Reconnect(ctx context.Context) error {
+	h.transitionMu.Lock()
+	defer h.transitionMu.Unlock()
+	return h.reconnectLocked(ctx)
+}
+
+func (h *Host) reconnectLocked(ctx context.Context) error {
 	h.mu.Lock()
 	port := h.port
 	h.desired = true
@@ -143,7 +188,9 @@ func (h *Host) Reconnect(ctx context.Context) error {
 	h.mu.Unlock()
 	h.publish()
 	if port == nil {
-		return h.Enable(ctx)
+		// The session was torn down (e.g. device removed); a reconnect starts
+		// a fresh enable sequence on the same serialized transition.
+		return h.enableLocked(ctx)
 	}
 	if err := port.Reconnect(ctx); err != nil {
 		return h.fail(err)
@@ -164,10 +211,44 @@ func (h *Host) Recover(ctx context.Context) error {
 	if !desired {
 		return nil
 	}
-	return h.Reconnect(ctx)
+	h.transitionMu.Lock()
+	defer h.transitionMu.Unlock()
+	return h.reconnectLocked(ctx)
+}
+
+// TriggerRecovery schedules a single-flight, debounced recovery run. Events
+// arriving within the debounce window collapse into the one scheduled run, so
+// a flapping network cannot spawn unbounded concurrent recovery goroutines.
+func (h *Host) TriggerRecovery() {
+	delay := h.recoverDelay
+	if delay <= 0 {
+		delay = recoveryDebounce
+	}
+	h.recoverMu.Lock()
+	if h.recoverPending {
+		h.recoverMu.Unlock()
+		return
+	}
+	h.recoverPending = true
+	h.recoverTimer = time.AfterFunc(delay, func() {
+		h.recoverMu.Lock()
+		h.recoverPending = false
+		h.recoverTimer = nil
+		h.recoverMu.Unlock()
+		h.mu.RLock()
+		run := h.recoverRunner
+		h.mu.RUnlock()
+		if run == nil {
+			run = func(ctx context.Context) error { return h.Recover(ctx) }
+		}
+		_ = run(context.Background())
+	})
+	h.recoverMu.Unlock()
 }
 
 func (h *Host) DeviceRemoved() {
+	h.transitionMu.Lock()
+	defer h.transitionMu.Unlock()
 	h.mu.Lock()
 	if h.state == Disabled && !h.desired {
 		h.mu.Unlock()
@@ -195,14 +276,29 @@ func (h *Host) DeviceReady() {
 	h.mu.RUnlock()
 	if state == Recovering && desired {
 		h.publish()
-		go func() { _ = h.Reconnect(context.Background()) }()
+		h.TriggerRecovery()
 	}
 }
 
+// fail is the single cleanup path for failed transitions: it cancels the
+// stored child context, closes any opened port, and clears the tracked state
+// before publishing Failed, so repeated failed enables cannot leak modem ports
+// or event consumers.
 func (h *Host) fail(err error) error {
 	h.mu.Lock()
+	cancel := h.cancel
+	port := h.port
+	h.cancel = nil
+	h.port = nil
+	h.ready = false
 	h.state = Failed
 	h.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if port != nil {
+		_ = port.Disable(context.Background())
+	}
 	h.publish()
 	return err
 }
@@ -222,7 +318,7 @@ func (h *Host) consumeEvents(ctx context.Context, events <-chan Event) {
 			case "device.removed":
 				h.DeviceRemoved()
 			case "command.expired", "modem.reset", "sim.changed", "network.changed":
-				go func() { _ = h.Recover(context.Background()) }()
+				h.TriggerRecovery()
 			}
 		}
 	}

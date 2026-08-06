@@ -103,7 +103,7 @@ func newService(t *testing.T, bus *runtime.EventBus, calls []CallEvent, sms []SM
 	if err := service.Start(context.Background()); err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	t.Cleanup(service.Stop)
+	t.Cleanup(func() { _ = service.Stop(context.Background()) })
 	return service, sink
 }
 
@@ -320,6 +320,7 @@ func TestValidateCommand(t *testing.T) {
 	valid := []Command{
 		{Name: CommandRejectCall, Params: map[string]string{"call_id": "call-1"}},
 		{Name: CommandOpenDashboard},
+		{Name: CommandLog, Params: map[string]string{"level": "debug", "message": "trace"}},
 	}
 	for _, command := range valid {
 		if err := ValidateCommand(command); err != nil {
@@ -329,6 +330,9 @@ func TestValidateCommand(t *testing.T) {
 	invalid := []Command{
 		{Name: CommandRejectCall},
 		{Name: CommandRejectCall, Params: map[string]string{"call_id": ""}},
+		{Name: CommandLog},
+		{Name: CommandLog, Params: map[string]string{"level": "verbose", "message": "trace"}},
+		{Name: CommandLog, Params: map[string]string{"level": "info"}},
 		{Name: "unknown"},
 	}
 	for _, command := range invalid {
@@ -340,8 +344,8 @@ func TestValidateCommand(t *testing.T) {
 
 func TestStopWithoutStartIsSafe(t *testing.T) {
 	service := New(Config{})
-	service.Stop()
-	service.Stop()
+	_ = service.Stop(context.Background())
+	_ = service.Stop(context.Background())
 }
 
 func TestStartAndStopRepeatedly(t *testing.T) {
@@ -352,10 +356,295 @@ func TestStartAndStopRepeatedly(t *testing.T) {
 		if err := service.Start(context.Background()); err != nil {
 			t.Fatalf("start %d: %v", i, err)
 		}
-		service.Stop()
+		_ = service.Stop(context.Background())
 	}
 	if err := service.Start(context.Background()); err != nil {
 		t.Fatalf("final start: %v", err)
 	}
-	service.Stop()
+	_ = service.Stop(context.Background())
+}
+
+// gatedSink blocks every Sink call until release is closed, mimicking a
+// stalled native bridge.
+type gatedSink struct {
+	recordingSink
+	release  chan struct{}
+	once     sync.Once
+	first    chan struct{}
+	firstRun sync.Once
+}
+
+func (s *gatedSink) gate() {
+	s.firstRun.Do(func() { close(s.first) })
+	s.once.Do(func() { <-s.release })
+}
+
+func (s *gatedSink) UpdateDeviceStatus(snapshot device.Snapshot) {
+	s.gate()
+	s.recordingSink.UpdateDeviceStatus(snapshot)
+}
+func (s *gatedSink) ShowCall(call CallEvent) {
+	s.gate()
+	s.recordingSink.ShowCall(call)
+}
+func (s *gatedSink) UpdateCall(call CallEvent) {
+	s.gate()
+	s.recordingSink.UpdateCall(call)
+}
+func (s *gatedSink) ShowMissedCall(call CallEvent) {
+	s.gate()
+	s.recordingSink.ShowMissedCall(call)
+}
+func (s *gatedSink) ShowSMS(message SMSMessageEvent) {
+	s.gate()
+	s.recordingSink.ShowSMS(message)
+}
+func (s *gatedSink) ShowOffline(event DeviceOfflineEvent) {
+	s.gate()
+	s.recordingSink.ShowOffline(event)
+}
+func (s *gatedSink) HideCall(call CallEvent) {
+	s.gate()
+	s.recordingSink.HideCall(call)
+}
+func (s *gatedSink) UpdateNetwork(state NetworkUpdateEvent) {
+	s.gate()
+	s.recordingSink.UpdateNetwork(state)
+}
+
+// mutableCallTruth is a state source whose call and SMS truth can change
+// after the service has been started, for reconciliation tests. It starts
+// empty so the startup baseline does not suppress later re-issued prompts.
+type mutableCallTruth struct {
+	mu     sync.Mutex
+	active *CallEvent
+	missed []CallEvent
+	sms    []SMSMessageEvent
+}
+
+func (t *mutableCallTruth) setActive(call *CallEvent) {
+	t.mu.Lock()
+	t.active = call
+	t.mu.Unlock()
+}
+
+func (t *mutableCallTruth) setMissed(calls []CallEvent, sms []SMSMessageEvent) {
+	t.mu.Lock()
+	t.missed = calls
+	t.sms = sms
+	t.mu.Unlock()
+}
+
+func (t *mutableCallTruth) snapshot(context.Context) ([]CallEvent, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	out := make([]CallEvent, 0, len(t.missed)+1)
+	if t.active != nil {
+		out = append(out, *t.active)
+	}
+	return append(out, t.missed...), nil
+}
+
+func (t *mutableCallTruth) smsSnapshot(context.Context) ([]SMSMessageEvent, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return append([]SMSMessageEvent(nil), t.sms...), nil
+}
+
+// stopWithTimeout bounds the deferred Stop so a failed assertion cannot hang
+// the test process on a still-gated sink.
+func stopWithTimeout(service *Service) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_ = service.Stop(ctx)
+}
+
+// floodSinkQueue publishes network events at a pace the consumer can keep up
+// with, so the sink queue (not the bus) overflows deterministically; the
+// delivery goroutine is stuck in the gated sink, so every enqueue beyond the
+// queue capacity is counted as a sink drop.
+func floodSinkQueue(t *testing.T, bus *runtime.EventBus, service *Service) {
+	t.Helper()
+	for i := 0; i < 2000 && service.SinkDrops() == 0; i++ {
+		bus.Publish(EventNetworkUpdated, NetworkUpdateEvent{Registered: true})
+		time.Sleep(time.Millisecond)
+	}
+	if service.SinkDrops() == 0 {
+		t.Fatal("sink queue must have dropped prompts while the sink was gated")
+	}
+}
+
+// publishUntilRecovered publishes recovery events and polls the sink until
+// the predicate holds. Each successful enqueue after counted drops triggers
+// reconciliation, so the loop converges once the queue drains; the final
+// enqueue racing a still-full queue cannot stall the assertion.
+func publishUntilRecovered(t *testing.T, bus *runtime.EventBus, sink *recordingSink, predicate func(state sinkState) bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		bus.Publish(EventNetworkUpdated, NetworkUpdateEvent{Registered: true})
+		state := sinkState{}
+		state.shown, state.updated, state.missed, state.messages, state.offline, state.network, state.hidden = sink.snapshot()
+		if predicate(state) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("condition not met within 2s: %+v", state)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+// TestSlowSinkDoesNotBlockEventConsumption: with the sink gated, the consumer
+// keeps processing events, the sink queue counts drops, and the dropped
+// prompts are re-issued after recovery (reconciliation).
+func TestSlowSinkDoesNotBlockEventConsumption(t *testing.T) {
+	bus := runtime.NewEventBus()
+	truth := &mutableCallTruth{}
+	sink := &gatedSink{release: make(chan struct{}), first: make(chan struct{})}
+	service := New(Config{
+		Events: bus,
+		Calls:  truth.snapshot,
+		SMS: func(context.Context) ([]SMSMessageEvent, error) {
+			return nil, nil
+		},
+		Sink: sink,
+	})
+	if err := service.Start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer stopWithTimeout(service)
+
+	ringing := callEvent("call-1", "incoming")
+	truth.setActive(&ringing)
+	bus.Publish(EventCallIncoming, ringing)
+
+	// The first sink call blocks in the gate; flood the bus so the queue
+	// overflows while the consumer keeps processing events.
+	floodSinkQueue(t, bus, service)
+
+	// The call ends while the bridge is down: the hide prompt is dropped, so
+	// recovery must re-derive the truth (no active call) and close the card.
+	truth.setActive(nil)
+	close(sink.release)
+	publishUntilRecovered(t, bus, &sink.recordingSink, func(state sinkState) bool { return state.hidden >= 1 })
+}
+
+// TestReconciliationReissuesMissedCallAndSMSPromptsAfterRecovery: prompts
+// dropped while the sink was gated are re-issued from the application truth
+// once delivery recovers.
+func TestReconciliationReissuesMissedCallAndSMSPromptsAfterRecovery(t *testing.T) {
+	bus := runtime.NewEventBus()
+	truth := &mutableCallTruth{}
+	missed := CallEvent{ID: "call-missed", Direction: "incoming", State: "active", Number: "18900007376", Missed: true, StartedAt: time.Date(2026, 8, 2, 10, 0, 0, 0, time.UTC), NotificationEligible: true}
+	ended := missed
+	now := time.Now()
+	ended.EndedAt = &now
+	smsTruth := []SMSMessageEvent{smsEvent("10086", "reconciled message", 42)}
+	sink := &gatedSink{release: make(chan struct{}), first: make(chan struct{})}
+	service := New(Config{
+		Events: bus,
+		Calls:  truth.snapshot,
+		SMS:    truth.smsSnapshot,
+		Sink:   sink,
+	})
+	if err := service.Start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer stopWithTimeout(service)
+
+	// Flood the queue first so the sink is gated and full: the missed-call
+	// and SMS prompts enqueued afterwards are dropped without being marked as
+	// notified.
+	floodSinkQueue(t, bus, service)
+	bus.Publish(EventCallMissed, ended)
+	bus.Publish(EventSMSReceived, smsTruth[0])
+	time.Sleep(20 * time.Millisecond)
+
+	// The services have since recorded the missed call and the SMS; after
+	// recovery the prompts dropped from the sink queue must be re-issued
+	// from that truth.
+	truth.setMissed([]CallEvent{missed, ended}, smsTruth)
+	close(sink.release)
+	publishUntilRecovered(t, bus, &sink.recordingSink, func(state sinkState) bool {
+		if len(state.missed) == 0 || state.missed[0].ID != "call-missed" {
+			return false
+		}
+		if len(state.messages) == 0 || state.messages[0].Body != "reconciled message" {
+			return false
+		}
+		return true
+	})
+}
+
+// TestReconciliationHonorsCallNotificationEligibility covers the state-based
+// recovery path that bypasses EventBus deduplication. Startup leftovers remain
+// visible in call history, but they must never be forwarded to the native UI.
+func TestReconciliationHonorsCallNotificationEligibility(t *testing.T) {
+	bus := runtime.NewEventBus()
+	truth := &mutableCallTruth{}
+	sink := &recordingSink{}
+	service := New(Config{Events: bus, Calls: truth.snapshot, Sink: sink})
+	if err := service.Start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer stopWithTimeout(service)
+
+	startedAt := time.Date(2026, 8, 6, 10, 0, 0, 0, time.UTC)
+	leftover := CallEvent{ID: "startup-leftover", Direction: "incoming", State: "incoming", StartedAt: startedAt}
+	missedLeftover := CallEvent{ID: "startup-missed", Direction: "incoming", State: "incoming", StartedAt: startedAt, Missed: true}
+	endedAt := startedAt.Add(time.Minute)
+	missedLeftover.EndedAt = &endedAt
+	truth.setActive(&leftover)
+	truth.setMissed([]CallEvent{missedLeftover}, nil)
+
+	service.reconcileCalls()
+	time.Sleep(20 * time.Millisecond)
+	shown, updated, missed, _, _, _, _ := sink.snapshot()
+	if len(shown) != 0 || len(updated) != 0 || len(missed) != 0 {
+		t.Fatalf("ineligible startup calls reached sink: shown=%v updated=%v missed=%v", shown, updated, missed)
+	}
+
+	leftover.NotificationEligible = true
+	missedLeftover.NotificationEligible = true
+	truth.setActive(&leftover)
+	truth.setMissed([]CallEvent{missedLeftover}, nil)
+	service.reconcileCalls()
+	waitFor(t, sink, func(state sinkState) bool {
+		return len(state.shown) == 1 && state.shown[0].ID == leftover.ID &&
+			len(state.missed) == 1 && state.missed[0].ID == missedLeftover.ID
+	})
+}
+
+// TestStopAbortsQueuedSinkCallsOnDeadline: a gated sink past the stop
+// deadline aborts the queued prompts and Stop still joins the delivery
+// goroutine before returning.
+func TestStopAbortsQueuedSinkCallsOnDeadline(t *testing.T) {
+	bus := runtime.NewEventBus()
+	sink := &gatedSink{release: make(chan struct{}), first: make(chan struct{})}
+	service := New(Config{Events: bus, Sink: sink})
+	if err := service.Start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	bus.Publish(EventCallIncoming, callEvent("call-1", "incoming"))
+	bus.Publish(EventNetworkUpdated, NetworkUpdateEvent{Registered: true})
+	// Wait until the delivery goroutine is inside the gated sink call, so the
+	// deadline abort path is exercised deterministically.
+	select {
+	case <-sink.first:
+	case <-time.After(2 * time.Second):
+		t.Fatal("delivery goroutine never reached the gated sink")
+	}
+
+	stopCtx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := service.Stop(stopCtx); err == nil {
+		t.Fatal("Stop must report the deadline error with a gated sink")
+	}
+	// The delivery goroutine is joined: no sink call may run after Stop.
+	select {
+	case <-sink.release:
+		t.Fatal("release must never be consumed by a stopped service")
+	default:
+	}
 }

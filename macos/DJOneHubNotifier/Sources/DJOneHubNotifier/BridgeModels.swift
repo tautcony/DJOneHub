@@ -99,6 +99,14 @@ struct RejectResult: Codable, Equatable, Sendable {
     }
 }
 
+// CommandDropped reports a Swift-to-Go command that could not be enqueued.
+// The UI uses it to recover the pending action (e.g. restoring the reject
+// buttons) instead of remaining stuck.
+struct CommandDropped: Codable, Equatable, Sendable {
+    let command: String
+    let reason: String?
+}
+
 struct DashboardOpened: Codable, Equatable, Sendable {
     let url: String
 }
@@ -132,6 +140,16 @@ struct Command: Codable, Equatable, Sendable {
     static let rejectCall = "reject_call"
     static let openDashboard = "open_dashboard"
     static let notificationPermissionStatus = "notification_permission_status"
+    static let log = "log"
+}
+
+// Native log levels for the internal log command; mirror the Go constants in
+// internal/application/notification/model.go.
+enum NativeLogLevel {
+    static let debug = "debug"
+    static let info = "info"
+    static let warn = "warn"
+    static let error = "error"
 }
 
 enum BridgeEventType {
@@ -147,6 +165,7 @@ enum BridgeEventType {
     static let callRejectStarted = "call.reject.started"
     static let callRejectSucceeded = "call.reject.succeeded"
     static let callRejectFailed = "call.reject.failed"
+    static let commandDropped = "command.dropped"
     static let dashboardOpened = "dashboard.opened"
     static let notificationPermissionRequest = "notification.permission.request"
     static let notificationPermissionOpenSettings = "notification.permission.open_settings"

@@ -38,7 +38,28 @@ const (
 	// CommandNotificationPermissionStatus is an internal status update sent
 	// from Swift to Go. It is not a user action and is consumed by the bridge.
 	CommandNotificationPermissionStatus = "notification_permission_status"
+	// CommandLog carries UI-layer trace lines back to Go so they land in the
+	// same structured log pipeline as Go-side output instead of NSLog. It is
+	// not a user action and is consumed by the bridge.
+	CommandLog = "log"
 )
+
+// Native log levels accepted by the internal log command.
+const (
+	NativeLogLevelDebug = "debug"
+	NativeLogLevelInfo  = "info"
+	NativeLogLevelWarn  = "warn"
+	NativeLogLevelError = "error"
+)
+
+// ValidNativeLogLevel reports whether level is one of the native log levels.
+func ValidNativeLogLevel(level string) bool {
+	switch level {
+	case NativeLogLevelDebug, NativeLogLevelInfo, NativeLogLevelWarn, NativeLogLevelError:
+		return true
+	}
+	return false
+}
 
 // Notification permission states mirror UNAuthorizationStatus without
 // exposing UserNotifications types outside the macOS layer.
@@ -137,6 +158,10 @@ const (
 	EventNotificationPermissionRequest      = "notification.permission.request"
 	EventNotificationPermissionOpenSettings = "notification.permission.open_settings"
 	EventNotificationPreferencesUpdated     = "notification.preferences.updated"
+	// EventCommandDropped is published when a Swift-to-Go command could not be
+	// enqueued; it names the command and the reason so the UI can recover the
+	// pending user action instead of remaining stuck.
+	EventCommandDropped = "command.dropped"
 )
 
 // Debug actions are deliberately finite. They exercise the same EventBus
@@ -200,6 +225,10 @@ type CallEvent struct {
 	StartedAt time.Time  `json:"started_at"`
 	EndedAt   *time.Time `json:"ended_at,omitempty"`
 	Missed    bool       `json:"missed"`
+	// NotificationEligible is internal reconciliation policy state. EventBus
+	// call events are already authoritative; only state-based recovery checks
+	// this field. It must never cross the native bridge contract.
+	NotificationEligible bool `json:"-"`
 }
 
 // SMSMessageEvent is the payload of sms.received. DedupKey() follows the
@@ -272,4 +301,14 @@ type RejectResult struct {
 // DashboardOpened is the payload of dashboard.opened.
 type DashboardOpened struct {
 	URL string `json:"url"`
+}
+
+// CommandDropped is the payload of command.dropped: a Swift-to-Go command that
+// could not be enqueued. Reason is a short machine-readable cause such as
+// "queue_full". Go never emits a started/succeeded result for a dropped
+// command, so this feedback is the only way the UI learns the action failed to
+// leave the device.
+type CommandDropped struct {
+	Command string `json:"command"`
+	Reason  string `json:"reason"`
 }

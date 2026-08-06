@@ -339,7 +339,7 @@ func TestMultipartReassemblesAcrossRefreshCycles(t *testing.T) {
 func TestConsumerUnregistersOnStop(t *testing.T) {
 	backendInstance := &consumerTestBackend{iccid: "8901000000000000000"}
 	service, _ := newConsumerTestService(t, backendInstance)
-	service.Stop()
+	_ = service.Stop(context.Background())
 	backendInstance.mu.Lock()
 	handler := backendInstance.handler
 	backendInstance.mu.Unlock()

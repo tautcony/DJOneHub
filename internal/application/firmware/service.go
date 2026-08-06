@@ -266,7 +266,7 @@ func (s *Service) StartUnlock(ctx context.Context) (string, error) {
 	}
 	return s.ops.Start(ctx, "firmware.adb_unlock", func(ctx context.Context, report func(int, string)) error {
 		return s.unlock(ctx, report)
-	}), nil
+	})
 }
 
 func (s *Service) StartADBMode(ctx context.Context, enabled bool) (string, error) {
@@ -296,7 +296,7 @@ func (s *Service) StartADBMode(ctx context.Context, enabled bool) (string, error
 		}
 		report(100, label)
 		return nil
-	}), nil
+	})
 }
 
 func (s *Service) StartEnterEDL(ctx context.Context, serial string) (string, error) {
@@ -318,7 +318,7 @@ func (s *Service) StartEnterEDL(ctx context.Context, serial string) (string, err
 		}
 		report(100, "EDL reboot requested")
 		return nil
-	}), nil
+	})
 }
 
 func (s *Service) OpenADBShell(serial string) (io.ReadWriteCloser, error) {
@@ -386,12 +386,16 @@ func (s *Service) StartBackup(ctx context.Context, request BackupRequest) (strin
 	}
 	var operationID string
 	ready := make(chan struct{})
-	operationID = s.ops.Start(ctx, "firmware.backup", func(ctx context.Context, report func(int, string)) error {
+	var startErr error
+	operationID, startErr = s.ops.Start(ctx, "firmware.backup", func(ctx context.Context, report func(int, string)) error {
 		<-ready
 		return s.backup(ctx, output, loader, invocation, report, func(message string) {
 			s.ops.Log(operationID, message)
 		})
 	})
+	if startErr != nil {
+		return "", startErr
+	}
 	close(ready)
 	return operationID, nil
 }
@@ -562,7 +566,7 @@ func (s *Service) StartUSBID(ctx context.Context, request USBIDRequest) (string,
 		}
 		report(100, "USB ID updated; reconnect required")
 		return nil
-	}), nil
+	})
 }
 
 type usbConfig struct {

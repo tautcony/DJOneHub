@@ -26,7 +26,7 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
-func newTestManagerWithOverviewLoader(loader func() (*EsimOverview, error)) *Manager {
+func newTestManagerWithOverviewLoader(loader func(context.Context) (*EsimOverview, error)) *Manager {
 	return &Manager{
 		deviceID:       "dev-esim",
 		sf:             &singleflight.Group{},
@@ -372,7 +372,7 @@ func TestGetEIDsScansHardwareEvenWhenSeededDiscoveryExists(t *testing.T) {
 		Spec:   EUICCSpecSGP22,
 	}})
 
-	eids, err := mgr.GetEIDs()
+	eids, err := mgr.GetEIDs(context.Background())
 	if err != nil {
 		t.Fatalf("GetEIDs() error=%v", err)
 	}
@@ -401,7 +401,7 @@ func TestGetEsimOverviewSeedsDiscoveredEIDForLaterGetEIDs(t *testing.T) {
 	}, nil, nil, nil)
 	mgr.closeClient = func(client *lpa.Client) error { return nil }
 
-	overview, err := mgr.GetEsimOverview()
+	overview, err := mgr.GetEsimOverview(context.Background())
 	if err != nil {
 		t.Fatalf("GetEsimOverview() error=%v", err)
 	}
@@ -410,7 +410,7 @@ func TestGetEsimOverviewSeedsDiscoveredEIDForLaterGetEIDs(t *testing.T) {
 	}
 	callsAfterOverview := factoryCalls.Load()
 
-	eids, err := mgr.GetEIDs()
+	eids, err := mgr.GetEIDs(context.Background())
 	if err != nil {
 		t.Fatalf("GetEIDs() after overview error=%v", err)
 	}
@@ -442,7 +442,7 @@ func TestForEachEUICCAlwaysUsesFullStaticScan(t *testing.T) {
 	mgr.closeClient = func(client *lpa.Client) error { return nil }
 
 	var callbackAID string
-	err := mgr.forEachEUICC(func(client *lpa.Client, aid []byte, eidStr string) error {
+	err := mgr.forEachEUICC(context.Background(), func(client *lpa.Client, aid []byte, eidStr string) error {
 		callbackAID = strings.ToUpper(hex.EncodeToString(aid))
 		return nil
 	})
@@ -463,7 +463,7 @@ func TestForEachEUICCAlwaysUsesFullStaticScan(t *testing.T) {
 
 	seenAttempts = nil
 	callbackAID = ""
-	err = mgr.forEachEUICC(func(client *lpa.Client, aid []byte, eidStr string) error {
+	err = mgr.forEachEUICC(context.Background(), func(client *lpa.Client, aid []byte, eidStr string) error {
 		callbackAID = strings.ToUpper(hex.EncodeToString(aid))
 		return nil
 	})
@@ -494,7 +494,7 @@ func TestDoForEachEUICCScansPastThreeFailuresAndStopsAtFirstUsableVendorAID(t *t
 	mgr.closeClient = func(client *lpa.Client) error { return nil }
 
 	var callbackAID string
-	found, err := mgr.doForEachEUICC(AIDs, func(client *lpa.Client, aid []byte, eidStr string) error {
+	found, err := mgr.doForEachEUICC(context.Background(), AIDs, func(client *lpa.Client, aid []byte, eidStr string) error {
 		callbackAID = strings.ToUpper(hex.EncodeToString(aid))
 		return nil
 	})
@@ -534,7 +534,7 @@ func TestDoForEachEUICCRecoversFromCallbackPanic(t *testing.T) {
 	}, nil, nil, nil)
 	mgr.closeClient = func(client *lpa.Client) error { return nil }
 
-	found, err := mgr.doForEachEUICC(AIDs, func(client *lpa.Client, aid []byte, eidStr string) error {
+	found, err := mgr.doForEachEUICC(context.Background(), AIDs, func(client *lpa.Client, aid []byte, eidStr string) error {
 		var nilTLV *bertlv.TLV
 		return nilTLV.UnmarshalValue(nil) // panics: nil pointer dereference, mirrors the upstream euicc-go bug
 	})
@@ -569,7 +569,7 @@ func TestDoForEachEUICCContinuesESTKPairThenStopsBeforeGSMA(t *testing.T) {
 	}, nil, nil, nil)
 	mgr.closeClient = func(client *lpa.Client) error { return nil }
 
-	found, err := mgr.doForEachEUICC(AIDs, func(client *lpa.Client, aid []byte, eidStr string) error {
+	found, err := mgr.doForEachEUICC(context.Background(), AIDs, func(client *lpa.Client, aid []byte, eidStr string) error {
 		return nil
 	})
 
@@ -972,7 +972,7 @@ func TestSwitchProfileCustomAPDUErrorFailsWithoutConfirmationRead(t *testing.T) 
 		}
 		return &lpa.Client{APDU: transmitter}, nil
 	}, nil, nil, nil)
-	mgr.profilesLoader = func() ([]EUICCProfiles, error) {
+	mgr.profilesLoader = func(context.Context) ([]EUICCProfiles, error) {
 		if !mgr.opMu.TryLock() {
 			return nil, ErrOperationInProgress
 		}
@@ -1262,7 +1262,7 @@ func TestNewManagerWithoutAPDUArbiterLeavesReadIdleWaitDisabled(t *testing.T) {
 	if mgr.apduArbiter != nil {
 		t.Fatalf("apduArbiter=%#v, want nil", mgr.apduArbiter)
 	}
-	if err := mgr.waitForAPDUIdleForRead(); err != nil {
+	if err := mgr.waitForAPDUIdleForRead(context.Background()); err != nil {
 		t.Fatalf("waitForAPDUIdleForRead() error = %v, want nil", err)
 	}
 }
@@ -1351,7 +1351,7 @@ func TestSwitchProfileSkipsAlreadyActiveProfile(t *testing.T) {
 
 func TestGetEsimOverviewCachesSuccessfulLoad(t *testing.T) {
 	var calls atomic.Int32
-	mgr := newTestManagerWithOverviewLoader(func() (*EsimOverview, error) {
+	mgr := newTestManagerWithOverviewLoader(func(context.Context) (*EsimOverview, error) {
 		calls.Add(1)
 		return &EsimOverview{
 			ChipInfo: &EUICCChipInfo{SkuName: "cached-chip"},
@@ -1359,14 +1359,14 @@ func TestGetEsimOverviewCachesSuccessfulLoad(t *testing.T) {
 		}, nil
 	})
 
-	got1, err := mgr.GetEsimOverview()
+	got1, err := mgr.GetEsimOverview(context.Background())
 	if err != nil {
 		t.Fatalf("GetEsimOverview() first call error = %v", err)
 	}
 	got1.ChipInfo.SkuName = "mutated"
 	got1.Profiles[0].Profiles[0].Name = "mutated"
 
-	got2, err := mgr.GetEsimOverview()
+	got2, err := mgr.GetEsimOverview(context.Background())
 	if err != nil {
 		t.Fatalf("GetEsimOverview() second call error = %v", err)
 	}
@@ -1392,7 +1392,7 @@ func TestGetProfilesUsesCachedOverview(t *testing.T) {
 			Name:  "profile-1",
 		}},
 	}}
-	mgr := newTestManagerWithOverviewLoader(func() (*EsimOverview, error) {
+	mgr := newTestManagerWithOverviewLoader(func(context.Context) (*EsimOverview, error) {
 		calls.Add(1)
 		return &EsimOverview{
 			ChipInfo: &EUICCChipInfo{SkuName: "chip"},
@@ -1400,11 +1400,11 @@ func TestGetProfilesUsesCachedOverview(t *testing.T) {
 		}, nil
 	})
 
-	if _, err := mgr.GetEsimOverview(); err != nil {
+	if _, err := mgr.GetEsimOverview(context.Background()); err != nil {
 		t.Fatalf("GetEsimOverview() error = %v", err)
 	}
 
-	got, err := mgr.GetProfiles()
+	got, err := mgr.GetProfiles(context.Background())
 	if err != nil {
 		t.Fatalf("GetProfiles() error = %v", err)
 	}
@@ -1419,7 +1419,7 @@ func TestGetProfilesUsesCachedOverview(t *testing.T) {
 func TestInvalidateOverviewCacheDropsStaleData(t *testing.T) {
 	reloadErr := errors.New("reload failed")
 	var calls atomic.Int32
-	mgr := newTestManagerWithOverviewLoader(func() (*EsimOverview, error) {
+	mgr := newTestManagerWithOverviewLoader(func(context.Context) (*EsimOverview, error) {
 		if calls.Add(1) == 1 {
 			return &EsimOverview{
 				ChipInfo: &EUICCChipInfo{SkuName: "before"},
@@ -1429,13 +1429,13 @@ func TestInvalidateOverviewCacheDropsStaleData(t *testing.T) {
 		return nil, reloadErr
 	})
 
-	if _, err := mgr.GetEsimOverview(); err != nil {
+	if _, err := mgr.GetEsimOverview(context.Background()); err != nil {
 		t.Fatalf("GetEsimOverview() initial load error = %v", err)
 	}
 
 	mgr.invalidateOverviewCache("test")
 
-	if _, err := mgr.GetProfiles(); !errors.Is(err, reloadErr) {
+	if _, err := mgr.GetProfiles(context.Background()); !errors.Is(err, reloadErr) {
 		t.Fatalf("GetProfiles() error = %v, want %v after invalidation", err, reloadErr)
 	}
 	if calls.Load() != 2 {
@@ -1446,7 +1446,7 @@ func TestInvalidateOverviewCacheDropsStaleData(t *testing.T) {
 func TestNotifyModemResetClearsOverviewAndDiscoveredEUICCs(t *testing.T) {
 	reloadErr := errors.New("reload after reset failed")
 	var calls atomic.Int32
-	mgr := newTestManagerWithOverviewLoader(func() (*EsimOverview, error) {
+	mgr := newTestManagerWithOverviewLoader(func(context.Context) (*EsimOverview, error) {
 		if calls.Add(1) == 1 {
 			return &EsimOverview{
 				ChipInfo: &EUICCChipInfo{SkuName: "before-reset"},
@@ -1458,7 +1458,7 @@ func TestNotifyModemResetClearsOverviewAndDiscoveredEUICCs(t *testing.T) {
 	mgr.discoveredEUICCs = []EUICCInfo{{AIDHex: "0102", EID: "eid-before-reset", Spec: EUICCSpecSGP22}}
 	mgr.chipInfoCache = &EUICCChipInfo{SkuName: "before-reset"}
 
-	if _, err := mgr.GetEsimOverview(); err != nil {
+	if _, err := mgr.GetEsimOverview(context.Background()); err != nil {
 		t.Fatalf("GetEsimOverview() initial load error = %v", err)
 	}
 
@@ -1470,14 +1470,14 @@ func TestNotifyModemResetClearsOverviewAndDiscoveredEUICCs(t *testing.T) {
 	if len(mgr.discoveredEUICCs) != 0 {
 		t.Fatalf("NotifyModemReset() discoveredEUICCs = %v, want empty", mgr.discoveredEUICCs)
 	}
-	if _, err := mgr.GetEsimOverview(); !errors.Is(err, reloadErr) {
+	if _, err := mgr.GetEsimOverview(context.Background()); !errors.Is(err, reloadErr) {
 		t.Fatalf("GetEsimOverview() error = %v, want %v after reset", err, reloadErr)
 	}
 }
 
 func TestNotifyModemResetDelayedClearsCacheImmediatelyAndReloadsAfterDelay(t *testing.T) {
 	loaded := make(chan struct{}, 1)
-	mgr := newTestManagerWithOverviewLoader(func() (*EsimOverview, error) {
+	mgr := newTestManagerWithOverviewLoader(func(context.Context) (*EsimOverview, error) {
 		loaded <- struct{}{}
 		return &EsimOverview{ChipInfo: &EUICCChipInfo{SkuName: "reloaded"}}, nil
 	})
@@ -1511,7 +1511,7 @@ func TestNotifyModemResetDelayedClearsCacheImmediatelyAndReloadsAfterDelay(t *te
 
 func TestNotifyModemResetDelayedSkipsReloadDuringSwitchSuppressionWindow(t *testing.T) {
 	var calls atomic.Int32
-	mgr := newTestManagerWithOverviewLoader(func() (*EsimOverview, error) {
+	mgr := newTestManagerWithOverviewLoader(func(context.Context) (*EsimOverview, error) {
 		calls.Add(1)
 		return &EsimOverview{ChipInfo: &EUICCChipInfo{SkuName: "reloaded"}}, nil
 	})
@@ -1542,7 +1542,7 @@ func TestNotifyModemResetDelayedSkipsReloadDuringSwitchSuppressionWindow(t *test
 
 func TestWarmOverviewAsyncLoadsInBackground(t *testing.T) {
 	loaded := make(chan struct{}, 1)
-	mgr := newTestManagerWithOverviewLoader(func() (*EsimOverview, error) {
+	mgr := newTestManagerWithOverviewLoader(func(context.Context) (*EsimOverview, error) {
 		loaded <- struct{}{}
 		return &EsimOverview{ChipInfo: &EUICCChipInfo{SkuName: "warm"}}, nil
 	})
@@ -1555,14 +1555,14 @@ func TestWarmOverviewAsyncLoadsInBackground(t *testing.T) {
 		t.Fatal("WarmOverviewAsync() did not trigger background load")
 	}
 
-	if _, err := mgr.GetEsimOverview(); err != nil {
+	if _, err := mgr.GetEsimOverview(context.Background()); err != nil {
 		t.Fatalf("GetEsimOverview() after warm load error = %v", err)
 	}
 }
 
 func TestWarmOverviewAsyncWaitsForReloadSuppressionWindow(t *testing.T) {
 	loaded := make(chan struct{}, 1)
-	mgr := newTestManagerWithOverviewLoader(func() (*EsimOverview, error) {
+	mgr := newTestManagerWithOverviewLoader(func(context.Context) (*EsimOverview, error) {
 		loaded <- struct{}{}
 		return &EsimOverview{ChipInfo: &EUICCChipInfo{SkuName: "warm"}}, nil
 	})
@@ -1584,7 +1584,7 @@ func TestWarmOverviewAsyncWaitsForReloadSuppressionWindow(t *testing.T) {
 
 func TestRefreshOverviewDuringDelayedBackgroundReloadUsesSingleLoad(t *testing.T) {
 	var calls atomic.Int32
-	mgr := newTestManagerWithOverviewLoader(func() (*EsimOverview, error) {
+	mgr := newTestManagerWithOverviewLoader(func(context.Context) (*EsimOverview, error) {
 		calls.Add(1)
 		return &EsimOverview{ChipInfo: &EUICCChipInfo{SkuName: "fresh"}}, nil
 	})
@@ -1592,7 +1592,7 @@ func TestRefreshOverviewDuringDelayedBackgroundReloadUsesSingleLoad(t *testing.T
 	mgr.suppressOverviewReloadUntil = time.Now().Add(80 * time.Millisecond)
 	mgr.WarmOverviewAsync("settle")
 
-	if err := mgr.RefreshOverview(); err != nil {
+	if err := mgr.RefreshOverview(context.Background()); err != nil {
 		t.Fatalf("RefreshOverview() error = %v", err)
 	}
 	time.Sleep(120 * time.Millisecond)
@@ -1605,7 +1605,7 @@ func TestRefreshOverviewDuringDelayedBackgroundReloadUsesSingleLoad(t *testing.T
 func TestInvalidateOverviewCacheDiscardsOlderReloadResult(t *testing.T) {
 	firstRelease := make(chan struct{})
 	started := make(chan struct{}, 1)
-	mgr := newTestManagerWithOverviewLoader(func() (*EsimOverview, error) {
+	mgr := newTestManagerWithOverviewLoader(func(context.Context) (*EsimOverview, error) {
 		started <- struct{}{}
 		<-firstRelease
 		return &EsimOverview{ChipInfo: &EUICCChipInfo{SkuName: "stale"}}, nil
@@ -1749,7 +1749,7 @@ func TestActiveProfileNameReturnsFirstEnabledProfileByTraversalOrder(t *testing.
 
 func TestActiveProfileNameDoesNotTriggerLoadWhenCacheMissing(t *testing.T) {
 	var calls atomic.Int32
-	mgr := newTestManagerWithOverviewLoader(func() (*EsimOverview, error) {
+	mgr := newTestManagerWithOverviewLoader(func(context.Context) (*EsimOverview, error) {
 		calls.Add(1)
 		return &EsimOverview{
 			Profiles: []EUICCProfiles{{
@@ -1774,7 +1774,7 @@ func TestActiveProfileNameDoesNotTriggerLoadWhenCacheMissing(t *testing.T) {
 
 func TestRefreshProfilesPreservesCachedChipInfo(t *testing.T) {
 	var profileLoads atomic.Int32
-	mgr := newTestManagerWithOverviewLoader(func() (*EsimOverview, error) {
+	mgr := newTestManagerWithOverviewLoader(func(context.Context) (*EsimOverview, error) {
 		return &EsimOverview{
 			ChipInfo: &EUICCChipInfo{SkuName: "chip-before", Firmware: "1.0.0"},
 			Profiles: []EUICCProfiles{{
@@ -1784,7 +1784,7 @@ func TestRefreshProfilesPreservesCachedChipInfo(t *testing.T) {
 			}},
 		}, nil
 	})
-	mgr.profilesLoader = func() ([]EUICCProfiles, error) {
+	mgr.profilesLoader = func(context.Context) ([]EUICCProfiles, error) {
 		profileLoads.Add(1)
 		return []EUICCProfiles{{
 			EID:      "eid-a",
@@ -1793,10 +1793,10 @@ func TestRefreshProfilesPreservesCachedChipInfo(t *testing.T) {
 		}}, nil
 	}
 
-	if _, err := mgr.GetEsimOverview(); err != nil {
+	if _, err := mgr.GetEsimOverview(context.Background()); err != nil {
 		t.Fatalf("GetEsimOverview() error = %v", err)
 	}
-	if err := mgr.RefreshProfiles(); err != nil {
+	if err := mgr.RefreshProfiles(context.Background()); err != nil {
 		t.Fatalf("RefreshProfiles() error = %v", err)
 	}
 
@@ -1827,7 +1827,7 @@ func TestRefreshOverviewReplacesChipInfoAndProfiles(t *testing.T) {
 	}
 	mgr.chipInfoCache = &EUICCChipInfo{SkuName: "before", Firmware: "1.0.0"}
 	mgr.discoveredEUICCs = []EUICCInfo{{AIDHex: "0102", EID: "eid-before-refresh", Spec: EUICCSpecSGP22}}
-	mgr.overviewLoader = func() (*EsimOverview, error) {
+	mgr.overviewLoader = func(context.Context) (*EsimOverview, error) {
 		return &EsimOverview{
 			ChipInfo: &EUICCChipInfo{
 				SkuName:  "after",
@@ -1842,7 +1842,7 @@ func TestRefreshOverviewReplacesChipInfoAndProfiles(t *testing.T) {
 		}, nil
 	}
 
-	if err := mgr.RefreshOverview(); err != nil {
+	if err := mgr.RefreshOverview(context.Background()); err != nil {
 		t.Fatalf("RefreshOverview() error = %v", err)
 	}
 
@@ -1868,7 +1868,7 @@ func TestRefreshOverviewPreventsInFlightStaleLoadFromOverwritingFreshSnapshot(t 
 	staleRelease := make(chan struct{})
 	staleStarted := make(chan struct{}, 1)
 	var calls atomic.Int32
-	mgr := newTestManagerWithOverviewLoader(func() (*EsimOverview, error) {
+	mgr := newTestManagerWithOverviewLoader(func(context.Context) (*EsimOverview, error) {
 		if calls.Add(1) == 1 {
 			staleStarted <- struct{}{}
 			<-staleRelease
@@ -1880,7 +1880,7 @@ func TestRefreshOverviewPreventsInFlightStaleLoadFromOverwritingFreshSnapshot(t 
 	loadDone := make(chan struct{})
 	go func() {
 		defer close(loadDone)
-		if _, err := mgr.loadOverview(); err != nil {
+		if _, err := mgr.loadOverview(context.Background()); err != nil {
 			t.Errorf("loadOverview() error = %v", err)
 		}
 	}()
@@ -1891,7 +1891,7 @@ func TestRefreshOverviewPreventsInFlightStaleLoadFromOverwritingFreshSnapshot(t 
 		t.Fatal("stale loadOverview() did not start")
 	}
 
-	if err := mgr.RefreshOverview(); err != nil {
+	if err := mgr.RefreshOverview(context.Background()); err != nil {
 		t.Fatalf("RefreshOverview() error = %v", err)
 	}
 
@@ -1912,7 +1912,7 @@ func TestRefreshOverviewClearsChipInfoCacheWhenRefreshHasNoChipInfo(t *testing.T
 	mgr := newTestManagerWithOverviewLoader(nil)
 	mgr.overviewCache = &EsimOverview{ChipInfo: &EUICCChipInfo{SkuName: "before"}}
 	mgr.chipInfoCache = &EUICCChipInfo{SkuName: "before"}
-	mgr.overviewLoader = func() (*EsimOverview, error) {
+	mgr.overviewLoader = func(context.Context) (*EsimOverview, error) {
 		return &EsimOverview{
 			ChipInfo: nil,
 			Profiles: []EUICCProfiles{{
@@ -1923,7 +1923,7 @@ func TestRefreshOverviewClearsChipInfoCacheWhenRefreshHasNoChipInfo(t *testing.T
 		}, nil
 	}
 
-	if err := mgr.RefreshOverview(); err != nil {
+	if err := mgr.RefreshOverview(context.Background()); err != nil {
 		t.Fatalf("RefreshOverview() error = %v", err)
 	}
 
@@ -1948,7 +1948,7 @@ func TestRefreshOverviewClearsEmptyChipInfoCacheBeforeReload(t *testing.T) {
 		EIDs: []EUICCInfo{{EID: "eid-old", AIDHex: "OLD"}},
 	}
 	var sawClearedCache bool
-	mgr.overviewLoader = func() (*EsimOverview, error) {
+	mgr.overviewLoader = func(context.Context) (*EsimOverview, error) {
 		mgr.cacheMu.RLock()
 		cached := mgr.chipInfoCache
 		mgr.cacheMu.RUnlock()
@@ -1958,7 +1958,7 @@ func TestRefreshOverviewClearsEmptyChipInfoCacheBeforeReload(t *testing.T) {
 		}, nil
 	}
 
-	if err := mgr.RefreshOverview(); err != nil {
+	if err := mgr.RefreshOverview(context.Background()); err != nil {
 		t.Fatalf("RefreshOverview() error = %v", err)
 	}
 
@@ -1969,7 +1969,7 @@ func TestRefreshOverviewClearsEmptyChipInfoCacheBeforeReload(t *testing.T) {
 
 func TestNotifyUIMIndicationSkipsReloadDuringSwitchSuppressionWindow(t *testing.T) {
 	var calls atomic.Int32
-	mgr := newTestManagerWithOverviewLoader(func() (*EsimOverview, error) {
+	mgr := newTestManagerWithOverviewLoader(func(context.Context) (*EsimOverview, error) {
 		calls.Add(1)
 		return &EsimOverview{ChipInfo: &EUICCChipInfo{SkuName: "reloaded"}}, nil
 	})
@@ -1991,7 +1991,7 @@ func TestNotifyUIMIndicationSkipsReloadDuringSwitchSuppressionWindow(t *testing.
 
 func TestNotifyModemResetSkipsReloadDuringSwitchSuppressionWindow(t *testing.T) {
 	var calls atomic.Int32
-	mgr := newTestManagerWithOverviewLoader(func() (*EsimOverview, error) {
+	mgr := newTestManagerWithOverviewLoader(func(context.Context) (*EsimOverview, error) {
 		calls.Add(1)
 		return &EsimOverview{ChipInfo: &EUICCChipInfo{SkuName: "reloaded"}}, nil
 	})
@@ -3179,7 +3179,7 @@ func TestDoForEachEUICCReattemptsAfterPartialFailure(t *testing.T) {
 	}, nil, nil, nil)
 	mgr.closeClient = func(client *lpa.Client) error { return nil }
 
-	foundAny, err := mgr.doForEachEUICC([][]byte{aid1, aid2}, func(client *lpa.Client, aid []byte, eidStr string) error {
+	foundAny, err := mgr.doForEachEUICC(context.Background(), [][]byte{aid1, aid2}, func(client *lpa.Client, aid []byte, eidStr string) error {
 		return nil
 	})
 
@@ -3192,7 +3192,7 @@ func TestDoForEachEUICCReattemptsAfterPartialFailure(t *testing.T) {
 	}
 
 	attempts = make(map[string]int)
-	foundAny2, _ := mgr.doForEachEUICC([][]byte{aid1, aid2}, func(client *lpa.Client, aid []byte, eidStr string) error {
+	foundAny2, _ := mgr.doForEachEUICC(context.Background(), [][]byte{aid1, aid2}, func(client *lpa.Client, aid []byte, eidStr string) error {
 		return nil
 	})
 	if !foundAny2 {

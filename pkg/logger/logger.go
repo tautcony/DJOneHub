@@ -267,6 +267,11 @@ func Setup(cfg LogConfig) {
 
 	core := &devicePrefixCore{Core: zapcore.NewTee(consoleCore, fileCore, sseCore)}
 
+	// Route the standard library log package through the same pipeline so
+	// legacy log.Printf call sites share this format instead of emitting raw
+	// stderr lines.
+	installStdLogRedirect(core)
+
 	log := zap.New(core, zap.AddCaller(), zap.AddCallerSkip(1))
 	sugar := log.Sugar()
 	logMu.Lock()
@@ -310,4 +315,11 @@ func RunWarn(msg string, args ...interface{}) {
 
 func Warn(msg string, args ...interface{}) {
 	SugarLogger().Warnw(msg, args...)
+}
+
+// Fatal logs at FatalLevel and exits the process with status 1, mirroring
+// log.Fatal so startup failures keep the same semantics as the old call
+// sites.
+func Fatal(msg string, args ...interface{}) {
+	SugarLogger().Fatalw(msg, args...)
 }

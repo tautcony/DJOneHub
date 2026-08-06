@@ -1,9 +1,6 @@
 package httpapi
 
 import (
-	"bufio"
-	"crypto/sha1"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +8,7 @@ import (
 	"log"
 	nethttp "net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -62,11 +60,22 @@ type Config struct {
 	// temporary boundary's Origin/Host checks; set via SetLoopbackPort before
 	// serving. The guard fails closed when it is unset.
 	LoopbackPort int
+	// Admission reports whether the application still admits new requests. It
+	// is closed before the HTTP server drains, so requests that arrive during
+	// shutdown are refused instead of starting new work. nil admits everything.
+	Admission func() bool
 }
 
-type Server struct{ config Config }
+type Server struct {
+	config Config
+	// keepalive is captured at construction so tests can shrink the WebSocket
+	// windows per server without racing handler goroutines.
+	keepalive websocketKeepalive
+}
 
-func NewServer(config Config) *Server { return &Server{config: config} }
+func NewServer(config Config) *Server {
+	return &Server{config: config, keepalive: websocketKeepalive{write: writeWait, pong: pongWait, ping: pingPeriod}}
+}
 
 // SetLoopbackPort records the bound loopback port used to validate Origin and
 // Host metadata on state-changing requests and WebSocket upgrades. It must be
@@ -125,7 +134,22 @@ func (s *Server) Handler() nethttp.Handler {
 	mux.HandleFunc("/api/v1/operations/", s.operationStatus)
 	mux.HandleFunc("/api/v1/openapi.json", s.openapi)
 	mux.HandleFunc("/api/v1/events/ws", s.websocket)
-	return logRequests(s.loopbackGuard(mux))
+	return logRequests(admissionGate(s.config.Admission, s.loopbackGuard(mux)))
+}
+
+// admissionGate refuses new requests once the shutdown admission gate is
+// closed, so an already-draining server cannot start new work.
+func admissionGate(admit func() bool, next nethttp.Handler) nethttp.Handler {
+	if admit == nil {
+		return next
+	}
+	return nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
+		if !admit() {
+			writeError(w, derrors.New(derrors.Unavailable, "the application is shutting down", false, nil))
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) protected(w nethttp.ResponseWriter, r *nethttp.Request) bool {
@@ -838,8 +862,9 @@ func (s *Server) notificationDebug(w nethttp.ResponseWriter, r *nethttp.Request)
 	switch r.Method {
 	case nethttp.MethodGet:
 		writeJSON(w, nethttp.StatusOK, map[string]any{
-			"native_ui": s.notificationUIAvailable(),
-			"actions":   notification.DebugActions(),
+			"native_ui":   s.notificationUIAvailable(),
+			"actions":     notification.DebugActions(),
+			"event_drops": s.eventDropDiagnostics(),
 		})
 	case nethttp.MethodPost:
 		var request notification.DebugRequest
@@ -867,6 +892,33 @@ func (s *Server) notificationDebug(w nethttp.ResponseWriter, r *nethttp.Request)
 
 func (s *Server) notificationUIAvailable() bool {
 	return s.config.NotificationUIAvailable != nil && s.config.NotificationUIAvailable()
+}
+
+// eventDropDiagnostics snapshots the event-bus drop counters plus the current
+// backend's event drop counter, so silent loss for a slow subscriber is
+// diagnosable through the existing notification-debug response.
+func (s *Server) eventDropDiagnostics() map[string]any {
+	out := map[string]any{}
+	if s.config.Runtime != nil && s.config.Runtime.Events() != nil {
+		drops := s.config.Runtime.Events().DropCounts()
+		out["cumulative"] = drops.Cumulative
+		out["active_subscribers"] = drops.Active
+	}
+	if s.config.Runtime != nil {
+		if current, err := s.config.Runtime.Backend(); err == nil {
+			if counter, ok := current.(backend.EventDropCounter); ok {
+				out["backends"] = map[string]any{counterMode(current): counter.EventDrops()}
+			}
+		}
+	}
+	return out
+}
+
+func counterMode(value backend.ModemBackend) string {
+	if value == nil {
+		return "unknown"
+	}
+	return value.Mode()
 }
 
 func (s *Server) notificationPermissionStatus() notification.NotificationPermissionStatus {
@@ -1049,6 +1101,30 @@ func (s *Server) openapi(w nethttp.ResponseWriter, r *nethttp.Request) {
 	writeJSON(w, nethttp.StatusOK, openAPIDocument())
 }
 
+// WebSocket keepalive and deadline policy: writeWait bounds each write,
+// pongWait bounds how long a silent client may hold a session, and pingPeriod
+// (shorter than pongWait) keeps healthy clients within the read deadline.
+// Each Server captures them at construction so tests can shrink the windows
+// per server without racing handler goroutines.
+const (
+	writeWait  = 10 * time.Second
+	pongWait   = 60 * time.Second
+	pingPeriod = 30 * time.Second
+)
+
+// websocketKeepalive holds one server's captured keepalive windows.
+type websocketKeepalive struct {
+	write, pong, ping time.Duration
+}
+
+// eventsUpgrader enforces the same loopback Origin/Host boundary as the
+// state-changing guard, without any login or credential check. It replaces
+// the hand-written hijack upgrade; gorilla enforces GET and Sec-WebSocket-
+// Version natively and fragments oversized frames instead of dropping them.
+func (s *Server) eventsUpgrader() websocket.Upgrader {
+	return websocket.Upgrader{CheckOrigin: s.loopbackOriginAllowed}
+}
+
 func (s *Server) websocket(w nethttp.ResponseWriter, r *nethttp.Request) {
 	if !s.protected(w, r) {
 		return
@@ -1061,39 +1137,86 @@ func (s *Server) websocket(w nethttp.ResponseWriter, r *nethttp.Request) {
 		writeError(w, derrors.New(derrors.InvalidRequest, "websocket origin rejected", false, nil))
 		return
 	}
-	hijacker, ok := w.(nethttp.Hijacker)
-	if !ok {
-		writeError(w, derrors.New(derrors.Internal, "websocket is unavailable", false, nil))
-		return
-	}
-	conn, rw, err := hijacker.Hijack()
+	upgrader := s.eventsUpgrader()
+	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
 	}
 	defer conn.Close()
-	key := r.Header.Get("Sec-WebSocket-Key")
-	accept := sha1.Sum([]byte(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
-	fmt.Fprintf(rw, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n", base64.StdEncoding.EncodeToString(accept[:]))
-	_ = rw.Flush()
+	keepalive := s.keepalive
+	conn.SetReadLimit(4096)
+	_ = conn.SetReadDeadline(time.Now().Add(keepalive.pong))
+	conn.SetPongHandler(func(string) error { return conn.SetReadDeadline(time.Now().Add(keepalive.pong)) })
+
+	// Read loop: payloads are discarded; a client that misses the keepalive
+	// fails the read deadline, closes the session, and releases this
+	// goroutine and the event subscription.
+	readDone := make(chan struct{})
+	go func() {
+		defer close(readDone)
+		for {
+			if _, _, readErr := conn.ReadMessage(); readErr != nil {
+				return
+			}
+		}
+	}()
+
+	// Subscribe with a watermark before building the snapshot: events
+	// published during snapshot construction are queued and delivered after
+	// it with ID > watermark, so the client never sees a gap under
+	// client-side deduplication. The snapshot covers device status only;
+	// operation, SMS, and call events are never discarded as covered.
+	sub := s.config.Runtime.Events().SubscribeWithWatermark(64)
+	defer sub.Unsubscribe()
+
+	// All event and ping writes go through one writer (gorilla permits only
+	// one concurrent writer).
+	var writeMu sync.Mutex
+	write := func(value any) error {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		_ = conn.SetWriteDeadline(time.Now().Add(keepalive.write))
+		return conn.WriteJSON(value)
+	}
+
 	// 初始快照查询失败(模组暂不可用)时不得中断事件流:连接已升级,
 	// 后续 device.status.changed 事件仍会推送,前端也会定期通过 HTTP 刷新状态。
 	if status, err := s.config.Device.Status(r.Context()); err == nil {
-		snapshot := runtime.Event{ID: s.config.Runtime.Events().LastID(), Type: "snapshot", Version: 1, OccurredAt: time.Now().UTC(), Data: publicDeviceStatus(status)}
-		if err := writeTextFrame(rw, snapshot); err != nil {
+		snapshot := runtime.Event{ID: sub.Watermark, Type: "snapshot", Version: 1, OccurredAt: time.Now().UTC(), Data: publicDeviceStatus(status)}
+		if err := write(snapshot); err != nil {
 			return
 		}
 	}
-	_, events, unsubscribe := s.config.Runtime.Events().Subscribe(32)
-	defer unsubscribe()
+
+	pingTicker := time.NewTicker(keepalive.ping)
+	defer pingTicker.Stop()
 	for {
 		select {
 		case <-r.Context().Done():
 			return
-		case event, ok := <-events:
+		case <-readDone:
+			return
+		case event, ok := <-sub.Events:
 			if !ok {
 				return
 			}
-			if err := writeTextFrame(rw, publicEvent(event)); err != nil {
+			// An overflowing subscription has an unknown event gap: close the
+			// session so the client reconnects and obtains a fresh snapshot.
+			if sub.DropCount() > 0 {
+				return
+			}
+			if err := write(publicEvent(event)); err != nil {
+				return
+			}
+		case <-pingTicker.C:
+			if sub.DropCount() > 0 {
+				return
+			}
+			writeMu.Lock()
+			_ = conn.SetWriteDeadline(time.Now().Add(keepalive.write))
+			err := conn.WriteMessage(websocket.PingMessage, nil)
+			writeMu.Unlock()
+			if err != nil {
 				return
 			}
 		}
@@ -1102,27 +1225,6 @@ func (s *Server) websocket(w nethttp.ResponseWriter, r *nethttp.Request) {
 
 func isWebSocketRequest(r *nethttp.Request) bool {
 	return strings.EqualFold(r.Header.Get("Upgrade"), "websocket") && r.Header.Get("Sec-WebSocket-Key") != ""
-}
-
-func writeTextFrame(w *bufio.ReadWriter, value any) error {
-	payload, err := json.Marshal(value)
-	if err != nil {
-		return err
-	}
-	var header []byte
-	switch {
-	case len(payload) < 126:
-		header = []byte{0x81, byte(len(payload))}
-	case len(payload) <= 65535:
-		header = []byte{0x81, 126, byte(len(payload) >> 8), byte(len(payload))}
-	default:
-		return fmt.Errorf("event frame is too large")
-	}
-	frame := append(header, payload...)
-	if _, err := w.Write(frame); err != nil {
-		return err
-	}
-	return w.Flush()
 }
 
 func decodeJSON(r *nethttp.Request, value any) error {
@@ -1286,7 +1388,7 @@ func errorStatus(code derrors.Code) int {
 		return nethttp.StatusConflict
 	case derrors.CapabilityNotSupported, derrors.PacketTunnelNotSupported:
 		return nethttp.StatusUnprocessableEntity
-	case derrors.DeviceOffline, derrors.BackendUnavailable, derrors.TransportUnavailable:
+	case derrors.DeviceOffline, derrors.BackendUnavailable, derrors.TransportUnavailable, derrors.Unavailable:
 		return nethttp.StatusServiceUnavailable
 	case derrors.OperationTimeout:
 		return nethttp.StatusGatewayTimeout

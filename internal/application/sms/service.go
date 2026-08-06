@@ -47,6 +47,13 @@ type Service struct {
 
 	stopOnce sync.Once
 	stopped  chan struct{}
+
+	// stopMu guards the cancel/done pair created by Start, following the
+	// notification service's Stop pattern so shutdown can join this worker
+	// before storage closes underneath it.
+	stopMu sync.Mutex
+	cancel context.CancelFunc
+	done   chan struct{}
 }
 
 func NewService(devices *device.Service, ops *operation.Manager, runtime *runtime.Runtime, store ...*storage.SQLiteStore) *Service {
@@ -128,20 +135,64 @@ func MigrateLegacySentHistory(store *storage.SQLiteStore, path string) error {
 }
 
 // Start runs the periodic refresh that drives sms.received events, replacing
-// the legacy notifier's 3-second polling.
+// the legacy notifier's 3-second polling. It stores the cancel/done pair that
+// Stop uses to join this worker.
 func (s *Service) Start(ctx context.Context) {
-	go s.poller(ctx)
+	s.stopMu.Lock()
+	if s.cancel != nil {
+		s.stopMu.Unlock()
+		return
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	s.cancel = cancel
+	s.done = done
+	s.stopMu.Unlock()
+	go func() {
+		defer close(done)
+		s.poller(runCtx)
+	}()
 }
 
-// Stop stops the poller and unregisters the inbound SMS consumer before the
-// backend shuts down, so a stopped service never receives +CMTI notifications.
-func (s *Service) Stop() {
-	s.stopOnce.Do(func() {
-		close(s.stopped)
-		if b, err := s.runtime.Backend(); err == nil {
-			b.SetInboundSMSHandler(nil)
+// Stop cancels the poller, waits for it to join within the deadline, and
+// unregisters the inbound SMS consumer before the backend shuts down, so a
+// stopped service never receives +CMTI notifications. Repeated calls are
+// safe; on deadline expiry the poller is still cancelled but the caller
+// receives the context error.
+func (s *Service) Stop(ctx context.Context) error {
+	s.stopMu.Lock()
+	cancel := s.cancel
+	done := s.done
+	s.cancel = nil
+	s.done = nil
+	s.stopMu.Unlock()
+	if cancel == nil {
+		// Never started (or already stopped): unregister the consumer anyway.
+		s.unregisterConsumer()
+		return nil
+	}
+	cancel()
+	s.stopOnce.Do(func() { close(s.stopped) })
+	if done != nil {
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return ctx.Err()
 		}
-	})
+	}
+	s.unregisterConsumer()
+	return nil
+}
+
+// unregisterConsumer detaches the +CMTI hook so no inbound delivery reaches a
+// stopped service.
+func (s *Service) unregisterConsumer() {
+	if s.runtime == nil {
+		return
+	}
+	if b, err := s.runtime.Backend(); err == nil {
+		b.SetInboundSMSHandler(nil)
+	}
 }
 
 func (s *Service) poller(ctx context.Context) {
@@ -605,5 +656,5 @@ func (s *Service) Send(ctx context.Context, recipient, body string) (string, err
 		progress(100, "sent")
 		s.ops.Publish("sms.updated", map[string]any{"operation": "send"})
 		return nil
-	}), nil
+	})
 }

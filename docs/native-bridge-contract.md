@@ -105,6 +105,14 @@ Swift 只发送以下动作；Go 异步执行并发布结果事件：
 
 拒接流程：用户在 macOS 系统通知或自绘面板中点击“拒接” → Swift 发送 `reject_call` → Go 调用 `Extras.Reject`（沿用 AT 资源锁和错误处理）→ 发布成功/失败事件 → Swift 撤回来电通知、关闭自绘面板或显示错误状态。
 
+### 3.0 命令丢弃反馈
+
+Swift→Go 命令队列满时（慢消费者不得阻塞 UI 线程），Go 不静默丢弃：记录诊断日志并发布 `command.dropped` 反馈事件，载荷 `CommandDropped`：`{command, reason}`（`reason` 如 `queue_full`）。Go 不会为未入队的命令发布任何 started/succeeded 结果。Swift 收到 `command.dropped`（`command == "reject_call"`）时清除 pending rejecting 状态并恢复可操作按钮；若 `reject_call` 在 8 秒内没有任何结果事件，Swift 侧超时同样清除 rejecting 状态，用户可重试。
+
+```json
+{ "type": "command.dropped", "data": { "command": "reject_call", "reason": "queue_full" } }
+```
+
 ### 3.1 通知权限与显示偏好
 
 通知权限状态由 Swift 查询后通过内部命令 `notification_permission_status` 回传 Go，状态包括 `not_determined`、`authorized`、`denied`、`provisional` 和 `unsupported`。设置页使用以下本地 API：
@@ -116,6 +124,19 @@ Swift 只发送以下动作；Go 异步执行并发布结果事件：
 - `PUT /api/v1/notifications/preferences`：更新 `incoming_call`、`missed_call`、`sms`、`device_offline`，每项为 `system` 或 `custom`。
 
 偏好保存于 `~/Library/Application Support/DJOneHub/notification-preferences.json`，默认全部为 `system`。`system` 使用 `UserNotifications`，`custom` 使用 AppKit 自绘面板；两种模式共享 Go 的事件、去重和拒接命令链路。
+
+### 3.2 日志回传
+
+Swift 侧 UI 层的诊断输出不再使用 `NSLog`，而是通过内部命令 `log` 回传 Go，落入与 Go 侧相同的结构化日志管线（控制台、日志文件、SSE 前端日志页）：
+
+```json
+{ "name": "log", "params": { "level": "debug", "message": "DJOneHub native bridge received event", "type": "device.status.changed", "id": "2" } }
+```
+
+- `message` 必须是常量文本，动态值作为结构化字段随附（除 `level`、`message` 外的其余 `params` 均为字段）；Swift 侧不做字符串插值，字段由 Go 侧在级别过滤通过后才编码，被过滤的级别只付出传输开销。
+- `level` 只能是 `debug`、`info`、`warn`、`error`（`ValidNativeLogLevel` 校验），`message` 非空。
+- 该命令由 bridge 消费并直接写入 zap 日志，不进入命令队列、不派发给 `CommandHandler`。
+- 与 `notification_permission_status` 一样属于内部命令，Swift 通过 `nativeBridgeLog` 辅助函数发送。
 
 ## 4. 冻结的基线行为（迁移自独立 Swift notifier）
 

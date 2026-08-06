@@ -2,6 +2,7 @@ package vowifi
 
 import (
 	"context"
+	"sync"
 
 	"github.com/iniwex5/vohive/internal/application/device"
 	"github.com/iniwex5/vohive/internal/application/operation"
@@ -17,6 +18,13 @@ type Service struct {
 	ops     *operation.Manager
 	runtime *runtime.Runtime
 	host    *vowifihost.Host
+
+	// stopMu guards the cancel/done pair created by Start, following the
+	// notification service's Stop pattern so the runtime-event subscription
+	// is tied to the session lifecycle.
+	stopMu sync.Mutex
+	cancel context.CancelFunc
+	done   chan struct{}
 }
 
 type hostPortAdapter struct{ backend.VoWiFiServicePort }
@@ -117,34 +125,102 @@ func (p legacyPortAdapter) VoWiFiStatus(ctx context.Context) (map[string]any, er
 	return p.Status(ctx)
 }
 
-func NewService(devices *device.Service, ops *operation.Manager, runtime *runtime.Runtime, platform ...PlatformDependencies) *Service {
+func NewService(devices *device.Service, ops *operation.Manager, rt *runtime.Runtime, platform ...PlatformDependencies) *Service {
 	var dependencies PlatformDependencies
 	if len(platform) > 0 {
 		dependencies = platform[0]
 	}
-	host := vowifihost.New(hostFactory{devices: devices, platform: dependencies}, runtime.Events())
-	service := &Service{devices: devices, ops: ops, runtime: runtime, host: host}
-	_, events, _ := runtime.Events().Subscribe(32)
-	go service.followRuntime(events)
+	host := vowifihost.New(hostFactory{devices: devices, platform: dependencies}, rt.Events())
+	service := &Service{devices: devices, ops: ops, runtime: rt, host: host}
+	// Event-driven recovery runs through the operation manager under the
+	// ResourceVoWiFi lock, so it cannot interleave with user Enable/Disable.
+	host.SetRecoveryRunner(func(ctx context.Context) error {
+		_, err := service.ops.Start(ctx, "vowifi.recover", func(taskCtx context.Context, progress func(int, string)) error {
+			release, err := service.runtime.Acquire(taskCtx, runtime.ResourceVoWiFi)
+			if err != nil {
+				return err
+			}
+			defer release()
+			progress(10, "recovery started")
+			return service.host.Recover(taskCtx)
+		})
+		return err
+	})
 	return service
 }
 
-func (s *Service) followRuntime(events <-chan runtime.Event) {
-	for event := range events {
-		switch event.Type {
-		case "device.status.changed":
-			snapshot, ok := event.Data.(domain.Snapshot)
+// Start subscribes to the runtime event bus and ties the subscription to the
+// session lifecycle: followRuntime exits when the session context ends and
+// Stop joins it before shutdown completes.
+func (s *Service) Start(ctx context.Context) {
+	s.stopMu.Lock()
+	if s.cancel != nil {
+		s.stopMu.Unlock()
+		return
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	s.cancel = cancel
+	s.done = done
+	s.stopMu.Unlock()
+	_, events, unsubscribe := s.runtime.Events().Subscribe(32)
+	go func() {
+		defer close(done)
+		defer unsubscribe()
+		s.followRuntime(runCtx, events)
+	}()
+}
+
+// Stop cancels the session subscription and waits for followRuntime to exit.
+// Repeated calls are safe.
+func (s *Service) Stop(ctx context.Context) error {
+	s.stopMu.Lock()
+	cancel := s.cancel
+	done := s.done
+	s.cancel = nil
+	s.done = nil
+	s.stopMu.Unlock()
+	if cancel == nil {
+		return nil
+	}
+	cancel()
+	if done != nil {
+		select {
+		case <-done:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
+}
+
+func (s *Service) followRuntime(ctx context.Context, events <-chan runtime.Event) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case event, ok := <-events:
 			if !ok {
-				continue
+				return
 			}
-			switch snapshot.State {
-			case domain.StateDisconnected, domain.StateAbsent:
-				s.host.DeviceRemoved()
-			case domain.StateReady:
-				s.host.DeviceReady()
+			switch event.Type {
+			case "device.status.changed":
+				snapshot, ok := event.Data.(domain.Snapshot)
+				if !ok {
+					continue
+				}
+				switch snapshot.State {
+				case domain.StateDisconnected, domain.StateAbsent:
+					s.host.DeviceRemoved()
+				case domain.StateReady:
+					s.host.DeviceReady()
+				}
+			case "backend.modem.reset", "backend.qmi.modem.reset", "sim.updated", "network.updated":
+				// Single-flight, debounced: concurrent triggers collapse into
+				// one recovery run under the ResourceVoWiFi lock.
+				s.host.TriggerRecovery()
 			}
-		case "backend.modem.reset", "backend.qmi.modem.reset", "sim.updated", "network.updated":
-			go func() { _ = s.host.Recover(context.Background()) }()
 		}
 	}
 }
@@ -216,5 +292,5 @@ func (s *Service) run(ctx context.Context, kind, operationName string) (string, 
 		progress(100, operationName+" complete")
 		s.ops.Publish("vowifi.updated", map[string]any{"operation": operationName})
 		return nil
-	}), nil
+	})
 }

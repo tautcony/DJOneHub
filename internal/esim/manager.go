@@ -282,15 +282,15 @@ type Manager struct {
 
 	cacheMu                     sync.RWMutex   // 保护 chipInfoCache、overviewCache 与 discoveredEUICCs 等快照状态
 	opMu                        sync.Mutex     // eSIM 硬件操作互斥（同时只允许一个写操作）
-	opDoneMu                    sync.Mutex   // 保护 opDone 的关闭/替换/读取序列
-	opDone                      chan struct{} // 写操作完成通知（替代 TryLock+Sleep 轮询）
+	opDoneMu                    sync.Mutex     // 保护 opDone 的关闭/替换/读取序列
+	opDone                      chan struct{}  // 写操作完成通知（替代 TryLock+Sleep 轮询）
 	chipInfoCache               *EUICCChipInfo // 芯片信息缓存（硬件信息基本不变）
 	overviewCache               *EsimOverview  // eSIM 总览缓存（跟随 Manager / Worker 实例）
 	overviewLastErr             error
 	overviewReloading           bool
 	overviewGeneration          uint64
-	overviewLoader              func() (*EsimOverview, error)
-	profilesLoader              func() ([]EUICCProfiles, error)
+	overviewLoader              func(context.Context) (*EsimOverview, error)
+	profilesLoader              func(context.Context) ([]EUICCProfiles, error)
 	suppressOverviewReloadUntil time.Time
 	discoveredEUICCs            []EUICCInfo
 	sf                          *singleflight.Group
@@ -823,11 +823,12 @@ func (m *Manager) logWriteOperationHold(operation string, started time.Time) {
 
 // forEachEUICC 遍历所有可用的 eUICC，对每个唯一 EID 调用回调函数。
 // 每次从静态候选 AID 重新扫描；命中可用 AID 后停止，eSTK Max 的 SE0/SE1 例外。
-// 回调参数: client=已打开的 LPA 客户端, aid=当前 AID, eidStr=当前 EID 字符串
-func (m *Manager) forEachEUICC(fn func(client *lpa.Client, aid []byte, eidStr string) error) error {
+// 回调参数: client=已打开的 LPA 客户端, aid=当前 AID, eidStr=当前 EID 字符串。
+// ctx 在等待与逐-AID APDU 步骤之间被检查，取消的读请求会迅速停止并释放锁。
+func (m *Manager) forEachEUICC(ctx context.Context, fn func(client *lpa.Client, aid []byte, eidStr string) error) error {
 	// 读请求在写操作进行中采用排队等待策略，超时才返回 busy。
 	writeWaitStarted := time.Now()
-	if err := m.waitForNoWriteOperation(); err != nil {
+	if err := m.waitForNoWriteOperation(ctx); err != nil {
 		logger.Warn("eSIM 读操作等待写锁超时",
 			"device", m.deviceID,
 			"wait_ms", time.Since(writeWaitStarted).Milliseconds())
@@ -840,7 +841,7 @@ func (m *Manager) forEachEUICC(fn func(client *lpa.Client, aid []byte, eidStr st
 	}
 	// 设备级 APDU 仲裁：等待其它 SIM 鉴权会话释放，避免冲突。
 	apduWaitStarted := time.Now()
-	if err := m.waitForAPDUIdleForRead(); err != nil {
+	if err := m.waitForAPDUIdleForRead(ctx); err != nil {
 		logger.Warn("eSIM 读操作等待 APDU 仲裁空闲超时",
 			"device", m.deviceID,
 			"wait_ms", time.Since(apduWaitStarted).Milliseconds())
@@ -852,6 +853,10 @@ func (m *Manager) forEachEUICC(fn func(client *lpa.Client, aid []byte, eidStr st
 			"wait_ms", waited.Milliseconds())
 	}
 
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	m.preCleanChannels()
 
 	plan := m.getEffectiveAIDPlan()
@@ -861,7 +866,7 @@ func (m *Manager) forEachEUICC(fn func(client *lpa.Client, aid []byte, eidStr st
 		"policy", plan.Policy,
 		"candidate_count", len(aids),
 		"candidate_aids", aidHexesForLog(aids))
-	foundAny, err := m.doForEachEUICC(aids, fn)
+	foundAny, err := m.doForEachEUICC(ctx, aids, fn)
 	if foundAny {
 		return err
 	}
@@ -887,8 +892,8 @@ func (m *Manager) forEachEUICC(fn func(client *lpa.Client, aid []byte, eidStr st
 // 获取锁。若在订阅后锁已可用（写方已完成）则立即成功；若锁被占用，订阅的
 // channel 必然在占用者完成时关闭——绝不会等待一个永远不会关闭的 channel 而
 // 误报 ErrOperationInProgress。hold 为 true 时成功返回持有写锁（写方路径），
-// 否则成功返回时写锁空闲（读方路径）。
-func (m *Manager) waitForWriteCompletion(timer *time.Timer, hold bool) error {
+// 否则成功返回时写锁空闲（读方路径）。ctx 取消会立即停止等待。
+func (m *Manager) waitForWriteCompletion(ctx context.Context, timer *time.Timer, hold bool) error {
 	for {
 		done := m.currentOpDone()
 		if m.opMu.TryLock() {
@@ -902,18 +907,20 @@ func (m *Manager) waitForWriteCompletion(timer *time.Timer, hold bool) error {
 			// 写操作完成通知已发出；重试获取锁。
 		case <-timer.C:
 			return ErrOperationInProgress
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 	}
 }
 
-func (m *Manager) waitForNoWriteOperation() error {
+func (m *Manager) waitForNoWriteOperation(ctx context.Context) error {
 	timeout := m.readQueueWaitTimeout
 	if timeout <= 0 {
 		timeout = defaultReadQueueWaitTimeout
 	}
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
-	return m.waitForWriteCompletion(timer, false)
+	return m.waitForWriteCompletion(ctx, timer, false)
 }
 
 func (m *Manager) acquireOperationLock() error {
@@ -923,7 +930,7 @@ func (m *Manager) acquireOperationLock() error {
 	}
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
-	return m.waitForWriteCompletion(timer, true)
+	return m.waitForWriteCompletion(context.Background(), timer, true)
 }
 
 func (m *Manager) lockOperation(operation string) (func(), error) {
@@ -971,7 +978,7 @@ func (m *Manager) emitSwitchPhase(operation SwitchOperation, token uint64, phase
 	m.onSwitchPhase(operation, token, phase)
 }
 
-func (m *Manager) waitForAPDUIdleForRead() error {
+func (m *Manager) waitForAPDUIdleForRead(ctx context.Context) error {
 	if m == nil || m.apduArbiter == nil {
 		return nil
 	}
@@ -979,9 +986,9 @@ func (m *Manager) waitForAPDUIdleForRead() error {
 	if timeout <= 0 {
 		timeout = defaultReadQueueWaitTimeout
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	if err := m.apduArbiter.WaitIdle(ctx); err != nil {
+	if err := m.apduArbiter.WaitIdle(waitCtx); err != nil {
 		return ErrOperationInProgress
 	}
 	return nil
@@ -1009,13 +1016,20 @@ func (m *Manager) runEUICCCallback(aidHex, eidStr string, client *lpa.Client, ai
 	return fn(client, aid, eidStr)
 }
 
-func (m *Manager) doForEachEUICC(aids [][]byte, fn func(client *lpa.Client, aid []byte, eidStr string) error) (bool, error) {
+func (m *Manager) doForEachEUICC(ctx context.Context, aids [][]byte, fn func(client *lpa.Client, aid []byte, eidStr string) error) (bool, error) {
 	seenEIDs := make(map[string]bool)
 	var successAIDs [][]byte
 	foundAny := false
 	var lastErr error
 
 	for _, aid := range aids {
+		// 取消的读请求在逐-AID APDU 步骤之间停止，释放 opMu/仲裁器。
+		if err := ctx.Err(); err != nil {
+			logger.Debug("eUICC AID 扫描被取消",
+				"device", m.deviceID,
+				"err", err)
+			return foundAny, err
+		}
 		if !shouldContinueAIDScanAfterSuccess(successAIDs, aid) {
 			logger.Debug("命中可用 AID 后停止剩余 AID 扫描",
 				"device", m.deviceID,
@@ -1091,13 +1105,13 @@ func (m *Manager) doForEachEUICC(aids [][]byte, fn func(client *lpa.Client, aid 
 }
 
 // GetEIDs 获取所有 eUICC 的 EID 列表
-func (m *Manager) GetEIDs() ([]EUICCInfo, error) {
+func (m *Manager) GetEIDs(ctx context.Context) ([]EUICCInfo, error) {
 	v, err, _ := m.sf.Do("GetEIDs", func() (interface{}, error) {
 		logger.Info("读取 eUICC EID",
 			"device", m.deviceID,
 			"source", "scan")
 		var result []EUICCInfo
-		if err := m.forEachEUICC(func(client *lpa.Client, aid []byte, eidStr string) error {
+		if err := m.forEachEUICC(ctx, func(client *lpa.Client, aid []byte, eidStr string) error {
 			euiccInfo := buildDiscoveredEUICCInfo(aid, eidStr)
 			result = append(result, euiccInfo)
 			logger.Info("发现 eUICC", "device", m.deviceID, "AID", euiccInfo.AIDHex, "EID", eidStr)
@@ -1120,8 +1134,8 @@ func (m *Manager) GetEIDs() ([]EUICCInfo, error) {
 }
 
 // GetEID 获取第一个 eUICC 的 EID（向后兼容）
-func (m *Manager) GetEID() (string, error) {
-	eids, err := m.GetEIDs()
+func (m *Manager) GetEID(ctx context.Context) (string, error) {
+	eids, err := m.GetEIDs(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -1130,7 +1144,7 @@ func (m *Manager) GetEID() (string, error) {
 
 // GetEUICCChipInfo 获取 eUICC 芯片的硬件信息（优先返回缓存）
 // 包含：所有 EID（含各自可用空间）、产品名称、序列号、固件版本
-func (m *Manager) GetEUICCChipInfo(forceRefresh bool) (*EUICCChipInfo, error) {
+func (m *Manager) GetEUICCChipInfo(ctx context.Context, forceRefresh bool) (*EUICCChipInfo, error) {
 	// 优先返回缓存（硬件信息不会变，只有可用空间会变）
 	if !forceRefresh {
 		m.cacheMu.RLock()
@@ -1146,7 +1160,7 @@ func (m *Manager) GetEUICCChipInfo(forceRefresh bool) (*EUICCChipInfo, error) {
 		// fnMu 保护并发 fn 对 info.EIDs 的写操作
 		var fnMu sync.Mutex
 
-		if err := m.forEachEUICC(func(client *lpa.Client, aid []byte, eidStr string) error {
+		if err := m.forEachEUICC(ctx, func(client *lpa.Client, aid []byte, eidStr string) error {
 			euiccInfo := buildDiscoveredEUICCInfo(aid, eidStr)
 			// 在同一 channel 中查询 EUICCInfo2——APDU 读，per-channel 并发安全
 			m.parseEUICCInfo2ForEID(client, &euiccInfo)
@@ -1515,7 +1529,7 @@ func (m *Manager) patchCachedActiveProfile(targetICCID string, aidHex string) bo
 	return patched
 }
 
-func (m *Manager) loadOverview() (*EsimOverview, error) {
+func (m *Manager) loadOverview(ctx context.Context) (*EsimOverview, error) {
 	if cached := m.cachedOverview(); cached != nil {
 		return cloneOverview(cached), nil
 	}
@@ -1531,7 +1545,7 @@ func (m *Manager) loadOverview() (*EsimOverview, error) {
 		if loader == nil {
 			loader = m.loadOverviewFresh
 		}
-		overview, loadErr := loader()
+		overview, loadErr := loader(ctx)
 		if loadErr != nil {
 			m.setOverviewCache(nil, loadErr, generation)
 			return nil, loadErr
@@ -1566,7 +1580,7 @@ func (m *Manager) triggerOverviewReload(reason string) {
 			logger.Warn("eSIM 总览异步重载等待窗口失败", "device", m.deviceID, "reason", reason, "err", err)
 			return
 		}
-		if _, err := m.loadOverview(); err != nil {
+		if _, err := m.loadOverview(context.Background()); err != nil {
 			logger.Warn("eSIM 总览异步重载失败", "device", m.deviceID, "reason", reason, "err", err)
 		}
 	}()
@@ -1601,10 +1615,10 @@ func buildProfileGroup(eidStr string, aid []byte, profiles []*sgp22.ProfileInfo)
 	return group
 }
 
-func (m *Manager) loadProfilesFresh() ([]EUICCProfiles, error) {
+func (m *Manager) loadProfilesFresh(ctx context.Context) ([]EUICCProfiles, error) {
 	var profileGroups []EUICCProfiles
 	var fnMu sync.Mutex
-	if err := m.forEachEUICC(func(client *lpa.Client, aid []byte, eidStr string) error {
+	if err := m.forEachEUICC(ctx, func(client *lpa.Client, aid []byte, eidStr string) error {
 		aidHex := fmt.Sprintf("%X", aid)
 		logger.Debug("eUICC AID 扫描阶段",
 			"device", m.deviceID,
@@ -1650,12 +1664,12 @@ func (m *Manager) loadProfilesFresh() ([]EUICCProfiles, error) {
 	return profileGroups, nil
 }
 
-func (m *Manager) loadOverviewFresh() (*EsimOverview, error) {
+func (m *Manager) loadOverviewFresh(ctx context.Context) (*EsimOverview, error) {
 	info := &EUICCChipInfo{}
 	var profileGroups []EUICCProfiles
 	var fnMu sync.Mutex
 
-	if err := m.forEachEUICC(func(client *lpa.Client, aid []byte, eidStr string) error {
+	if err := m.forEachEUICC(ctx, func(client *lpa.Client, aid []byte, eidStr string) error {
 		euiccInfo := buildDiscoveredEUICCInfo(aid, eidStr)
 		aidHex := euiccInfo.AIDHex
 		m.parseEUICCInfo2ForEID(client, &euiccInfo)
@@ -1733,14 +1747,15 @@ func (m *Manager) loadOverviewFresh() (*EsimOverview, error) {
 	}, nil
 }
 
-// GetEsimOverview 获取 eSIM 总览信息（一次遍历同时获取芯片信息和 profiles）
-func (m *Manager) GetEsimOverview() (*EsimOverview, error) {
-	return m.loadOverview()
+// GetEsimOverview 获取 eSIM 总览信息（一次遍历同时获取芯片信息和 profiles）。
+// ctx 在逐-AID APDU 步骤之间被检查，取消的请求会迅速停止并释放 opMu/仲裁器。
+func (m *Manager) GetEsimOverview(ctx context.Context) (*EsimOverview, error) {
+	return m.loadOverview(ctx)
 }
 
 // GetProfiles 获取所有 eUICC 按分组的 profile 列表
-func (m *Manager) GetProfiles() ([]EUICCProfiles, error) {
-	overview, err := m.loadOverview()
+func (m *Manager) GetProfiles(ctx context.Context) ([]EUICCProfiles, error) {
+	overview, err := m.loadOverview(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -1763,7 +1778,7 @@ func (m *Manager) ActiveProfileName() (string, error) {
 	return "", nil
 }
 
-func (m *Manager) RefreshProfiles() error {
+func (m *Manager) RefreshProfiles(ctx context.Context) error {
 	if m == nil {
 		return nil
 	}
@@ -1771,7 +1786,7 @@ func (m *Manager) RefreshProfiles() error {
 	if loader == nil {
 		loader = m.loadProfilesFresh
 	}
-	profiles, err := loader()
+	profiles, err := loader(ctx)
 	if err != nil {
 		return err
 	}
@@ -1785,16 +1800,16 @@ func (m *Manager) RefreshProfiles() error {
 	return nil
 }
 
-func (m *Manager) RefreshOverview() error {
+func (m *Manager) RefreshOverview(ctx context.Context) error {
 	if m == nil {
 		return nil
 	}
 	pendingReload := m.overviewReloadInProgress()
-	if err := m.waitForOverviewReloadAllowed(context.Background()); err != nil {
+	if err := m.waitForOverviewReloadAllowed(ctx); err != nil {
 		return err
 	}
 	if pendingReload || m.overviewReloadInProgress() {
-		overview, err := m.loadOverview()
+		overview, err := m.loadOverview(ctx)
 		if err != nil {
 			return err
 		}
@@ -1815,7 +1830,7 @@ func (m *Manager) RefreshOverview() error {
 	}
 	m.cacheMu.Unlock()
 
-	overview, err := m.loadOverview()
+	overview, err := m.loadOverview(ctx)
 	if err != nil {
 		return err
 	}
@@ -2911,7 +2926,7 @@ func (m *Manager) listNotificationsForCurrentCard() ([]NotificationItem, error) 
 		return nil, err
 	}
 	defer unlock()
-	if err := m.waitForAPDUIdleForRead(); err != nil {
+	if err := m.waitForAPDUIdleForRead(context.Background()); err != nil {
 		return nil, err
 	}
 	m.preCleanChannels()
@@ -2963,7 +2978,7 @@ func (m *Manager) ListNotifications(aidHex string) ([]NotificationItem, error) {
 		return nil, err
 	}
 	defer unlock()
-	if err := m.waitForAPDUIdleForRead(); err != nil {
+	if err := m.waitForAPDUIdleForRead(context.Background()); err != nil {
 		return nil, err
 	}
 	m.preCleanChannels()

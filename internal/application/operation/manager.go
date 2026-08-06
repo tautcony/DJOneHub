@@ -41,23 +41,45 @@ type Log struct {
 
 type Task func(context.Context, func(int, string)) error
 
+// ErrShutdown is returned by Start once shutdown admission has closed; no
+// operation is launched and no ID is returned.
+var ErrShutdown = derrors.New(derrors.Unavailable, "the application is shutting down", false, nil)
+
 type Manager struct {
 	mu      sync.RWMutex
 	seq     uint64
 	items   map[string]*Status
 	cancels map[string]context.CancelFunc
 	bus     *runtime.EventBus
+
+	closed bool
+	runWG  sync.WaitGroup
+	// shutdownDone is closed once every tracked run goroutine has joined. It
+	// is shared by all Shutdown callers: an early caller timeout does not
+	// poison later callers, who wait with their own contexts.
+	shutdownDone chan struct{}
 }
 
 func NewManager(bus *runtime.EventBus) *Manager {
 	if bus == nil {
 		bus = runtime.NewEventBus()
 	}
-	return &Manager{items: make(map[string]*Status), cancels: make(map[string]context.CancelFunc), bus: bus}
+	return &Manager{
+		items:        make(map[string]*Status),
+		cancels:      make(map[string]context.CancelFunc),
+		bus:          bus,
+		shutdownDone: make(chan struct{}),
+	}
 }
 
-func (m *Manager) Start(ctx context.Context, kind string, task Task) string {
+// Start launches an asynchronous operation. After Shutdown closes admission it
+// returns the structured ErrShutdown and launches nothing.
+func (m *Manager) Start(ctx context.Context, kind string, task Task) (string, error) {
 	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return "", ErrShutdown
+	}
 	m.seq++
 	id := time.Now().UTC().Format("20060102T150405.000000000Z") + "-" + formatSequence(m.seq)
 	status := &Status{ID: id, Type: kind, State: Pending}
@@ -67,14 +89,43 @@ func (m *Manager) Start(ctx context.Context, kind string, task Task) string {
 	// HTTP response; callers can cancel it explicitly through the operation API.
 	child, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	m.cancels[id] = cancel
+	m.runWG.Add(1)
 	m.mu.Unlock()
 	m.publish(*status)
 	log.Printf("operation started id=%s type=%s", id, kind)
 	go m.run(child, status, task)
-	return id
+	return id, nil
+}
+
+// Shutdown closes admission for new work, cancels every tracked operation, and
+// waits for their run goroutines within the bounded context. Repeated calls
+// share one close signal: each caller waits with its own context, so an early
+// caller timeout does not become the result for later callers. Workers already
+// report the Cancelled terminal state when their context is cancelled.
+func (m *Manager) Shutdown(ctx context.Context) error {
+	m.mu.Lock()
+	if !m.closed {
+		m.closed = true
+		for _, cancel := range m.cancels {
+			cancel()
+		}
+		go func() {
+			m.runWG.Wait()
+			close(m.shutdownDone)
+		}()
+	}
+	done := m.shutdownDone
+	m.mu.Unlock()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (m *Manager) run(ctx context.Context, status *Status, task Task) {
+	defer m.runWG.Done()
 	m.update(status.ID, func(s *Status) { s.State = Running; s.StartedAt = time.Now().UTC() })
 	err := task(ctx, func(progress int, message string) {
 		if progress < 0 {

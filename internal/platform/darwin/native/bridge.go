@@ -15,6 +15,9 @@ import (
 	"github.com/iniwex5/vohive/internal/application/notification"
 	"github.com/iniwex5/vohive/internal/domain/device"
 	"github.com/iniwex5/vohive/internal/runtime"
+	"github.com/iniwex5/vohive/pkg/logger"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 // CommandHandler executes native UI commands sent from Swift. The app layer
@@ -228,14 +231,17 @@ func (b *Bridge) UpdateDeviceStatus(snapshot device.Snapshot) {
 }
 
 func (b *Bridge) ShowCall(call notification.CallEvent) {
+	logger.Info("[native] forward call event", "event", notification.EventCallIncoming, "call_id", call.ID, "state", call.State, "number", call.Number)
 	b.sendEvent(notification.EventCallIncoming, call)
 }
 
 func (b *Bridge) UpdateCall(call notification.CallEvent) {
+	logger.Info("[native] forward call event", "event", notification.EventCallUpdated, "call_id", call.ID, "state", call.State, "number", call.Number)
 	b.sendEvent(notification.EventCallUpdated, call)
 }
 
 func (b *Bridge) ShowMissedCall(call notification.CallEvent) {
+	logger.Info("[native] forward call event", "event", notification.EventCallMissed, "call_id", call.ID, "state", call.State, "number", call.Number)
 	b.sendEvent(notification.EventCallMissed, call)
 }
 
@@ -248,6 +254,7 @@ func (b *Bridge) ShowOffline(event notification.DeviceOfflineEvent) {
 }
 
 func (b *Bridge) HideCall(call notification.CallEvent) {
+	logger.Info("[native] forward call event", "event", notification.EventCallEnded, "call_id", call.ID, "state", call.State)
 	b.sendEvent(notification.EventCallEnded, call)
 }
 
@@ -267,6 +274,14 @@ func (b *Bridge) sendEvent(eventType string, data any) {
 }
 
 func (b *Bridge) send(event runtime.Event) {
+	b.mu.Lock()
+	started := b.started && !b.exited
+	b.mu.Unlock()
+	if !started {
+		// The AppKit run loop is not running (or already stopped): posting an
+		// event into it is invalid, so the event is dropped here instead.
+		return
+	}
 	encoded, err := json.Marshal(event)
 	if err != nil {
 		return
@@ -286,6 +301,13 @@ func (b *Bridge) enqueueCommand(jsonString string) {
 		b.updateNotificationPermissionStatus(command.Param("state"))
 		return
 	}
+	if command.Name == notification.CommandLog {
+		// UI-layer traces are written to the structured pipeline on a fresh
+		// goroutine, matching the bridge threading contract; they never reach
+		// the command handler.
+		go logFromNative(command)
+		return
+	}
 	b.mu.Lock()
 	commands := b.commands
 	b.mu.Unlock()
@@ -295,7 +317,49 @@ func (b *Bridge) enqueueCommand(jsonString string) {
 	select {
 	case commands <- command:
 	default:
-		// A slow command consumer must not block the UI thread.
+		// A slow command consumer must not block the UI thread, and a lost
+		// user command must not disappear silently: report it back to Swift
+		// and log it instead of pretending the command was accepted.
+		logger.Warn("native command dropped", "command", command.Name, "reason", "queue_full")
+		b.Send(notification.EventCommandDropped, notification.CommandDropped{
+			Command: command.Name,
+			Reason:  "queue_full",
+		})
+	}
+}
+
+// nativeLogLevels maps the contract log levels to zap levels.
+var nativeLogLevels = map[string]zapcore.Level{
+	notification.NativeLogLevelDebug: zapcore.DebugLevel,
+	notification.NativeLogLevelInfo:  zapcore.InfoLevel,
+	notification.NativeLogLevelWarn:  zapcore.WarnLevel,
+	notification.NativeLogLevelError: zapcore.ErrorLevel,
+}
+
+// logFromNative writes a UI-layer trace into the structured logger. The
+// message is a constant and the dynamic values ride as structured fields, so
+// formatting is deferred to this side: the level filter runs before any field
+// is encoded, and a filtered level costs nothing but the transport. The level
+// is contract-validated by ValidateCommand before this runs; unknown levels
+// fall back to info.
+func logFromNative(command notification.Command) {
+	level, ok := nativeLogLevels[command.Param("level")]
+	if !ok {
+		level = zapcore.InfoLevel
+	}
+	entry := zapcore.Entry{Level: level, Time: time.Now(), Message: command.Param("message")}
+	core := logger.ZapLogger().Core()
+	if ce := core.Check(entry, nil); ce == nil {
+		return
+	}
+	var fields []zapcore.Field
+	for key, value := range command.Params {
+		if key != "level" && key != "message" {
+			fields = append(fields, zap.String(key, value))
+		}
+	}
+	if ce := core.Check(entry, nil); ce != nil {
+		ce.Write(fields...)
 	}
 }
 

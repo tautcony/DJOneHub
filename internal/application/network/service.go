@@ -29,6 +29,13 @@ type Service struct {
 	lastPublished *notification.NetworkUpdateEvent
 	iccid         string
 	iccidChecked  time.Time
+
+	// stopMu guards the cancel/done pair created by Start, following the
+	// notification service's Stop pattern so shutdown can join both pollers
+	// before storage closes underneath them.
+	stopMu sync.Mutex
+	cancel context.CancelFunc
+	done   chan struct{}
 }
 
 const EventTrafficUpdated = "network.traffic.updated"
@@ -73,10 +80,58 @@ func NewService(devices *device.Service, ops *operation.Manager, runtime *runtim
 }
 
 // Start runs the periodic radio refresh that drives the 4G menu bar model,
-// replacing the legacy notifier's 15-second cellular polling.
+// replacing the legacy notifier's 15-second cellular polling. It stores the
+// cancel/done pair that Stop uses to join both pollers.
 func (s *Service) Start(ctx context.Context) {
-	go s.poller(ctx)
-	go s.trafficPoller(ctx)
+	s.stopMu.Lock()
+	if s.cancel != nil {
+		s.stopMu.Unlock()
+		return
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	s.cancel = cancel
+	s.done = done
+	s.stopMu.Unlock()
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		s.poller(runCtx)
+	}()
+	go func() {
+		defer wg.Done()
+		s.trafficPoller(runCtx)
+	}()
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+}
+
+// Stop cancels both pollers and waits for them to join within the deadline,
+// so a mid-refresh poller never writes to a closed store. Repeated calls are
+// safe.
+func (s *Service) Stop(ctx context.Context) error {
+	s.stopMu.Lock()
+	cancel := s.cancel
+	done := s.done
+	s.cancel = nil
+	s.done = nil
+	s.stopMu.Unlock()
+	if cancel == nil {
+		return nil
+	}
+	cancel()
+	if done != nil {
+		select {
+		case <-done:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
 }
 
 func (s *Service) trafficPoller(ctx context.Context) {
@@ -351,7 +406,7 @@ func (s *Service) SetMode(ctx context.Context, mode string) (string, error) {
 		progress(100, "network mode applied")
 		s.ops.Publish("network.updated", map[string]any{"mode": mode})
 		return nil
-	}), nil
+	})
 }
 
 func (s *Service) Check(ctx context.Context) (transport.Connectivity, error) {

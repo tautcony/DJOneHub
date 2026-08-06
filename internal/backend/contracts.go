@@ -78,6 +78,13 @@ type BackendEvent struct {
 	Data any    `json:"data,omitempty"`
 }
 
+// EventDropCounter reports the cumulative count of backend events dropped for
+// a slow subscriber. It is optional: backends that never drop (or do not
+// track) simply do not implement it, and diagnostics omit the entry.
+type EventDropCounter interface {
+	EventDrops() uint64
+}
+
 type RawATBackend interface {
 	RawAT(context.Context, string) (string, error)
 }

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	goruntime "runtime"
+	"sync"
 	"time"
 
 	httpapi "github.com/iniwex5/vohive/internal/api/http"
@@ -73,6 +74,11 @@ type App struct {
 	NativeUI     *native.Bridge
 	HTTP         *httpapi.Server
 	Store        *storage.SQLiteStore
+
+	// shutdownAdmission is closed by BeginShutdown; while open the HTTP
+	// server admits requests and the operation manager accepts new work.
+	shutdownAdmission chan struct{}
+	admissionOnce     sync.Once
 }
 
 func NewOffline() (*App, error) {
@@ -194,51 +200,72 @@ func newApp(r *runtime.Runtime, err error, platformAdapter transport.NetworkCont
 		Sink: bridge,
 	})
 	bridge.SetHandler(&nativeCommandHandler{extras: extraService, bridge: bridge})
-	return &App{
-		Runtime:      r,
-		Operations:   ops,
-		Device:       devices,
-		SMS:          smsService,
-		ESIM:         esimService,
-		Network:      networkService,
-		RawAT:        rawATService,
-		VoWiFi:       vowifiService,
-		Extras:       extraService,
-		Firmware:     firmwareService,
-		Notification: notifications,
-		NativeUI:     bridge,
-		Store:        database,
-		HTTP: httpapi.NewServer(httpapi.Config{
-			Device:                        devices,
-			SMS:                           smsService,
-			ESIM:                          esimService,
-			Network:                       networkService,
-			Notification:                  notifications,
-			RawAT:                         rawATService,
-			VoWiFi:                        vowifiService,
-			Extras:                        extraService,
-			Firmware:                      firmwareService,
-			Operations:                    ops,
-			Runtime:                       r,
-			NotificationUIAvailable:       bridge.HasUI,
-			NotificationPermissionStatus:  bridge.NotificationPermissionStatus,
-			RequestNotificationPermission: bridge.RequestNotificationPermission,
-			OpenNotificationSettings:      bridge.OpenNotificationSettings,
-			NotificationPreferences:       bridge.NotificationPreferences,
-			SetNotificationPreferences: func(preferences notification.NotificationPreferences) error {
-				if err := preferences.Validate(); err != nil {
-					return err
-				}
-				if err := notificationPreferencesStore.Write(&preferences); err != nil {
-					return err
-				}
-				bridge.SetNotificationPreferences(preferences)
-				return nil
-			},
-			StartupStatus:     startupManager.Status,
-			SetStartupEnabled: startupManager.SetEnabled,
-		}),
-	}, nil
+	app := &App{
+		Runtime:           r,
+		Operations:        ops,
+		Device:            devices,
+		SMS:               smsService,
+		ESIM:              esimService,
+		Network:           networkService,
+		RawAT:             rawATService,
+		VoWiFi:            vowifiService,
+		Extras:            extraService,
+		Firmware:          firmwareService,
+		Notification:      notifications,
+		NativeUI:          bridge,
+		Store:             database,
+		shutdownAdmission: make(chan struct{}),
+	}
+	app.HTTP = httpapi.NewServer(httpapi.Config{
+		Device:                        devices,
+		SMS:                           smsService,
+		ESIM:                          esimService,
+		Network:                       networkService,
+		Notification:                  notifications,
+		RawAT:                         rawATService,
+		VoWiFi:                        vowifiService,
+		Extras:                        extraService,
+		Firmware:                      firmwareService,
+		Operations:                    ops,
+		Runtime:                       r,
+		NotificationUIAvailable:       bridge.HasUI,
+		NotificationPermissionStatus:  bridge.NotificationPermissionStatus,
+		RequestNotificationPermission: bridge.RequestNotificationPermission,
+		OpenNotificationSettings:      bridge.OpenNotificationSettings,
+		NotificationPreferences:       bridge.NotificationPreferences,
+		SetNotificationPreferences: func(preferences notification.NotificationPreferences) error {
+			if err := preferences.Validate(); err != nil {
+				return err
+			}
+			if err := notificationPreferencesStore.Write(&preferences); err != nil {
+				return err
+			}
+			bridge.SetNotificationPreferences(preferences)
+			return nil
+		},
+		StartupStatus:     startupManager.Status,
+		SetStartupEnabled: startupManager.SetEnabled,
+		Admission:         app.admitting,
+	})
+	return app, nil
+}
+
+// admitting reports whether the shutdown admission gate is still open.
+func (a *App) admitting() bool {
+	select {
+	case <-a.shutdownAdmission:
+		return false
+	default:
+		return true
+	}
+}
+
+// BeginShutdown closes the idempotent shutdown-admission gate shared by the
+// HTTP handlers and the operation manager. It must run before the HTTP server
+// drains so an already-connected handler cannot start new detached work after
+// shutdown begins.
+func (a *App) BeginShutdown() {
+	a.admissionOnce.Do(func() { close(a.shutdownAdmission) })
 }
 
 // nativeCommandHandler executes native UI commands. reject_call reuses the
@@ -277,17 +304,53 @@ func (a *App) Start(ctx context.Context) {
 		// A failed policy subscription must not take the device services down.
 		_ = err
 	}
+	// The VoWiFi runtime-event subscription is tied to the session context so
+	// it stops when the session ends.
+	a.VoWiFi.Start(ctx)
 	// The initial runtime scan may publish before the notification subscriber
 	// is ready. Send the current snapshot explicitly so the native status item
 	// always has a state, including when no device or SIM is present.
 	a.NativeUI.UpdateDeviceStatus(a.Runtime.Snapshot())
 }
 
-func (a *App) Stop() {
-	a.Notification.Stop()
+// Stop runs the single bounded shutdown sequence: it closes admission, cancels
+// and joins in-flight operations, then stops each background worker in reverse
+// of the actual start order (Notification, Extras, Network, SMS, Runtime) and
+// waits for each to join before closing storage. A worker that does not stop
+// by the deadline returns the context error and leaves the store open, because
+// storage is never closed underneath a live writer.
+func (a *App) Stop(ctx context.Context) error {
+	a.BeginShutdown()
+	// Cancel and join in-flight operations first so the resource locks they
+	// hold are released before the workers that depend on them stop.
+	if err := a.Operations.Shutdown(ctx); err != nil {
+		return err
+	}
+	// The native UI is preserved until the notification sink queue has been
+	// drained: the delivery goroutine joins here, and the UI itself is stopped
+	// by the caller only after this returns.
+	if err := a.Notification.Stop(ctx); err != nil {
+		return err
+	}
+	if err := a.Extras.Stop(ctx); err != nil {
+		return err
+	}
+	if err := a.Network.Stop(ctx); err != nil {
+		return err
+	}
 	// Unregister the SMS inbound consumer before the runtime closes its
 	// backend so a stopped service never receives +CMTI notifications.
-	a.SMS.Stop()
+	if err := a.SMS.Stop(ctx); err != nil {
+		return err
+	}
+	// Stop the VoWiFi session subscription; it started last and depends on the
+	// runtime's event bus.
+	if err := a.VoWiFi.Stop(ctx); err != nil {
+		return err
+	}
 	a.Runtime.Stop()
-	_ = a.Store.Close()
+	if err := a.Store.Close(); err != nil {
+		return err
+	}
+	return nil
 }

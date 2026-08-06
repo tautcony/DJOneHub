@@ -3,6 +3,7 @@ package vowifihost
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -25,8 +26,16 @@ func (f *dependencyFactory) Open(context.Context) (backend.VoWiFiPort, error) {
 type eventPort struct{ events chan Event }
 
 type recoveringPort struct {
-	events     chan Event
+	events chan Event
+
+	mu         sync.Mutex
 	reconnects int
+}
+
+func (p *recoveringPort) reconnectCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.reconnects
 }
 
 func (p *eventPort) Enable(context.Context) error    { return nil }
@@ -37,9 +46,14 @@ func (p *eventPort) Status(context.Context) (map[string]any, error) {
 }
 func (p *eventPort) Events(context.Context) (<-chan Event, error) { return p.events, nil }
 
-func (p *recoveringPort) Enable(context.Context) error    { return nil }
-func (p *recoveringPort) Disable(context.Context) error   { return nil }
-func (p *recoveringPort) Reconnect(context.Context) error { p.reconnects++; return nil }
+func (p *recoveringPort) Enable(context.Context) error  { return nil }
+func (p *recoveringPort) Disable(context.Context) error { return nil }
+func (p *recoveringPort) Reconnect(context.Context) error {
+	p.mu.Lock()
+	p.reconnects++
+	p.mu.Unlock()
+	return nil
+}
 func (p *recoveringPort) Status(context.Context) (map[string]any, error) {
 	return map[string]any{"state": "connected"}, nil
 }
@@ -60,6 +74,7 @@ func TestHostMapsTunnelAndIMSStateEventsAndRecoversAfterDeviceReady(t *testing.T
 	port := &eventPort{events: make(chan Event, 2)}
 	factory := &dependencyFactory{port: port}
 	host := New(factory, nil)
+	host.recoverDelay = 20 * time.Millisecond
 	_, events, unsubscribe := host.Events().Subscribe(16)
 	defer unsubscribe()
 	if err := host.Enable(context.Background()); err != nil {
@@ -88,15 +103,16 @@ func TestHostMapsTunnelAndIMSStateEventsAndRecoversAfterDeviceReady(t *testing.T
 func TestHostRecoversAfterResetAndDoesNotRecoverWhenDisabled(t *testing.T) {
 	port := &recoveringPort{events: make(chan Event, 1)}
 	host := New(&recoverFactory{port: port}, nil)
+	host.recoverDelay = 20 * time.Millisecond
 	if err := host.Enable(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	port.events <- Event{Type: "modem.reset", Data: map[string]any{"reason": "reset"}}
 	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) && port.reconnects == 0 {
+	for time.Now().Before(deadline) && port.reconnectCount() == 0 {
 		time.Sleep(time.Millisecond)
 	}
-	if port.reconnects == 0 {
+	if port.reconnectCount() == 0 {
 		t.Fatal("modem reset did not trigger recovery")
 	}
 	if err := host.Disable(context.Background()); err != nil {
@@ -104,26 +120,38 @@ func TestHostRecoversAfterResetAndDoesNotRecoverWhenDisabled(t *testing.T) {
 	}
 	port.events <- Event{Type: "network.changed"}
 	time.Sleep(20 * time.Millisecond)
-	if port.reconnects != 1 {
-		t.Fatalf("disabled host recovered unexpectedly: reconnects=%d", port.reconnects)
+	if port.reconnectCount() != 1 {
+		t.Fatalf("disabled host recovered unexpectedly: reconnects=%d", port.reconnectCount())
 	}
 }
 
 func TestHostRecoversAfterSIMNetworkAndExpiredCommandEvents(t *testing.T) {
 	port := &recoveringPort{events: make(chan Event, 8)}
 	host := New(&recoverFactory{port: port}, nil)
+	host.recoverDelay = 20 * time.Millisecond
 	if err := host.Enable(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	for index, eventType := range []string{"sim.changed", "network.changed", "command.expired", "modem.reset"} {
+	// The burst of recovery-worthy events collapses into one debounced run.
+	for _, eventType := range []string{"sim.changed", "network.changed", "command.expired", "modem.reset"} {
 		port.events <- Event{Type: eventType}
-		deadline := time.Now().Add(time.Second)
-		for time.Now().Before(deadline) && port.reconnects <= index {
-			time.Sleep(time.Millisecond)
-		}
-		if port.reconnects <= index {
-			t.Fatalf("event %s did not trigger recovery", eventType)
-		}
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) && port.reconnectCount() == 0 {
+		time.Sleep(time.Millisecond)
+	}
+	if port.reconnectCount() != 1 {
+		t.Fatalf("event burst must collapse into one recovery, reconnects=%d", port.reconnectCount())
+	}
+	// A quiet period allows the next burst to recover once more.
+	time.Sleep(50 * time.Millisecond)
+	port.events <- Event{Type: "modem.reset"}
+	deadline = time.Now().Add(time.Second)
+	for time.Now().Before(deadline) && port.reconnectCount() == 1 {
+		time.Sleep(time.Millisecond)
+	}
+	if port.reconnectCount() != 2 {
+		t.Fatalf("second burst must recover once more, reconnects=%d", port.reconnectCount())
 	}
 }
 

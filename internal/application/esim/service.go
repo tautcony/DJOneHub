@@ -85,7 +85,7 @@ func (s *Service) Download(ctx context.Context, activationCode, confirmationCode
 		progress(100, "downloaded")
 		s.ops.Publish("esim.updated", map[string]any{"operation": "download"})
 		return nil
-	}), nil
+	})
 }
 
 func (s *Service) Enable(ctx context.Context, iccid string) (string, error) {
@@ -106,7 +106,7 @@ func (s *Service) Enable(ctx context.Context, iccid string) (string, error) {
 		progress(100, "profile enabled")
 		s.ops.Publish("esim.updated", map[string]any{"operation": "enable", "iccid": iccid})
 		return nil
-	}), nil
+	})
 }
 
 func (s *Service) Rename(ctx context.Context, iccid, label string) error {
@@ -139,5 +139,5 @@ func (s *Service) Delete(ctx context.Context, iccid string) (string, error) {
 		progress(100, "profile deleted")
 		s.ops.Publish("esim.updated", map[string]any{"operation": "delete", "iccid": iccid})
 		return nil
-	}), nil
+	})
 }

@@ -37,11 +37,11 @@ func NewATPort(candidateID string, command func(string, time.Duration) (string, 
 	return &esimPort{manager: manager}, nil
 }
 
-func (p *esimPort) Overview(context.Context) (*EsimOverview, error) {
+func (p *esimPort) Overview(ctx context.Context) (*EsimOverview, error) {
 	if p == nil || p.manager == nil {
 		return nil, fmt.Errorf("eSIM manager is unavailable")
 	}
-	return p.manager.GetEsimOverview()
+	return p.manager.GetEsimOverview(ctx)
 }
 
 func (p *esimPort) EID(ctx context.Context) (string, error) {

@@ -266,6 +266,16 @@ func (a *BusinessAdapter) Events(ctx context.Context) (<-chan BackendEvent, erro
 	}
 	return source.Events(ctx)
 }
+
+// EventDrops forwards the underlying backend's event drop counter so the
+// diagnostics surface sees drops even through the adapter.
+func (a *BusinessAdapter) EventDrops() uint64 {
+	if counter, ok := a.legacy.(EventDropCounter); ok {
+		return counter.EventDrops()
+	}
+	return 0
+}
+
 func (a *BusinessAdapter) Close() error { return a.legacy.Close() }
 
 func (a *BusinessAdapter) Reboot(ctx context.Context) error {

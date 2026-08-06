@@ -116,4 +116,85 @@ final class NotifierPanelTests: XCTestCase {
             .usingColorSpace(.deviceRGB)?
             .alphaComponent ?? 1
     }
+
+    // MARK: - Reject-call recovery
+
+    @MainActor
+    func testRejectCallStateRecoversWithinBoundedTimeout() throws {
+        UIAppDelegate.rejectStateTimeout = 0.2
+        let delegate = UIAppDelegate()
+        delegate.applyConfig(#"{"notification_preferences":{"incoming_call":"custom","missed_call":"custom","sms":"custom","device_offline":"custom"}}"#)
+        delegate.handleEvent(try bridgeEvent(
+            id: 10,
+            type: BridgeEventType.callIncoming,
+            data: #"{"id":"call-1","direction":"incoming","state":"incoming","number":"10086","started_at":"2026-08-03T12:00:00Z","missed":false}"#
+        ))
+        delegate.rejectCall(callID: "call-1")
+        guard case let .incoming(_, _, _, rejecting) = delegate.presentedPanelContent else {
+            return XCTFail("rejecting call did not keep the custom panel")
+        }
+        XCTAssertTrue(rejecting, "panel must show the rejecting state")
+
+        // No callRejectSucceeded / callRejectFailed arrives: the bounded
+        // timeout must clear the rejecting state and restore the buttons.
+        let deadline = Date().addingTimeInterval(3)
+        while Date() < deadline {
+            if case let .incoming(_, _, _, recovered) = delegate.presentedPanelContent, !recovered {
+                return
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        }
+        XCTFail("rejecting state did not recover within the timeout")
+    }
+
+    @MainActor
+    func testCommandDroppedForRejectCallRestoresButtons() throws {
+        let delegate = UIAppDelegate()
+        delegate.applyConfig(#"{"notification_preferences":{"incoming_call":"custom","missed_call":"custom","sms":"custom","device_offline":"custom"}}"#)
+        delegate.handleEvent(try bridgeEvent(
+            id: 11,
+            type: BridgeEventType.callIncoming,
+            data: #"{"id":"call-2","direction":"incoming","state":"incoming","number":"10086","started_at":"2026-08-03T12:00:00Z","missed":false}"#
+        ))
+        delegate.rejectCall(callID: "call-2")
+        guard case let .incoming(_, _, _, rejecting) = delegate.presentedPanelContent, rejecting else {
+            return XCTFail("panel must be in the rejecting state")
+        }
+
+        delegate.handleEvent(try bridgeEvent(
+            id: 12,
+            type: BridgeEventType.commandDropped,
+            data: #"{"command":"reject_call","reason":"queue_full"}"#
+        ))
+        guard case let .incoming(_, _, _, restored) = delegate.presentedPanelContent else {
+            return XCTFail("command.dropped removed the call panel")
+        }
+        XCTAssertFalse(restored, "command.dropped must restore the actionable buttons")
+    }
+
+    @MainActor
+    func testCallRejectFailedClearsStateRegardlessOfCallIDMatch() throws {
+        let delegate = UIAppDelegate()
+        delegate.applyConfig(#"{"notification_preferences":{"incoming_call":"custom","missed_call":"custom","sms":"custom","device_offline":"custom"}}"#)
+        delegate.handleEvent(try bridgeEvent(
+            id: 13,
+            type: BridgeEventType.callIncoming,
+            data: #"{"id":"call-3","direction":"incoming","state":"incoming","number":"10086","started_at":"2026-08-03T12:00:00Z","missed":false}"#
+        ))
+        delegate.rejectCall(callID: "call-3")
+        guard case let .incoming(_, _, _, rejecting) = delegate.presentedPanelContent, rejecting else {
+            return XCTFail("panel must be in the rejecting state")
+        }
+
+        // The failure carries a stale/different call id: the rejecting state
+        // must still be cleared so the panel is never stranded in "rejecting".
+        delegate.handleEvent(try bridgeEvent(
+            id: 14,
+            type: BridgeEventType.callRejectFailed,
+            data: #"{"call_id":"other-call","error":"device busy"}"#
+        ))
+        guard case .error = delegate.presentedPanelContent else {
+            return XCTFail("callRejectFailed must replace the rejecting card with the error panel")
+        }
+    }
 }

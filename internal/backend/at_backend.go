@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/iniwex5/vohive/internal/modem"
@@ -21,6 +22,9 @@ type ATBackend struct {
 	eventsCh    chan BackendEvent
 	eventsDone  chan struct{}
 	eventsClose sync.Once
+	// eventsDropped counts modem-reset events dropped because the event
+	// subscriber was full; exposed through EventDrops for diagnostics.
+	eventsDropped atomic.Uint64
 }
 
 // NewATBackend 创建 AT 后端适配器
@@ -145,6 +149,10 @@ func (a *ATBackend) Events(ctx context.Context) (<-chan BackendEvent, error) {
 						return
 					case <-a.eventsDone:
 						return
+					default:
+						// A slow event consumer must not stall the AT command
+						// loop; count the drop instead of blocking.
+						a.eventsDropped.Add(1)
 					}
 				}
 			}
@@ -152,6 +160,10 @@ func (a *ATBackend) Events(ctx context.Context) (<-chan BackendEvent, error) {
 	})
 	return a.eventsCh, nil
 }
+
+// EventDrops reports the cumulative count of modem-reset events dropped for a
+// slow subscriber since this backend started.
+func (a *ATBackend) EventDrops() uint64 { return a.eventsDropped.Load() }
 
 // ============================================================================
 // DeviceInfoProvider 实现

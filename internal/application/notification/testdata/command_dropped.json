@@ -1,0 +1,10 @@
+{
+  "id": 53,
+  "type": "command.dropped",
+  "version": 1,
+  "occurred_at": "2026-08-02T10:00:10Z",
+  "data": {
+    "command": "reject_call",
+    "reason": "queue_full"
+  }
+}
