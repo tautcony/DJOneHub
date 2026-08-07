@@ -2415,6 +2415,28 @@ func TestClassifyDownloadErrorUsesGenericDownloadCodeForNonBPPError(t *testing.T
 	}
 }
 
+func TestClassifyDownloadErrorPreservesRemoteExecutionDiagnostics(t *testing.T) {
+	err := &sgp22.RemoteExecutionError{
+		Endpoint:    "/gsma/rsp2/es9plus/authenticateClient",
+		Status:      "Failed",
+		SubjectCode: "8.2.6",
+		ReasonCode:  "3.8",
+		Message:     "Execution Failed.",
+	}
+
+	info := ClassifyDownloadError(fmt.Errorf("authenticate profile: %w", err))
+	if info.RemoteEndpoint != err.Endpoint ||
+		info.RemoteStatus != err.Status ||
+		info.RemoteSubjectCode != err.SubjectCode ||
+		info.RemoteReasonCode != err.ReasonCode ||
+		info.RemoteMessage != err.Message {
+		t.Fatalf("remote diagnostics = %+v", info)
+	}
+	if stage := downloadFailureStage("auth_client", info.RemoteEndpoint); stage != "es9_authenticate_client" {
+		t.Fatalf("downloadFailureStage() = %q, want es9_authenticate_client", stage)
+	}
+}
+
 func TestDownloadProfileErrorPreservesOriginalErrorForErrorsAs(t *testing.T) {
 	baseErr := &sgp22.LoadBoundProfilePackageError{BPPCommandID: 5, ErrorReason: 10}
 	err := NewDownloadProfileError(baseErr)

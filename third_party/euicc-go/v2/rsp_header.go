@@ -42,6 +42,35 @@ type StatusCodeData struct {
 	Message     string `json:"message,omitempty"`
 }
 
+// RemoteExecutionError preserves the non-sensitive diagnostic fields returned
+// by an ES9+/ES11 endpoint. Request bodies are intentionally not retained
+// because they can contain activation credentials and certificate material.
+type RemoteExecutionError struct {
+	Endpoint    string
+	Status      string
+	SubjectCode string
+	ReasonCode  string
+	Message     string
+}
+
+func (e *RemoteExecutionError) Error() string {
+	if e == nil {
+		return "remote execution failed"
+	}
+	statusCode := StatusCodeData{
+		SubjectCode: e.SubjectCode,
+		ReasonCode:  e.ReasonCode,
+		Message:     e.Message,
+	}
+	if e.Message != "" || e.SubjectCode != "" || e.ReasonCode != "" {
+		return statusCode.Error()
+	}
+	if e.Status != "" {
+		return "remote execution status: " + e.Status
+	}
+	return "remote execution failed"
+}
+
 func (s StatusCodeData) Error() string {
 	if len(s.Message) > 0 {
 		return s.Message

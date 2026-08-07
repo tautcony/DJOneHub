@@ -1,8 +1,8 @@
 package sgp22
 
 import (
-	"errors"
 	"net/url"
+	"strings"
 
 	"github.com/damonto/euicc-go/bertlv"
 )
@@ -50,11 +50,28 @@ type HTTPResponse interface {
 
 func InvokeHTTP[I HTTPRequest[O], O HTTPResponse](client HTTPClient, address *url.URL, request I) (O, error) {
 	response := request.RemoteResponse()
-	if err := client.SendRequest(request.URL(address), request, response); err != nil {
+	endpoint := request.URL(address)
+	if err := client.SendRequest(endpoint, request, response); err != nil {
 		return response, err
 	}
-	if !response.FunctionExecutionStatus().ExecutedSuccess() {
-		return response, errors.New(response.FunctionExecutionStatus().StatusCodeData.Error())
+	status := response.FunctionExecutionStatus()
+	if !status.ExecutedSuccess() {
+		endpointPath := endpoint.EscapedPath()
+		if endpointPath != "" && !strings.HasPrefix(endpointPath, "/") {
+			endpointPath = "/" + endpointPath
+		}
+		remoteError := &RemoteExecutionError{
+			Endpoint: endpointPath,
+		}
+		if status != nil {
+			remoteError.Status = status.Status
+			if status.StatusCodeData != nil {
+				remoteError.SubjectCode = status.StatusCodeData.SubjectCode
+				remoteError.ReasonCode = status.StatusCodeData.ReasonCode
+				remoteError.Message = status.StatusCodeData.Message
+			}
+		}
+		return response, remoteError
 	}
 	return response, nil
 }

@@ -22,6 +22,7 @@ func NewLoggingRoundTripper(rootci *x509.CertPool, logger *slog.Logger) *Logging
 	return &LoggingRoundTripper{
 		logger: logger,
 		transport: &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
 			TLSClientConfig: &tls.Config{
 				RootCAs: rootci,
 			},

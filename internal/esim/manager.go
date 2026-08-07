@@ -3366,6 +3366,19 @@ func digestMatchingID(matchingID string) string {
 	return hex.EncodeToString(sum[:])[:8]
 }
 
+func downloadFailureStage(currentStage, remoteEndpoint string) string {
+	switch {
+	case strings.HasSuffix(remoteEndpoint, "/initiateAuthentication"):
+		return "es9_initiate_authentication"
+	case strings.HasSuffix(remoteEndpoint, "/authenticateClient"):
+		return "es9_authenticate_client"
+	case strings.HasSuffix(remoteEndpoint, "/getBoundProfilePackage"):
+		return "es9_get_bound_profile_package"
+	default:
+		return currentStage
+	}
+}
+
 // smdp 为 SM-DP+ 服务器地址，matchingID 和 confirmationCode 可选
 // downloadIMEI 为可选的前端指定 IMEI；为空时使用设备真实 IMEI
 // progressFn 为可选进度回调，为 nil 时静默执行
@@ -3474,15 +3487,19 @@ func (m *Manager) DownloadProfile(ctx context.Context, aidHex, smdp, matchingID,
 		"matchingID_digest", digestMatchingID(matchingID),
 		"AID", aidHex)
 
+	downloadStage := "auth_client"
 	installStarted := false
 	opts := &lpa.DownloadOptions{
 		OnProgress: func(stage lpa.DownloadStage) {
 			switch stage {
 			case lpa.DownloadStageAuthenticateClient:
+				downloadStage = "auth_client"
 				report("auth_client", "正在向 SM-DP+ 进行客户端身份认证...", 30)
 			case lpa.DownloadStageAuthenticateServer:
+				downloadStage = "auth_server"
 				report("auth_server", "正在向 SM-DP+ 请求 Profile 数据包...", 60)
 			case lpa.DownloadStageInstall:
+				downloadStage = "install"
 				installStarted = true
 				report("install", "正在将 Profile 写入 eUICC...", 80)
 			}
@@ -3511,11 +3528,18 @@ func (m *Manager) DownloadProfile(ctx context.Context, aidHex, smdp, matchingID,
 			return DownloadProfileResult{}, derrors.New(derrors.OperationCancelled, "确认码未提供，下载已取消", false, nil)
 		}
 		downloadErr := NewDownloadProfileError(err)
+		failureStage := downloadFailureStage(downloadStage, downloadErr.RemoteEndpoint)
 		logger.Warn("下载 eSIM profile 失败",
 			"device", m.deviceID,
 			"smdp", parsedURL.Host,
 			"matchingID_digest", digestMatchingID(matchingID),
 			"AID", aidHex,
+			"download_stage", failureStage,
+			"remote_endpoint", downloadErr.RemoteEndpoint,
+			"remote_status", downloadErr.RemoteStatus,
+			"remote_subject_code", downloadErr.RemoteSubjectCode,
+			"remote_reason_code", downloadErr.RemoteReasonCode,
+			"remote_message", downloadErr.RemoteMessage,
 			"freeNvram_before", beforeFreeNvramBytes,
 			"error_code", downloadErr.Code,
 			"bpp_command_id", downloadErr.BPPCommandID,

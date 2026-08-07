@@ -46,6 +46,7 @@ func main() {
 	// failures and legacy log.Printf call sites share one output format
 	// instead of mixing standard-log lines into the zap output.
 	logger.Setup(logger.LogConfig{Filename: logger.DefaultFilename("DJOneHub"), Compress: true})
+	logProxyEnvironment()
 	// The temporary loopback boundary rejects wildcard, non-loopback, and
 	// hostname listen addresses before any application or UI work starts.
 	port, err := validateListenAddress(*listen)

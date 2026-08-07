@@ -18,12 +18,17 @@ const (
 )
 
 type DownloadErrorInfo struct {
-	Code            string
-	Message         string
-	Details         string
-	BPPCommandID    byte
-	BPPErrorReason  byte
-	OriginalMessage string
+	Code              string
+	Message           string
+	Details           string
+	BPPCommandID      byte
+	BPPErrorReason    byte
+	RemoteEndpoint    string
+	RemoteStatus      string
+	RemoteSubjectCode string
+	RemoteReasonCode  string
+	RemoteMessage     string
+	OriginalMessage   string
 }
 
 type DownloadProfileError struct {
@@ -79,6 +84,15 @@ func ClassifyDownloadError(err error) DownloadErrorInfo {
 		info = applyBPPDownloadErrorInfo(info, *bppPtr)
 	} else if errors.As(err, &bppValue) {
 		info = applyBPPDownloadErrorInfo(info, bppValue)
+	}
+
+	var remoteError *sgp22.RemoteExecutionError
+	if errors.As(err, &remoteError) && remoteError != nil {
+		info.RemoteEndpoint = remoteError.Endpoint
+		info.RemoteStatus = remoteError.Status
+		info.RemoteSubjectCode = remoteError.SubjectCode
+		info.RemoteReasonCode = remoteError.ReasonCode
+		info.RemoteMessage = remoteError.Message
 	}
 
 	return info
