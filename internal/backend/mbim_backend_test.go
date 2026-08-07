@@ -7,7 +7,6 @@ import (
 	"time"
 
 	qmimanager "github.com/iniwex5/quectel-qmi-go/pkg/manager"
-	"github.com/iniwex5/vohive/internal/testfixtures"
 	"github.com/iniwex5/vohive/pkg/mbim"
 	"github.com/iniwex5/vohive/pkg/smscodec"
 	"github.com/warthog618/sms/encoding/tpdu"
@@ -279,14 +278,14 @@ type liveIdentityReader interface {
 
 func TestMBIMBackendLiveIdentity(t *testing.T) {
 	src := &fakeMBIMSource{
-		sub: mbim.SubscriberReady{ReadyState: 1, IMSI: "310840123456789", ICCID: testfixtures.ICCID19},
+		sub: mbim.SubscriberReady{ReadyState: 1, IMSI: "310840123456789", ICCID: fixtureICCID19},
 	}
 	var b any = NewMBIMBackend("", src)
 	reader, ok := b.(liveIdentityReader)
 	if !ok {
 		t.Fatal("MBIMBackend 未实现 live 身份接口（会导致面板 ICCID/IMSI 为空）")
 	}
-	if iccid, _ := reader.GetICCIDLive(context.Background()); iccid != testfixtures.ICCID19 {
+	if iccid, _ := reader.GetICCIDLive(context.Background()); iccid != fixtureICCID19 {
 		t.Fatalf("GetICCIDLive = %q", iccid)
 	}
 	if imsi, _ := reader.GetIMSILive(context.Background()); imsi != "310840123456789" {
@@ -296,17 +295,17 @@ func TestMBIMBackendLiveIdentity(t *testing.T) {
 
 func TestMBIMBackendIdentity(t *testing.T) {
 	src := &fakeMBIMSource{
-		caps: mbim.Caps{DeviceID: testfixtures.IMEI},
-		sub:  mbim.SubscriberReady{ReadyState: 1, IMSI: testfixtures.IMSI, ICCID: "8901000000", MSISDN: "15551234567"},
+		caps: mbim.Caps{DeviceID: fixtureIMEI},
+		sub:  mbim.SubscriberReady{ReadyState: 1, IMSI: fixtureIMSI, ICCID: "8901000000", MSISDN: "15551234567"},
 	}
 	b := NewMBIMBackend("", src)
 	if b.Mode() != BackendMBIM {
 		t.Fatalf("Mode = %q", b.Mode())
 	}
-	if imei, _ := b.GetIMEI(context.Background()); imei != testfixtures.IMEI {
+	if imei, _ := b.GetIMEI(context.Background()); imei != fixtureIMEI {
 		t.Fatalf("IMEI = %q", imei)
 	}
-	if imsi, _ := b.GetIMSI(context.Background()); imsi != testfixtures.IMSI {
+	if imsi, _ := b.GetIMSI(context.Background()); imsi != fixtureIMSI {
 		t.Fatalf("IMSI = %q", imsi)
 	}
 	ok, _ := b.IsSimInserted(context.Background())
@@ -439,7 +438,7 @@ func TestMBIMBackendSendSMS(t *testing.T) {
 	src := &fakeMBIMSource{}
 	src.sendFn = func(pdu []byte) (uint32, error) { sent = append(sent, pdu); return 1, nil }
 	b := NewMBIMBackend("", src)
-	if err := b.SendSMS(context.Background(), testfixtures.MSISDN, "hello"); err != nil {
+	if err := b.SendSMS(context.Background(), fixtureMSISDN, "hello"); err != nil {
 		t.Fatalf("SendSMS: %v", err)
 	}
 	if len(sent) == 0 {
@@ -574,7 +573,7 @@ func TestMBIMBackendListSMS(t *testing.T) {
 func TestMBIMBackendGetSMSCDelegates(t *testing.T) {
 	src := &fakeMBIMSource{
 		smscFn: func(context.Context) (string, error) {
-			return testfixtures.SMSC, nil
+			return fixtureSMSC, nil
 		},
 	}
 	var _ SMSCProvider = (*MBIMBackend)(nil)
@@ -584,19 +583,19 @@ func TestMBIMBackendGetSMSCDelegates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetSMSC: %v", err)
 	}
-	if smsc != testfixtures.SMSC {
-		t.Fatalf("SMSC = %q, want %q", smsc, testfixtures.SMSC)
+	if smsc != fixtureSMSC {
+		t.Fatalf("SMSC = %q, want %q", smsc, fixtureSMSC)
 	}
 }
 
 func TestMBIMBackendSetSMSCDelegates(t *testing.T) {
 	src := &fakeMBIMSource{}
 	b := NewMBIMBackend("", src)
-	if err := b.SetSMSC(context.Background(), testfixtures.SMSC); err != nil {
+	if err := b.SetSMSC(context.Background(), fixtureSMSC); err != nil {
 		t.Fatalf("SetSMSC: %v", err)
 	}
-	if src.setSMSCArg != testfixtures.SMSC {
-		t.Fatalf("setSMSCArg = %q, want %q", src.setSMSCArg, testfixtures.SMSC)
+	if src.setSMSCArg != fixtureSMSC {
+		t.Fatalf("setSMSCArg = %q, want %q", src.setSMSCArg, fixtureSMSC)
 	}
 }
 

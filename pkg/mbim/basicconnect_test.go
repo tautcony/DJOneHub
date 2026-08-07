@@ -4,8 +4,6 @@ import (
 	"context"
 	"testing"
 	"unicode/utf16"
-
-	"github.com/iniwex5/vohive/internal/testfixtures"
 )
 
 func encodeUTF16(s string) []byte {
@@ -19,7 +17,7 @@ func encodeUTF16(s string) []byte {
 
 func TestDeviceCapsParsesIMEI(t *testing.T) {
 	const fixed = 8*4 + 4*8
-	imei := testfixtures.IMEI
+	imei := fixtureIMEI
 	imeiBytes := encodeUTF16(imei)
 	info := make([]byte, fixed+len(imeiBytes))
 	le.PutUint32(info[40:], fixed)

@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/iniwex5/vohive/internal/testfixtures"
 )
 
 func TestMonitorAppliesIndications(t *testing.T) {
@@ -136,13 +135,13 @@ func TestMonitorFiresOnSubscriberReadyWhenStateChanges(t *testing.T) {
 	got := make(chan Snapshot, 1)
 	m.SetOnSubscriberReady(func(s Snapshot) { got <- s })
 
-	info := buildSubscriberBuf(testfixtures.IMSI, testfixtures.ICCID20, "")
+	info := buildSubscriberBuf(fixtureIMSI, fixtureICCID20, "")
 	m.apply(Indication{Service: UUIDBasicConnect, CID: CIDBasicConnectSubscriberReadyStatus, InfoBuffer: info})
 
 	select {
 	case s := <-got:
-		if s.ICCID != testfixtures.ICCID20 {
-			t.Fatalf("ICCID = %q, want %s", s.ICCID, testfixtures.ICCID20)
+		if s.ICCID != fixtureICCID20 {
+			t.Fatalf("ICCID = %q, want %s", s.ICCID, fixtureICCID20)
 		}
 		if s.ReadyState != 1 {
 			t.Fatalf("ReadyState = %d, want 1", s.ReadyState)
@@ -155,11 +154,11 @@ func TestMonitorFiresOnSubscriberReadyWhenStateChanges(t *testing.T) {
 func TestMonitorDoesNotFireOnSubscriberReadyWhenUnchanged(t *testing.T) {
 	m := &Monitor{}
 	m.snap.ReadyState = 1
-	m.snap.ICCID = testfixtures.ICCID20
+	m.snap.ICCID = fixtureICCID20
 	fired := false
 	m.SetOnSubscriberReady(func(Snapshot) { fired = true })
 
-	info := buildSubscriberBuf(testfixtures.IMSI, testfixtures.ICCID20, "")
+	info := buildSubscriberBuf(fixtureIMSI, fixtureICCID20, "")
 	m.apply(Indication{Service: UUIDBasicConnect, CID: CIDBasicConnectSubscriberReadyStatus, InfoBuffer: info})
 
 	if fired {

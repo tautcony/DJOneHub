@@ -4,14 +4,13 @@ import (
 	"context"
 	"testing"
 
-	"github.com/iniwex5/vohive/internal/testfixtures"
 )
 
 func TestParseSubscriberReady(t *testing.T) {
 	const fixed = 36
-	imsi := encodeUTF16(testfixtures.IMSI)
-	iccid := encodeUTF16(testfixtures.ICCID20)
-	msisdn := encodeUTF16(testfixtures.MSISDN)
+	imsi := encodeUTF16(fixtureIMSI)
+	iccid := encodeUTF16(fixtureICCID20)
+	msisdn := encodeUTF16(fixtureMSISDN)
 	buf := make([]byte, fixed+len(imsi)+len(iccid)+len(msisdn))
 	le.PutUint32(buf[0:], 1)
 	off := fixed
@@ -33,7 +32,7 @@ func TestParseSubscriberReady(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse failed: %v", err)
 	}
-	if s.IMSI != testfixtures.IMSI || s.ICCID != testfixtures.ICCID20 || s.MSISDN != testfixtures.MSISDN {
+	if s.IMSI != fixtureIMSI || s.ICCID != fixtureICCID20 || s.MSISDN != fixtureMSISDN {
 		t.Fatalf("subscriber = %+v", s)
 	}
 	if s.ReadyState != 1 {
@@ -43,7 +42,7 @@ func TestParseSubscriberReady(t *testing.T) {
 
 func TestQuerySubscriberReady(t *testing.T) {
 	ft := newFakeTransport()
-	info := buildSubscriberBuf(testfixtures.IMSIAlt, "8901000000", "")
+	info := buildSubscriberBuf(fixtureIMSIAlt, "8901000000", "")
 	ft.reply = func(w []byte) ([]byte, bool) {
 		h, _ := decodeHeader(w)
 		switch h.Type {
@@ -63,7 +62,7 @@ func TestQuerySubscriberReady(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Query failed: %v", err)
 	}
-	if s.IMSI != testfixtures.IMSIAlt {
+	if s.IMSI != fixtureIMSIAlt {
 		t.Fatalf("IMSI = %q", s.IMSI)
 	}
 }

@@ -4,12 +4,11 @@ import (
 	"context"
 	"testing"
 
-	"github.com/iniwex5/vohive/internal/testfixtures"
 )
 
 func TestQMIBackendGetMSISDNPassThrough(t *testing.T) {
 	src := &qmiBackendSendSourceStub{}
-	srcMSISDN := testfixtures.MSISDN
+	srcMSISDN := fixtureMSISDN
 	src.getMSISDN = func(ctx context.Context) (string, error) {
 		return srcMSISDN, nil
 	}
@@ -43,7 +42,7 @@ func TestQMIBackendGetMSISDNAddsPlusPrefixForBareDigits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetMSISDN failed: %v", err)
 	}
-	if got != testfixtures.MSISDN {
-		t.Fatalf("GetMSISDN()=%q want=%q", got, testfixtures.MSISDN)
+	if got != fixtureMSISDN {
+		t.Fatalf("GetMSISDN()=%q want=%q", got, fixtureMSISDN)
 	}
 }

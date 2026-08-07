@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/iniwex5/vohive/internal/domain/device"
-	"github.com/iniwex5/vohive/internal/testfixtures"
 )
 
 type contractLegacy struct {
@@ -16,9 +15,9 @@ type contractLegacy struct {
 func (f *contractLegacy) Mode() string                                { return BackendAT }
 func (f *contractLegacy) Close() error                                { return nil }
 func (f *contractLegacy) GetIMEI(context.Context) (string, error)     { return "123456789012345", nil }
-func (f *contractLegacy) GetIMSI(context.Context) (string, error)     { return testfixtures.IMSI, nil }
-func (f *contractLegacy) GetICCID(context.Context) (string, error)    { return testfixtures.ICCID19, nil }
-func (f *contractLegacy) GetMSISDN(context.Context) (string, error)   { return testfixtures.MSISDN, nil }
+func (f *contractLegacy) GetIMSI(context.Context) (string, error)     { return fixtureIMSI, nil }
+func (f *contractLegacy) GetICCID(context.Context) (string, error)    { return fixtureICCID19, nil }
+func (f *contractLegacy) GetMSISDN(context.Context) (string, error)   { return fixtureMSISDN, nil }
 func (f *contractLegacy) GetRevision(context.Context) (string, error) { return "test", nil }
 func (f *contractLegacy) GetSignalInfo(context.Context) (*SignalInfo, error) {
 	return &SignalInfo{RSSI: -70}, nil
@@ -34,11 +33,11 @@ func (f *contractLegacy) GetNativeSPN(context.Context) (string, error)         {
 func (f *contractLegacy) GetSIMMetadata(context.Context) (*SIMMetadata, error) { return nil, nil }
 func (f *contractLegacy) SendSMS(context.Context, string, string) error        { return nil }
 func (f *contractLegacy) ReadSMS(context.Context, NewSMSRef) (*SMS, error) {
-	return &SMS{Index: 7, Sender: testfixtures.MSISDN, Content: "code 123456", Timestamp: time.Unix(1, 0)}, nil
+	return &SMS{Index: 7, Sender: fixtureMSISDN, Content: "code 123456", Timestamp: time.Unix(1, 0)}, nil
 }
 func (f *contractLegacy) DeleteSMS(context.Context, NewSMSRef) error { return nil }
 func (f *contractLegacy) ListSMS(context.Context) ([]SMSSummary, error) {
-	return []SMSSummary{{Index: 7, Storage: "SM", ReceivedAt: time.Unix(2, 0), Sender: testfixtures.MSISDN, Body: "code 123456"}}, nil
+	return []SMSSummary{{Index: 7, Storage: "SM", ReceivedAt: time.Unix(2, 0), Sender: fixtureMSISDN, Body: "code 123456"}}, nil
 }
 func (f *contractLegacy) DeleteAllSMS(context.Context) error                    { return nil }
 func (f *contractLegacy) SetOperatingMode(context.Context, OperatingMode) error { return nil }

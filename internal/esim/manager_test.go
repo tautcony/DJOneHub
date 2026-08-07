@@ -22,7 +22,6 @@ import (
 	sgp22 "github.com/damonto/euicc-go/v2"
 	qmiq "github.com/iniwex5/quectel-qmi-go/pkg/qmi"
 	"github.com/iniwex5/vohive/internal/backend"
-	"github.com/iniwex5/vohive/internal/testfixtures"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -355,7 +354,7 @@ func TestGetEIDsFallsBackWhenSeededDiscoveryIsStale(t *testing.T) {
 	seededAID := mustHexAIDs(t, "A0000005591010FFFFFFFF8900000199")[0]
 	targetAID := AIDs[2]
 	targetAIDHex := strings.ToUpper(hex.EncodeToString(targetAID))
-	targetEID := testfixtures.EID
+	targetEID := fixtureEID
 	var factoryCalls atomic.Int32
 	mgr := newManagerWithChannelFactory("reader-slot", func(aid []byte) (*lpa.Client, error) {
 		factoryCalls.Add(1)
@@ -368,7 +367,7 @@ func TestGetEIDsFallsBackWhenSeededDiscoveryIsStale(t *testing.T) {
 	mgr.SeedDiscoveredEUICCs([]EUICCInfo{{
 		AID:    seededAID,
 		AIDHex: "A0000005591010FFFFFFFF8900000199",
-		EID:    testfixtures.EIDAlt,
+		EID:    fixtureEIDAlt,
 		Spec:   EUICCSpecSGP22,
 	}})
 
@@ -391,7 +390,7 @@ func TestGetEsimOverviewSeedsDiscoveredEIDForLaterGetEIDs(t *testing.T) {
 	aid := mustHexAIDs(t, "A0000005591010FFFFFFFF8900000100")[0]
 	aidHex := strings.ToUpper(hex.EncodeToString(aid))
 	var factoryCalls atomic.Int32
-	eid := mustHexAIDs(t, testfixtures.EID)[0]
+	eid := mustHexAIDs(t, fixtureEID)[0]
 	mgr := newManagerWithChannelFactory("reader-slot", func(aid []byte) (*lpa.Client, error) {
 		factoryCalls.Add(1)
 		if got := strings.ToUpper(hex.EncodeToString(aid)); got != aidHex {
@@ -417,7 +416,7 @@ func TestGetEsimOverviewSeedsDiscoveredEIDForLaterGetEIDs(t *testing.T) {
 	if factoryCalls.Load() <= callsAfterOverview {
 		t.Fatalf("channel factory calls after GetEIDs=%d want more than %d for fresh scan", factoryCalls.Load(), callsAfterOverview)
 	}
-	if len(eids) != 1 || eids[0].EID != testfixtures.EID || eids[0].AIDHex != aidHex {
+	if len(eids) != 1 || eids[0].EID != fixtureEID || eids[0].AIDHex != aidHex {
 		t.Fatalf("GetEIDs()=%#v, want seeded overview AID/EID", eids)
 	}
 }
@@ -489,10 +488,10 @@ func TestGetProfileOverviewUsesIndependentLightweightCache(t *testing.T) {
 	mgr.profilesLoader = func(context.Context) ([]EUICCProfiles, error) {
 		profileCalls.Add(1)
 		return []EUICCProfiles{{
-			EID:    testfixtures.EID,
+			EID:    fixtureEID,
 			AIDHex: strings.ToUpper(hex.EncodeToString(AIDs[2])),
 			Profiles: []ProfileItem{{
-				ICCID:      testfixtures.ICCID19,
+				ICCID:      fixtureICCID19,
 				State:      int(sgp22.ProfileDisabled),
 				StateKnown: true,
 			}},
@@ -518,7 +517,7 @@ func TestGetProfileOverviewUsesIndependentLightweightCache(t *testing.T) {
 	}
 	second.Profiles[0].Profiles[0].ICCID = "mutated"
 	third, err := mgr.GetProfileOverview(context.Background())
-	if err != nil || third.Profiles[0].Profiles[0].ICCID != testfixtures.ICCID19 {
+	if err != nil || third.Profiles[0].Profiles[0].ICCID != fixtureICCID19 {
 		t.Fatalf("cached snapshot was not cloned: overview=%#v err=%v", third, err)
 	}
 }
@@ -531,7 +530,7 @@ func TestGetProfileOverviewInvalidatesAndHonorsCancellation(t *testing.T) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		return []EUICCProfiles{{EID: testfixtures.EID, AIDHex: strings.ToUpper(hex.EncodeToString(AIDs[2]))}}, nil
+		return []EUICCProfiles{{EID: fixtureEID, AIDHex: strings.ToUpper(hex.EncodeToString(AIDs[2]))}}, nil
 	}
 	if _, err := mgr.GetProfileOverview(context.Background()); err != nil {
 		t.Fatalf("GetProfileOverview() error=%v", err)
@@ -561,20 +560,20 @@ func TestESIMPortEIDAndProfilesShareLightweightSnapshot(t *testing.T) {
 	mgr.profilesLoader = func(context.Context) ([]EUICCProfiles, error) {
 		calls.Add(1)
 		return []EUICCProfiles{{
-			EID:    testfixtures.EID,
+			EID:    fixtureEID,
 			AIDHex: strings.ToUpper(hex.EncodeToString(AIDs[2])),
 			Profiles: []ProfileItem{{
-				ICCID:      testfixtures.ICCID19,
+				ICCID:      fixtureICCID19,
 				State:      int(sgp22.ProfileDisabled),
 				StateKnown: true,
 			}},
 		}}, nil
 	}
-	mgr.iccidProvider = func(context.Context) (string, error) { return testfixtures.ICCID19, nil }
+	mgr.iccidProvider = func(context.Context) (string, error) { return fixtureICCID19, nil }
 	port := &esimPort{manager: mgr}
 
 	eid, err := port.EID(context.Background())
-	if err != nil || eid != testfixtures.EID {
+	if err != nil || eid != fixtureEID {
 		t.Fatalf("EID()=%q err=%v", eid, err)
 	}
 	profiles, err := port.Profiles(context.Background())
@@ -588,7 +587,7 @@ func TestESIMPortEIDAndProfilesShareLightweightSnapshot(t *testing.T) {
 
 func TestDoForEachEUICCScansPastThreeFailuresAndStopsAtFirstUsableVendorAID(t *testing.T) {
 	targetAIDHex := strings.ToUpper(hex.EncodeToString(AIDs[3]))
-	eid := mustDecodeHex(t, testfixtures.EID)
+	eid := mustDecodeHex(t, fixtureEID)
 	opened := make([]string, 0, len(AIDs))
 	mgr := newManagerWithChannelFactory("dev-esim", func(aid []byte) (*lpa.Client, error) {
 		aidHex := strings.ToUpper(hex.EncodeToString(aid))
@@ -632,7 +631,7 @@ func TestDoForEachEUICCScansPastThreeFailuresAndStopsAtFirstUsableVendorAID(t *t
 // to panic per-AID without taking down the whole overview/profile scan.
 func TestDoForEachEUICCRecoversFromCallbackPanic(t *testing.T) {
 	targetAIDHex := strings.ToUpper(hex.EncodeToString(AIDs[3]))
-	eid := mustDecodeHex(t, testfixtures.EID)
+	eid := mustDecodeHex(t, fixtureEID)
 	mgr := newManagerWithChannelFactory("dev-esim", func(aid []byte) (*lpa.Client, error) {
 		aidHex := strings.ToUpper(hex.EncodeToString(aid))
 		if aidHex != targetAIDHex {
@@ -663,8 +662,8 @@ func TestDoForEachEUICCRecoversFromCallbackPanic(t *testing.T) {
 
 func TestDoForEachEUICCContinuesESTKPairThenStopsBeforeGSMA(t *testing.T) {
 	eids := map[string][]byte{
-		strings.ToUpper(hex.EncodeToString(AIDs[0])): mustDecodeHex(t, testfixtures.EID),
-		strings.ToUpper(hex.EncodeToString(AIDs[1])): mustDecodeHex(t, testfixtures.EIDAlt),
+		strings.ToUpper(hex.EncodeToString(AIDs[0])): mustDecodeHex(t, fixtureEID),
+		strings.ToUpper(hex.EncodeToString(AIDs[1])): mustDecodeHex(t, fixtureEIDAlt),
 	}
 	opened := make([]string, 0, len(AIDs))
 	mgr := newManagerWithChannelFactory("dev-esim", func(aid []byte) (*lpa.Client, error) {
@@ -696,7 +695,7 @@ func TestDoForEachEUICCContinuesESTKPairThenStopsBeforeGSMA(t *testing.T) {
 }
 
 func TestFindAIDForICCIDScansPastThreeFailedAIDs(t *testing.T) {
-	targetICCID := testfixtures.ICCID19
+	targetICCID := fixtureICCID19
 	targetAID := AIDs[3]
 	opened := make([]string, 0, len(AIDs))
 	mgr := newManagerWithChannelFactory("dev-esim", func(aid []byte) (*lpa.Client, error) {
@@ -759,7 +758,7 @@ func newTestATManagerForSIMReload(t *testing.T, be *fakeSIMPowerBackend, calls *
 
 func TestSwitchProfileQMIDoesNotPowerCycleAfterEnableSuccess(t *testing.T) {
 	const aidHex = "A0000005591010FFFFFFFF8900000100"
-	const targetICCID = testfixtures.ICCID19
+	const targetICCID = fixtureICCID19
 
 	var enableCalls atomic.Int32
 	be := &fakeSIMPowerBackend{}
@@ -789,7 +788,7 @@ func TestSwitchProfileQMIDoesNotPowerCycleAfterEnableSuccess(t *testing.T) {
 
 func TestSwitchProfileATDoesNotReloadInsideManagerAfterEnableSuccess(t *testing.T) {
 	const aidHex = "A0000005591010FFFFFFFF8900000100"
-	const targetICCID = testfixtures.ICCID19
+	const targetICCID = fixtureICCID19
 
 	var enableCalls atomic.Int32
 	be := &fakeSIMPowerBackend{}
@@ -826,7 +825,7 @@ func TestSwitchProfileATDoesNotReloadInsideManagerAfterEnableSuccess(t *testing.
 
 func TestSwitchProfileDoesNotReportReloadWarningFromManager(t *testing.T) {
 	const aidHex = "A0000005591010FFFFFFFF8900000100"
-	const targetICCID = testfixtures.ICCID19
+	const targetICCID = fixtureICCID19
 	originalTimeout := switchFallbackPowerTimeout
 	switchFallbackPowerTimeout = time.Millisecond
 	t.Cleanup(func() { switchFallbackPowerTimeout = originalTimeout })
@@ -871,7 +870,7 @@ func TestSwitchProfileDoesNotReportReloadWarningFromManager(t *testing.T) {
 
 func TestSwitchProfileDoesNotProbeIdentityInsideManagerAfterAcceptedSwitch(t *testing.T) {
 	const aidHex = "A0000005591010FFFFFFFF8900000100"
-	const targetICCID = testfixtures.ICCID19
+	const targetICCID = fixtureICCID19
 	var enableCalls atomic.Int32
 	be := &fakeSIMPowerBackend{iccid: targetICCID}
 	mgr := newTestQMIManagerForPowerCycle(t, be, &enableCalls)
@@ -909,7 +908,7 @@ func TestSwitchProfileDoesNotProbeIdentityInsideManagerAfterAcceptedSwitch(t *te
 
 func TestSwitchProfileDoesNotRunSIMReloadInsideManager(t *testing.T) {
 	const aidHex = "A0000005591010FFFFFFFF8900000100"
-	const targetICCID = testfixtures.ICCID19
+	const targetICCID = fixtureICCID19
 
 	var enableCalls atomic.Int32
 	be := &fakeSIMPowerBackend{iccid: "8901000000000000001"}
@@ -945,7 +944,7 @@ func TestSwitchProfileDoesNotRunSIMReloadInsideManager(t *testing.T) {
 
 func TestSwitchProfilePostSwitchHookRunsWithoutManagerReload(t *testing.T) {
 	const aidHex = "A0000005591010FFFFFFFF8900000100"
-	const targetICCID = testfixtures.ICCID19
+	const targetICCID = fixtureICCID19
 
 	var enableCalls atomic.Int32
 	be := &fakeSIMPowerBackend{iccid: "8901000000000000001"}
@@ -985,7 +984,7 @@ func TestSwitchProfilePostSwitchHookRunsWithoutManagerReload(t *testing.T) {
 
 func TestSwitchProfileSuppressesOverviewReloadBeforeEnableRefresh(t *testing.T) {
 	const aidHex = "A0000005591010FFFFFFFF8900000100"
-	const targetICCID = testfixtures.ICCID19
+	const targetICCID = fixtureICCID19
 	var enableCalls atomic.Int32
 	be := &fakeSIMPowerBackend{iccid: targetICCID}
 	mgr := newTestQMIManagerForPowerCycle(t, be, &enableCalls)
@@ -1007,7 +1006,7 @@ func TestSwitchProfileSuppressesOverviewReloadBeforeEnableRefresh(t *testing.T) 
 
 func TestDisableProfileDoesNotPowerCycleInsideManager(t *testing.T) {
 	const aidHex = "A0000005591010FFFFFFFF8900000100"
-	const targetICCID = testfixtures.ICCID19
+	const targetICCID = fixtureICCID19
 	var disableCalls atomic.Int32
 	be := &fakeSIMPowerBackend{}
 	mgr := newTestQMIManagerForPowerCycle(t, be, &disableCalls)
@@ -1028,7 +1027,7 @@ func TestDisableProfileDoesNotPowerCycleInsideManager(t *testing.T) {
 
 func TestDisableProfileTreatsMBIMInvalidChannelAsExpected(t *testing.T) {
 	const aidHex = "A0000005591010FFFFFFFF8900000100"
-	const targetICCID = testfixtures.ICCID19
+	const targetICCID = fixtureICCID19
 	var disableCalls atomic.Int32
 	be := &fakeSIMPowerBackend{}
 	mgr := &Manager{
@@ -1058,10 +1057,10 @@ func TestDisableProfileTreatsMBIMInvalidChannelAsExpected(t *testing.T) {
 
 func TestSwitchProfileCustomAPDUErrorFailsWithoutConfirmationRead(t *testing.T) {
 	const aidHex = "A0000005591010FFFFFFFF8900000100"
-	const targetICCID = testfixtures.ICCID19
+	const targetICCID = fixtureICCID19
 	var enableCalls atomic.Int32
 	var listCalls atomic.Int32
-	eid, err := hex.DecodeString(testfixtures.EID)
+	eid, err := hex.DecodeString(fixtureEID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1072,7 +1071,7 @@ func TestSwitchProfileCustomAPDUErrorFailsWithoutConfirmationRead(t *testing.T) 
 		listCalls: &listCalls,
 		eid:       eid,
 		profiles: []*sgp22.ProfileInfo{
-			{ICCID: mustTestICCID(t, testfixtures.ICCID20), ProfileState: sgp22.ProfileDisabled, ProfileName: "old"},
+			{ICCID: mustTestICCID(t, fixtureICCID20), ProfileState: sgp22.ProfileDisabled, ProfileName: "old"},
 			{ICCID: mustTestICCID(t, targetICCID), ProfileState: sgp22.ProfileEnabled, ProfileName: "target"},
 		},
 	}
@@ -1110,7 +1109,7 @@ func TestSwitchProfileCustomAPDUErrorFailsWithoutConfirmationRead(t *testing.T) 
 
 func TestSwitchProfileQMIErrorFailsEvenWhenBackendReportsTargetICCID(t *testing.T) {
 	const aidHex = "A0000005591010FFFFFFFF8900000100"
-	const targetICCID = testfixtures.ICCID19
+	const targetICCID = fixtureICCID19
 	var enableCalls atomic.Int32
 	be := &fakeSIMPowerBackend{iccid: targetICCID}
 	mgr := newTestQMIManagerForPowerCycle(t, be, &enableCalls)
@@ -1150,7 +1149,7 @@ func TestSwitchProfileQMIErrorFailsEvenWhenBackendReportsTargetICCID(t *testing.
 
 func TestSwitchProfileFailedCallbackReceivesOriginalError(t *testing.T) {
 	const aidHex = "A0000005591010FFFFFFFF8900000100"
-	const targetICCID = testfixtures.ICCID19
+	const targetICCID = fixtureICCID19
 	var enableCalls atomic.Int32
 	rootErr := errors.New("QMI: read failed: EOF")
 	mgr := newTestQMIManagerForPowerCycle(t, &fakeSIMPowerBackend{}, &enableCalls)
@@ -1196,7 +1195,7 @@ func TestSwitchProfileFailedCallbackReceivesOriginalError(t *testing.T) {
 
 func TestSwitchProfilePostSwitchHookStillRunsWhenBackendPowerWouldFail(t *testing.T) {
 	const aidHex = "A0000005591010FFFFFFFF8900000100"
-	const targetICCID = testfixtures.ICCID19
+	const targetICCID = fixtureICCID19
 	originalTimeout := switchFallbackPowerTimeout
 	switchFallbackPowerTimeout = time.Millisecond
 	t.Cleanup(func() { switchFallbackPowerTimeout = originalTimeout })
@@ -1380,7 +1379,7 @@ func TestNewManagerWithoutAPDUArbiterLeavesReadIdleWaitDisabled(t *testing.T) {
 func TestFinalizeEnableProfileResultTreatsMBIMInvalidChannelAsExpected(t *testing.T) {
 	m := &Manager{deviceID: "dev-mbim"}
 	wrapped := fmt.Errorf("transmit APDU: %w", ErrMBIMUICCInvalidChannel)
-	if err := m.finalizeEnableProfileResult(testfixtures.ICCID19, wrapped); err != nil {
+	if err := m.finalizeEnableProfileResult(fixtureICCID19, wrapped); err != nil {
 		t.Fatalf("finalizeEnableProfileResult() error = %v, want nil (MBIM逻辑通道失效是 refresh 后预期信号)", err)
 	}
 }
@@ -1388,7 +1387,7 @@ func TestFinalizeEnableProfileResultTreatsMBIMInvalidChannelAsExpected(t *testin
 func TestFinalizeEnableProfileResultStillFailsOnUnrelatedMBIMError(t *testing.T) {
 	m := &Manager{deviceID: "dev-mbim"}
 	wrapped := fmt.Errorf("transmit APDU: %w", errors.New("some other failure"))
-	if err := m.finalizeEnableProfileResult(testfixtures.ICCID19, wrapped); err == nil {
+	if err := m.finalizeEnableProfileResult(fixtureICCID19, wrapped); err == nil {
 		t.Fatal("finalizeEnableProfileResult() error = nil, want failure for unrelated error")
 	}
 }
@@ -1439,7 +1438,7 @@ func TestNewManagerConfiguresSwitchRefreshFlag(t *testing.T) {
 }
 
 func TestSwitchProfileSkipsAlreadyActiveProfile(t *testing.T) {
-	const targetICCID = testfixtures.ICCID19
+	const targetICCID = fixtureICCID19
 	var beforeCalls atomic.Int32
 	mgr := newManagerWithChannelFactory("dev-esim", func([]byte) (*lpa.Client, error) {
 		t.Fatal("already active profile should not open an APDU channel")
@@ -2205,7 +2204,7 @@ func TestDeleteNotificationWarningCodesUseDeleteScopedNames(t *testing.T) {
 }
 
 func TestFindDeleteNotificationWaitsForMatchingNotification(t *testing.T) {
-	wantICCID, err := sgp22.NewICCID(testfixtures.ICCID19)
+	wantICCID, err := sgp22.NewICCID(fixtureICCID19)
 	if err != nil {
 		t.Fatalf("NewICCID() error=%v", err)
 	}
@@ -2491,7 +2490,7 @@ func TestDeleteNotificationResultWarningCodes(t *testing.T) {
 }
 
 func TestResolveDeleteNotificationResultUsesDelayedObservationAndFailureReason(t *testing.T) {
-	iccid, err := sgp22.NewICCID(testfixtures.ICCID19)
+	iccid, err := sgp22.NewICCID(fixtureICCID19)
 	if err != nil {
 		t.Fatalf("NewICCID() error=%v", err)
 	}
@@ -2887,7 +2886,7 @@ func emptyRetrieveNotificationResponse() []byte {
 }
 
 func TestListNotificationsMapsCurrentNotificationItems(t *testing.T) {
-	iccid, err := sgp22.NewICCID(testfixtures.ICCID19)
+	iccid, err := sgp22.NewICCID(fixtureICCID19)
 	if err != nil {
 		t.Fatalf("NewICCID() error=%v", err)
 	}
@@ -2918,7 +2917,7 @@ func TestListNotificationsMapsCurrentNotificationItems(t *testing.T) {
 	if len(items) != 2 {
 		t.Fatalf("len(items)=%d want 2", len(items))
 	}
-	if items[0].SequenceNumber != 11 || items[0].Event != "install" || items[0].ICCID != testfixtures.ICCID19 || items[0].Address != "install.example.com" || !items[0].CanRetry {
+	if items[0].SequenceNumber != 11 || items[0].Event != "install" || items[0].ICCID != fixtureICCID19 || items[0].Address != "install.example.com" || !items[0].CanRetry {
 		t.Fatalf("items[0]=%#v want mapped install notification", items[0])
 	}
 	if items[1].SequenceNumber != 9 || items[1].Event != "delete" {
@@ -2927,7 +2926,7 @@ func TestListNotificationsMapsCurrentNotificationItems(t *testing.T) {
 }
 
 func TestListNotificationsAutoCleansEnableDisableNotifications(t *testing.T) {
-	iccid, err := sgp22.NewICCID(testfixtures.ICCID19)
+	iccid, err := sgp22.NewICCID(fixtureICCID19)
 	if err != nil {
 		t.Fatalf("NewICCID() error=%v", err)
 	}
@@ -2982,7 +2981,7 @@ func TestListNotificationsWithoutAIDReadsOneDiscoveredTarget(t *testing.T) {
 		client, _ := newTestNotificationClient(nil, nil, nil, nil)
 		return client, nil
 	}, nil, nil, nil)
-	mgr.SeedDiscoveredEUICCs([]EUICCInfo{buildDiscoveredEUICCInfo(AIDs[2], testfixtures.EID)})
+	mgr.SeedDiscoveredEUICCs([]EUICCInfo{buildDiscoveredEUICCInfo(AIDs[2], fixtureEID)})
 
 	items, err := mgr.ListNotifications("")
 	if err != nil {
@@ -3008,13 +3007,13 @@ func TestListNotificationsWithoutAIDRecoversFromStaleTarget(t *testing.T) {
 			return nil, fmt.Errorf("unsupported AID %s", aidHex)
 		}
 		if validCalls.Add(1) == 1 {
-			return &lpa.Client{APDU: fakeProfileOperationTransmitter{eid: mustDecodeHex(t, testfixtures.EID)}}, nil
+			return &lpa.Client{APDU: fakeProfileOperationTransmitter{eid: mustDecodeHex(t, fixtureEID)}}, nil
 		}
 		client, _ := newTestNotificationClient(nil, nil, nil, nil)
 		return client, nil
 	}, nil, nil, nil)
 	mgr.closeClient = func(*lpa.Client) error { return nil }
-	mgr.SeedDiscoveredEUICCs([]EUICCInfo{buildDiscoveredEUICCInfo(staleAID, testfixtures.EIDAlt)})
+	mgr.SeedDiscoveredEUICCs([]EUICCInfo{buildDiscoveredEUICCInfo(staleAID, fixtureEIDAlt)})
 
 	items, err := mgr.ListNotifications("")
 	if err != nil {
@@ -3030,7 +3029,7 @@ func TestListNotificationsWithoutAIDRecoversFromStaleTarget(t *testing.T) {
 }
 
 func TestListNotificationsKeepsVisibleItemsWhenAutoCleanupFails(t *testing.T) {
-	iccid, err := sgp22.NewICCID(testfixtures.ICCID19)
+	iccid, err := sgp22.NewICCID(fixtureICCID19)
 	if err != nil {
 		t.Fatalf("NewICCID() error=%v", err)
 	}
@@ -3073,7 +3072,7 @@ func TestListNotificationsKeepsVisibleItemsWhenAutoCleanupFails(t *testing.T) {
 }
 
 func TestListNotificationsWithoutAIDReadsDiscoveredTargetsUnderReadArbitration(t *testing.T) {
-	iccid, err := sgp22.NewICCID(testfixtures.ICCID19)
+	iccid, err := sgp22.NewICCID(fixtureICCID19)
 	if err != nil {
 		t.Fatalf("NewICCID() error=%v", err)
 	}
@@ -3104,8 +3103,8 @@ func TestListNotificationsWithoutAIDReadsDiscoveredTargetsUnderReadArbitration(t
 		}
 	}, nil, nil, nil)
 	mgr.SeedDiscoveredEUICCs([]EUICCInfo{
-		buildDiscoveredEUICCInfo(AIDs[0], testfixtures.EID),
-		buildDiscoveredEUICCInfo(AIDs[1], testfixtures.EIDAlt),
+		buildDiscoveredEUICCInfo(AIDs[0], fixtureEID),
+		buildDiscoveredEUICCInfo(AIDs[1], fixtureEIDAlt),
 	})
 	var waitCalled atomic.Int32
 	mgr.apduArbiter = fakeAPDUIdleWaiter{wait: func(ctx context.Context) error {
@@ -3136,7 +3135,7 @@ func TestListNotificationsWithoutAIDReadsDiscoveredTargetsUnderReadArbitration(t
 }
 
 func TestListNotificationsWithoutAIDAutoCleansDiscoveredAIDNotifications(t *testing.T) {
-	iccid, err := sgp22.NewICCID(testfixtures.ICCID19)
+	iccid, err := sgp22.NewICCID(fixtureICCID19)
 	if err != nil {
 		t.Fatalf("NewICCID() error=%v", err)
 	}
@@ -3177,8 +3176,8 @@ func TestListNotificationsWithoutAIDAutoCleansDiscoveredAIDNotifications(t *test
 		}
 	}, nil, nil, nil)
 	mgr.SeedDiscoveredEUICCs([]EUICCInfo{
-		buildDiscoveredEUICCInfo(AIDs[0], testfixtures.EID),
-		buildDiscoveredEUICCInfo(AIDs[1], testfixtures.EIDAlt),
+		buildDiscoveredEUICCInfo(AIDs[0], fixtureEID),
+		buildDiscoveredEUICCInfo(AIDs[1], fixtureEIDAlt),
 	})
 	mgr.readQueueWaitTimeout = 200 * time.Millisecond
 
@@ -3201,7 +3200,7 @@ func TestListNotificationsWithoutAIDAutoCleansDiscoveredAIDNotifications(t *test
 }
 
 func TestRetryNotificationHandlesPendingNotificationBySequence(t *testing.T) {
-	iccid, err := sgp22.NewICCID(testfixtures.ICCID19)
+	iccid, err := sgp22.NewICCID(fixtureICCID19)
 	if err != nil {
 		t.Fatalf("NewICCID() error=%v", err)
 	}
@@ -3333,7 +3332,7 @@ func TestExpectedPostResetLPAClientCloseError(t *testing.T) {
 }
 
 func TestRetryNotificationClassifiesRetrieveAndHandleFailures(t *testing.T) {
-	iccid, err := sgp22.NewICCID(testfixtures.ICCID19)
+	iccid, err := sgp22.NewICCID(fixtureICCID19)
 	if err != nil {
 		t.Fatalf("NewICCID() error=%v", err)
 	}

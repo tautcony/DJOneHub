@@ -9,7 +9,6 @@ import (
 
 	"github.com/damonto/euicc-go/bertlv"
 	"github.com/damonto/euicc-go/lpa"
-	"github.com/iniwex5/vohive/internal/testfixtures"
 )
 
 // gatedTransmitter blocks APDU transmits until release, so the test can hold
@@ -34,7 +33,7 @@ func (t gatedTransmitter) Transmit(request bertlv.Marshaler, response bertlv.Unm
 // request stops promptly between per-AID APDU steps instead of completing a
 // full profile scan, releasing opMu and the arbiter.
 func TestEsimOverviewReadCancellationStopsMidScan(t *testing.T) {
-	eid, err := hex.DecodeString(testfixtures.EID)
+	eid, err := hex.DecodeString(fixtureEID)
 	if err != nil {
 		t.Fatal(err)
 	}

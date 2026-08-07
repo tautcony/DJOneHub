@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/iniwex5/vohive/internal/domain/device"
-	"github.com/iniwex5/vohive/internal/testfixtures"
 )
 
 type fakeATTransport struct {
@@ -35,10 +34,10 @@ func (f *fakeATTransport) Close() error { return nil }
 
 func TestCommandBackendReadOnlyStatus(t *testing.T) {
 	transport := &fakeATTransport{responses: map[string]string{
-		"AT+CGSN":                 "AT+CGSN\r\n" + testfixtures.IMEI + "\r\nOK\r\n",
-		"AT+CIMI":                 "AT+CIMI\r\n" + testfixtures.IMSI + "\r\nOK\r\n",
-		"AT+QCCID":                "AT+QCCID\r\n" + testfixtures.ICCID19 + "\r\nOK\r\n",
-		"AT+CNUM":                 "AT+CNUM\r\n+CNUM: \"\",\"" + testfixtures.MSISDN + "\",145\r\nOK\r\n",
+		"AT+CGSN":                 "AT+CGSN\r\n" + fixtureIMEI + "\r\nOK\r\n",
+		"AT+CIMI":                 "AT+CIMI\r\n" + fixtureIMSI + "\r\nOK\r\n",
+		"AT+QCCID":                "AT+QCCID\r\n" + fixtureICCID19 + "\r\nOK\r\n",
+		"AT+CNUM":                 "AT+CNUM\r\n+CNUM: \"\",\"" + fixtureMSISDN + "\",145\r\nOK\r\n",
 		"AT+CGMR":                 "AT+CGMR\r\nsynthetic-firmware-1\r\nOK\r\n",
 		"AT+CEREG?":               "AT+CEREG?\r\n+CEREG: 0,5\r\nOK\r\n",
 		"AT+CREG?":                "AT+CREG?\r\n+CREG: 0,0\r\nOK\r\n",
@@ -54,7 +53,7 @@ func TestCommandBackendReadOnlyStatus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if identity.IMEI != testfixtures.IMEI || identity.Firmware != "synthetic-firmware-1" {
+	if identity.IMEI != fixtureIMEI || identity.Firmware != "synthetic-firmware-1" {
 		t.Fatalf("identity = %+v", identity)
 	}
 	radio, err := backend.Radio(context.Background())
@@ -68,7 +67,7 @@ func TestCommandBackendReadOnlyStatus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !sim.Inserted || sim.IMSI != testfixtures.IMSI || sim.ICCID != testfixtures.ICCID19 {
+	if !sim.Inserted || sim.IMSI != fixtureIMSI || sim.ICCID != fixtureICCID19 {
 		t.Fatalf("sim = %+v", sim)
 	}
 	if !backend.Capabilities(context.Background()).Has(device.CapabilityDeviceStatus) || !backend.Capabilities(context.Background()).Has(device.CapabilityRawAT) {

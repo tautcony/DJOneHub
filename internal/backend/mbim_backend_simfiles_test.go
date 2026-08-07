@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/iniwex5/vohive/internal/testfixtures"
 	"github.com/iniwex5/vohive/pkg/mbim"
 )
 
@@ -132,7 +131,7 @@ func TestMBIMGetSIMMetadataFillsGIDAndMNCLength(t *testing.T) {
 
 func TestMBIMGetSIMMetadataFillsPNNOPLAndUST(t *testing.T) {
 	src := &fakeMBIMSource{
-		sub: mbimSubscriberWithIMSI(testfixtures.IMSI),
+		sub: mbimSubscriberWithIMSI(fixtureIMSI),
 	}
 	src.efFn = func(fileID uint16) ([]byte, error) {
 		switch fileID {
@@ -189,7 +188,7 @@ func TestMBIMGetMSISDNFallsBackToEF(t *testing.T) {
 		if fileID == efMSISDN {
 			// EF_MSISDN record tail: ... [len][TON/NPI][dialing BCD...]
 			// length=0x07, TON/NPI=0x91 (international), number 8613800100500.
-			return buildEFMSISDNRecord(strings.TrimPrefix(testfixtures.MSISDN, "+")), nil
+			return buildEFMSISDNRecord(strings.TrimPrefix(fixtureMSISDN, "+")), nil
 		}
 		return nil, nil
 	}
@@ -199,8 +198,8 @@ func TestMBIMGetMSISDNFallsBackToEF(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetMSISDN() error = %v", err)
 	}
-	if got != strings.TrimPrefix(testfixtures.MSISDN, "+") {
-		t.Fatalf("GetMSISDN() = %q, want %s", got, strings.TrimPrefix(testfixtures.MSISDN, "+"))
+	if got != strings.TrimPrefix(fixtureMSISDN, "+") {
+		t.Fatalf("GetMSISDN() = %q, want %s", got, strings.TrimPrefix(fixtureMSISDN, "+"))
 	}
 }
 
