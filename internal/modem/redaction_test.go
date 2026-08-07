@@ -7,7 +7,7 @@ func TestMaskIdentity(t *testing.T) {
 		in   string
 		want string
 	}{
-		{in: "867383058993207", want: "867********3207"},
+		{in: "990000860099326", want: "990********9326"},
 		{in: "89860012345678901234", want: "898*************1234"},
 		{in: "short", want: "****"},
 		{in: "", want: "****"},

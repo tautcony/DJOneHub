@@ -2192,11 +2192,11 @@ func TestResolveDownloadIMEIUsesExplicitCustomIMEIBeforeProviders(t *testing.T) 
 		return "", nil
 	}
 
-	imei, err := mgr.resolveDownloadIMEI(context.Background(), "350225641234561")
+	imei, err := mgr.resolveDownloadIMEI(context.Background(), "990000352234563")
 	if err != nil {
 		t.Fatalf("resolveDownloadIMEI() error=%v", err)
 	}
-	if imei != "350225641234561" {
+	if imei != "990000352234563" {
 		t.Fatalf("imei=%q want explicit custom IMEI", imei)
 	}
 }

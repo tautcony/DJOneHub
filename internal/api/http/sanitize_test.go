@@ -42,10 +42,10 @@ func TestSanitizeSnapshotReplacesErrorTextWithoutHeuristic(t *testing.T) {
 // TestSanitizeSnapshotKeepsIdentity 身份字段在 status/snapshot 中保持公开:
 // web Overview 卡片客户端侧掩码渲染依赖它们。
 func TestSanitizeSnapshotKeepsIdentity(t *testing.T) {
-	identity := domain.Identity{IMEI: "867383058993207", VendorID: "2c7c", Product: "DJI/Quectel AT modem"}
+	identity := domain.Identity{IMEI: "990000860099326", VendorID: "2c7c", Product: "DJI/Quectel AT modem"}
 	status := device.Status{
 		Snapshot: domain.Snapshot{State: domain.StateReady, Identity: identity, LastError: "modem error"},
-		Identity: backend.Identity{IMEI: "867383058993207", ICCID: "89860012345678901234", IMSI: "460009300011111"},
+		Identity: backend.Identity{IMEI: "990000860099326", ICCID: "89860012345678901234", IMSI: "460009300011111"},
 		Radio:    backend.RadioState{Registered: true, NetworkMode: "LTE", SignalDBM: -87},
 		SIM:      backend.SIMState{Inserted: true, ICCID: "89860012345678901234", IMSI: "460009300011111"},
 	}
@@ -123,10 +123,10 @@ func TestSanitizeEventMatrix(t *testing.T) {
 		{
 			name: "device.status.changed keeps snapshot with identity",
 			event: runtime.Event{Type: "device.status.changed", Data: domain.Snapshot{
-				State: domain.StateReady, Identity: domain.Identity{IMEI: "867383058993207"},
+				State: domain.StateReady, Identity: domain.Identity{IMEI: "990000860099326"},
 				BackendReason: "no modem", LastError: "device error text",
 			}},
-			want: domain.Snapshot{State: domain.StateReady, Identity: domain.Identity{IMEI: "867383058993207"},
+			want: domain.Snapshot{State: domain.StateReady, Identity: domain.Identity{IMEI: "990000860099326"},
 				BackendReason: "backend selection failed", LastError: "device error"},
 		},
 	}

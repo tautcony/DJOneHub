@@ -13,13 +13,13 @@ func TestUpdateDeviceIMEIInFileWritesOnlyIMEI(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 
-	if err := UpdateDeviceIMEIInFile(path, map[string]string{"dev1": "867383058993207"}); err != nil {
+	if err := UpdateDeviceIMEIInFile(path, map[string]string{"dev1": "990000860099326"}); err != nil {
 		t.Fatalf("UpdateDeviceIMEIInFile() error = %v", err)
 	}
 
 	got := readDevicesFromFile(t, path)[0]
-	if got.ModemIMEI != "867383058993207" {
-		t.Fatalf("ModemIMEI = %q, want 867383058993207", got.ModemIMEI)
+	if got.ModemIMEI != "990000860099326" {
+		t.Fatalf("ModemIMEI = %q, want 990000860099326", got.ModemIMEI)
 	}
 	// 零路径架构: 读取绝不从文件回填运行时路径字段(mapstructure:"-")。
 	if got.ControlDevice != "" || got.Interface != "" || got.ATPort != "" {

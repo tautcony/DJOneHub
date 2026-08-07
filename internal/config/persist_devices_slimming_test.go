@@ -10,7 +10,7 @@ import (
 // 当前实现会写 control_device/interface/at_port → 本测试现在应 FAIL,证明保存侧泄漏。
 func TestUpdateDeviceInFileDoesNotPersistRuntimePaths(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	raw := "devices:\n- id: dev1\n  device_backend: qmi\n  modem_imei: \"867383058993207\"\n"
+	raw := "devices:\n- id: dev1\n  device_backend: qmi\n  modem_imei: \"990000860099326\"\n"
 	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -18,7 +18,7 @@ func TestUpdateDeviceInFileDoesNotPersistRuntimePaths(t *testing.T) {
 	// 模拟切运营商/编辑:传入带运行时解析路径的 cfg。
 	newDev := DeviceConfig{
 		ID:            "dev1",
-		ModemIMEI:     "867383058993207",
+		ModemIMEI:     "990000860099326",
 		DeviceBackend: "qmi",
 		ControlDevice: "/dev/cdc-wdm3", // 运行时路径,不应被持久化
 		Interface:     "wwan2",
@@ -30,7 +30,7 @@ func TestUpdateDeviceInFileDoesNotPersistRuntimePaths(t *testing.T) {
 	}
 
 	d := readDevicesFromFile(t, path)[0]
-	if d.ModemIMEI != "867383058993207" || d.DeviceBackend != "qmi" {
+	if d.ModemIMEI != "990000860099326" || d.DeviceBackend != "qmi" {
 		t.Fatalf("identity/intent fields lost: %+v", d)
 	}
 	if d.ControlDevice != "" || d.Interface != "" || d.ATPort != "" || d.USBPath != "" {
