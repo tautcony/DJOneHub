@@ -5,6 +5,7 @@ import FieldRow from '../components/FieldRow.vue'
 import LoadingState from '../components/LoadingState.vue'
 import Panel from '../components/Panel.vue'
 import { useViewContext } from './context'
+import { formatBytes } from '../utils/format'
 
 const { t } = useI18n()
 const {
@@ -20,16 +21,6 @@ const {
   networkTraffic,
   rebootModule,
 } = useViewContext()
-function bytes(value: number) {
-  const units = ['B', 'KB', 'MB', 'GB', 'TB']
-  let amount = Math.max(0, value)
-  let unit = 0
-  while (amount >= 1024 && unit < units.length - 1) {
-    amount /= 1024
-    unit++
-  }
-  return `${amount.toFixed(unit === 0 ? 0 : amount >= 100 ? 0 : 1)} ${units[unit]}`
-}
 </script>
 
 <template>
@@ -60,11 +51,11 @@ function bytes(value: number) {
             monospace
           /><FieldRow
             :label="t('network.traffic')"
-            :value="`${bytes(networkTraffic.rxBytes)} ${t('common.received')} · ${bytes(networkTraffic.txBytes)} ${t('common.sent')}`"
+            :value="`${formatBytes(networkTraffic.rxBytes)} ${t('common.received')} · ${formatBytes(networkTraffic.txBytes)} ${t('common.sent')}`"
           /><FieldRow
             :label="t('network.currentDownload')"
-            :value="`${bytes(networkTraffic.rxRate)}/s`"
-          /><FieldRow :label="t('network.currentUpload')" :value="`${bytes(networkTraffic.txRate)}/s`" />
+            :value="`${formatBytes(networkTraffic.rxRate)}/s`"
+          /><FieldRow :label="t('network.currentUpload')" :value="`${formatBytes(networkTraffic.txRate)}/s`" />
         </div>
         <div class="panel-actions network-actions">
           <a-button :disabled="!device.has('network_status')" @click="checkNetwork"

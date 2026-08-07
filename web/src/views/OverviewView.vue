@@ -7,6 +7,7 @@ import FieldRow from '../components/FieldRow.vue'
 import Panel from '../components/Panel.vue'
 import StatusLight from '../components/StatusLight.vue'
 import { useViewContext } from './context'
+import { formatBytes, formatRate } from '../utils/format'
 
 const { t } = useI18n()
 const {
@@ -15,6 +16,7 @@ const {
   esim,
   loadView,
   loadTrafficRange,
+  maskSensitive,
   networkTraffic,
   overviewNetwork,
   showSensitive,
@@ -61,21 +63,6 @@ const signalTone = computed<'success' | 'warning' | 'danger' | 'neutral'>(() => 
 
 function display(value?: unknown) {
   return value === undefined || value === null || value === '' ? t('common.empty') : String(value)
-}
-
-function bytes(value: number) {
-  const units = ['B', 'KB', 'MB', 'GB', 'TB']
-  let amount = Math.max(0, value)
-  let unit = 0
-  while (amount >= 1024 && unit < units.length - 1) {
-    amount /= 1024
-    unit++
-  }
-  return `${amount.toFixed(unit === 0 ? 0 : amount >= 100 ? 0 : 1)} ${units[unit]}`
-}
-
-function rate(value: number) {
-  return `${bytes(value)}/s`
 }
 
 const trafficRateMax = computed(() => {
@@ -162,7 +149,7 @@ watch(
   trafficRange,
   (period) => {
     trafficTablePage.value = 1
-    if (period !== 'day') void refreshTrafficRange()
+    if (period !== 'day') void refreshTrafficRange(true)
   },
   { immediate: true },
 )
@@ -175,13 +162,6 @@ onMounted(() => {
 onBeforeUnmount(() => {
   if (chartAnimationFrame !== undefined) window.cancelAnimationFrame(chartAnimationFrame)
 })
-
-function mask(value?: string) {
-  if (!value) return t('common.empty')
-  if (showSensitive.value) return value
-  if (value.length <= 4) return '*'.repeat(value.length)
-  return `${'*'.repeat(value.length - 4)}${value.slice(-4)}`
-}
 </script>
 
 <template>
@@ -285,26 +265,26 @@ function mask(value?: string) {
         <div class="overview-detail-stack">
           <FieldRow
             :label="t('overview.imei')"
-            :value="mask(device.status?.identity.imei)"
+            :value="maskSensitive(device.status?.identity.imei)"
             monospace
           /><FieldRow
             :label="t('overview.iccid')"
-            :value="mask(device.status?.identity.iccid || device.status?.sim.iccid)"
+            :value="maskSensitive(device.status?.identity.iccid || device.status?.sim.iccid)"
             monospace
           /><FieldRow
             :label="t('overview.imsi')"
-            :value="mask(device.status?.identity.imsi || device.status?.sim.imsi)"
+            :value="maskSensitive(device.status?.identity.imsi || device.status?.sim.imsi)"
             monospace
           /><FieldRow
             :label="t('overview.phoneNumber')"
-            :value="mask(device.status?.identity.msisdn)"
+            :value="maskSensitive(device.status?.identity.msisdn)"
             monospace
           /><FieldRow
             :label="t('overview.simState')"
             :value="device.status?.sim.inserted ? t('status.inserted') : t('common.unavailable')"
           /><FieldRow
             :label="t('overview.eid')"
-            :value="mask(esim?.eid || device.status?.sim.eid)"
+            :value="maskSensitive(esim?.eid || device.status?.sim.eid)"
             monospace
           /><FieldRow :label="t('overview.firmware')" :value="device.status?.identity.firmware" monospace />
         </div>
@@ -336,13 +316,13 @@ function mask(value?: string) {
             monospace
           /><FieldRow
             :label="t('overview.received')"
-            :value="bytes(networkTraffic.rxBytes)"
+            :value="formatBytes(networkTraffic.rxBytes)"
             monospace
-          /><FieldRow :label="t('overview.sent')" :value="bytes(networkTraffic.txBytes)" monospace /><FieldRow
+          /><FieldRow :label="t('overview.sent')" :value="formatBytes(networkTraffic.txBytes)" monospace /><FieldRow
             :label="t('overview.downloadRate')"
-            :value="rate(networkTraffic.rxRate)"
+            :value="formatRate(networkTraffic.rxRate)"
             monospace
-          /><FieldRow :label="t('overview.uploadRate')" :value="rate(networkTraffic.txRate)" monospace />
+          /><FieldRow :label="t('overview.uploadRate')" :value="formatRate(networkTraffic.txRate)" monospace />
         </div>
       </article>
     </div>
@@ -378,11 +358,11 @@ function mask(value?: string) {
         <div class="traffic-rate-stats">
           <div class="traffic-rate-stat traffic-download">
             <span>{{ t('overview.download') }}</span>
-            <strong>{{ rate(smoothRate.rxRate) }}</strong>
+            <strong>{{ formatRate(smoothRate.rxRate) }}</strong>
           </div>
           <div class="traffic-rate-stat traffic-upload">
             <span>{{ t('overview.upload') }}</span>
-            <strong>{{ rate(smoothRate.txRate) }}</strong>
+            <strong>{{ formatRate(smoothRate.txRate) }}</strong>
           </div>
         </div>
         <div class="traffic-line-chart" role="img" :aria-label="t('overview.trafficTitle')">
@@ -426,9 +406,9 @@ function mask(value?: string) {
             <tbody>
               <tr v-for="row in trafficTablePageRows" :key="row.date">
                 <th scope="row">{{ row.date }}</th>
-                <td>{{ bytes(row.rx_bytes) }}</td>
-                <td>{{ bytes(row.tx_bytes) }}</td>
-                <td>{{ bytes(row.rx_bytes + row.tx_bytes) }}</td>
+                <td>{{ formatBytes(row.rx_bytes) }}</td>
+                <td>{{ formatBytes(row.tx_bytes) }}</td>
+                <td>{{ formatBytes(row.rx_bytes + row.tx_bytes) }}</td>
               </tr>
               <tr v-if="!trafficTablePageRows.length">
                 <td class="traffic-history-empty" colspan="4">{{ t('common.empty') }}</td>

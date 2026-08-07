@@ -61,15 +61,12 @@ let activeFallbackTimer: number | undefined
 // 保留 shell 编排 (导航、连接、能力门控、刷新调度、通知) 与未拆分域。
 const sms = useSmsStore()
 const {
-  items: smsItems,
-  sentItems: smsSentItems,
   query: smsQuery,
   selectedPeer: selectedSmsPeer,
   composeNew: smsComposeNew,
   to: smsTo,
   body: smsBody,
   operation: smsOperation,
-  threads: smsThreads,
   filteredThreads: filteredSmsThreads,
   selectedThread: selectedSmsThread,
 } = storeToRefs(sms)
@@ -86,8 +83,6 @@ const {
   labels: esimLabels,
   operation: esimOperation,
   reloadedOperationID: esimReloadedOperationID,
-  notes: esimNotes,
-  health: esimHealth,
   noteICCID,
   noteLabel,
   notePhone,
@@ -176,6 +171,8 @@ const navGroups = computed<ShellNavGroup[]>(() => [
   },
 ])
 const nav = computed(() => navGroups.value.flatMap((group) => group.items))
+// 导航项常驻显示: 能力缺失交由各视图内部处理 (device.has 门控、RawAt 的
+// "不可用" 提示等), 不在导航层按能力快照隐藏, 避免设备未就绪时菜单塌缩。
 const stateValue = computed(() => device.snapshot?.state || 'offline')
 const effectiveStateValue = computed(() => (device.error ? 'offline' : stateValue.value))
 watch(effectiveStateValue, (state) => {
@@ -224,7 +221,7 @@ function syncDocumentLang(value: string) {
 watch(locale, (value) => {
   persistLocale(value)
   syncDocumentLang(value)
-  notifySuccess(t('settings.saved'))
+  notifySuccess(t('settings.languageSwitched'))
 })
 watch(showSensitive, (value) => {
   localStorage.setItem(sensitiveStorageKey, value ? '1' : '0')
@@ -535,6 +532,9 @@ watch(
     if (eventType === 'device.status.changed') {
       scheduleViewRefresh('overview')
       if (active.value === 'firmware') scheduleViewRefresh('firmware', 700)
+      // 状态变化也应刷新当前激活视图, 避免非 overview/firmware 视图在设备
+      // 就绪后仍停留在过期/加载态。
+      else if (active.value !== 'overview') scheduleViewRefresh(active.value)
       return
     }
     if (eventType === 'network.traffic.updated') {
@@ -1161,6 +1161,10 @@ onMounted(async () => {
   await device.refresh()
   device.connect()
   syncActiveRefreshers()
+  // 首屏：主动加载当前激活视图的数据。active 的 watch 未设 immediate，
+  // 且 device.status.changed 仅调度 overview/firmware, 若不在其中且后端
+  // 未推送对应领域事件, 视图会永久停留在加载态。
+  void loadView(active.value)
 })
 onBeforeUnmount(() => {
   document.removeEventListener('visibilitychange', handleVisibilityChange)

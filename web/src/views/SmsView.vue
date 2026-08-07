@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { SendOutlined } from '@ant-design/icons-vue'
+import { SendOutlined, DeleteOutlined } from '@ant-design/icons-vue'
 import EmptyState from '../components/EmptyState.vue'
 import LoadingState from '../components/LoadingState.vue'
 import StatusLight from '../components/StatusLight.vue'
 import { formatDateTime } from '../utils/date'
+import type { OperationStatus } from '../types'
 import { useViewContext } from './context'
 
 // 会话列表惰性渲染: 超过阈值时不挂载全部行, 分批展开。
@@ -14,6 +15,7 @@ const SMS_THREAD_LAZY_BATCH = 50
 
 const { t } = useI18n()
 const {
+  clearModuleSMS,
   device,
   filteredSmsThreads,
   loadedViews,
@@ -49,18 +51,29 @@ watch(
 function showMoreThreads() {
   visibleThreadCount.value += SMS_THREAD_LAZY_BATCH
 }
+// 发送状态指示在会话切换前保留终态快照, 避免 operation 被 5 分钟 TTL 清理后
+// 指示器突然消失 (仍由 selectThread 复位)。
+const smsOperationSnapshot = ref<OperationStatus | undefined>(undefined)
+watch(
+  smsOperation,
+  (operation) => {
+    if (operation) smsOperationSnapshot.value = operation
+  },
+  { immediate: true },
+)
+
 const operationLabel = computed(() => {
-  if (!smsOperation.value) return ''
-  if (smsOperation.value.state === 'succeeded') return t('sms.sent')
-  if (smsOperation.value.state === 'failed' || smsOperation.value.state === 'cancelled') {
+  if (!smsOperationSnapshot.value) return ''
+  if (smsOperationSnapshot.value.state === 'succeeded') return t('sms.sent')
+  if (smsOperationSnapshot.value.state === 'failed' || smsOperationSnapshot.value.state === 'cancelled') {
     return t('sms.sendFailed')
   }
   return t('sms.sending')
 })
 const operationTone = computed(() => {
-  if (!smsOperation.value) return 'neutral'
-  if (smsOperation.value.state === 'succeeded') return 'success'
-  if (smsOperation.value.state === 'failed' || smsOperation.value.state === 'cancelled') {
+  if (!smsOperationSnapshot.value) return 'neutral'
+  if (smsOperationSnapshot.value.state === 'succeeded') return 'success'
+  if (smsOperationSnapshot.value.state === 'failed' || smsOperationSnapshot.value.state === 'cancelled') {
     return 'danger'
   }
   return 'info'
@@ -72,6 +85,7 @@ function selectThread(thread: { key: string; peer: string }) {
   smsTo.value = thread.peer
   smsBody.value = ''
   resetSMSOperation()
+  smsOperationSnapshot.value = undefined
 }
 
 function initials(value: string) {
@@ -87,10 +101,20 @@ function threadDate(value?: string) {
   <section class="sms-workbench">
     <aside class="sms-thread-pane">
       <div class="sms-list-heading">
-        <div>
+        <div class="sms-title">
           <h2>{{ t('sms.conversationList') }}</h2>
           <span>{{ filteredSmsThreads.length }} {{ t('sms.conversations') }}</span>
         </div>
+        <a-button
+          class="sms-clear-btn"
+          type="text"
+          size="small"
+          :disabled="!device.has('sms_read')"
+          :title="t('common.clear')"
+          @click="clearModuleSMS"
+        >
+          <DeleteOutlined />{{ t('common.clear') }}
+        </a-button>
       </div>
 
       <a-input-search
@@ -208,9 +232,9 @@ function threadDate(value?: string) {
           <div class="sms-composer-meta">
             <span>{{ smsBody.length }} {{ t('sms.characters') }}</span>
             <StatusLight
-              v-if="smsOperation"
+              v-if="smsOperationSnapshot"
               :tone="operationTone"
-              :pulse="smsOperation.state === 'running' || smsOperation.state === 'pending'"
+              :pulse="smsOperationSnapshot.state === 'running' || smsOperationSnapshot.state === 'pending'"
               :label="operationLabel"
             />
           </div>

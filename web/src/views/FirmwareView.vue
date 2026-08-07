@@ -6,6 +6,7 @@ import '@xterm/xterm/css/xterm.css'
 import { CloudDownloadOutlined, CodeOutlined, FolderOpenOutlined, LockOutlined, ReloadOutlined, ThunderboltOutlined } from '@ant-design/icons-vue'
 import EmptyState from '../components/EmptyState.vue'
 import Panel from '../components/Panel.vue'
+import type { OperationStatus } from '../types'
 import { useViewContext } from './context'
 
 const { t } = useI18n()
@@ -216,6 +217,17 @@ watch(
       operationTerminal = undefined
     }
   },
+)
+
+// 弹窗打开期间保留 operation 快照, 避免底层 operation 在 5 分钟 TTL 清理后
+// 弹窗内容突然变空白 (不动 client operations map 的有界清理策略)。
+const firmwareOperationSnapshot = ref<OperationStatus | undefined>(undefined)
+watch(
+  firmwareOperation,
+  (operation) => {
+    if (operation) firmwareOperationSnapshot.value = operation
+  },
+  { immediate: true },
 )
 
 watch(
@@ -566,10 +578,10 @@ onBeforeUnmount(() => {
 
     <a-modal v-model:open="firmwareOperationModalOpen" :title="t('firmware.operationTitle')" :width="760" destroy-on-close @ok="closeOperationModal">
       <div class="firmware-operation">
-        <div v-if="firmwareOperation" class="firmware-operation-heading"><strong>{{ firmwareOperation.message || t('firmware.operationWaiting') }}</strong><span>{{ firmwareOperation.progress }}%</span></div>
-        <a-progress v-if="firmwareOperation" :percent="firmwareOperation.progress" :status="firmwareOperation.state === 'failed' ? 'exception' : firmwareOperation.state === 'succeeded' ? 'success' : 'active'" :show-info="false" />
+        <div v-if="firmwareOperationSnapshot" class="firmware-operation-heading"><strong>{{ firmwareOperationSnapshot.message || t('firmware.operationWaiting') }}</strong><span>{{ firmwareOperationSnapshot.progress }}%</span></div>
+        <a-progress v-if="firmwareOperationSnapshot" :percent="firmwareOperationSnapshot.progress" :status="firmwareOperationSnapshot.state === 'failed' ? 'exception' : firmwareOperationSnapshot.state === 'succeeded' ? 'success' : 'active'" :show-info="false" />
         <div ref="operationTerminalElement" class="firmware-operation-terminal" />
-        <a-alert v-if="firmwareOperation?.error" type="error" show-icon :message="firmwareOperation.error.message" />
+        <a-alert v-if="firmwareOperationSnapshot?.error" type="error" show-icon :message="firmwareOperationSnapshot.error.message" />
       </div>
     </a-modal>
 

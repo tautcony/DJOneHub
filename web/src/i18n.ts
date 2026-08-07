@@ -32,6 +32,7 @@ const messages = {
       showSensitive: 'Show sensitive identifiers',
       sensitiveVisible: 'Identifiers are visible in this session.',
       sensitiveMasked: 'Identifiers are masked by default; the last four characters remain visible.',
+      languageSwitched: 'Language switched.',
       notificationsEyebrow: 'NATIVE NOTIFICATIONS',
       notificationsTitle: 'Notification permission',
       notificationStates: {
@@ -613,6 +614,7 @@ const messages = {
       showSensitive: '显示敏感标识',
       sensitiveVisible: '本次运行中显示完整标识。',
       sensitiveMasked: '默认隐藏敏感标识，仅保留末四位。',
+      languageSwitched: '语言已切换。',
       notificationsEyebrow: '原生通知',
       notificationsTitle: '通知权限',
       notificationStates: {
