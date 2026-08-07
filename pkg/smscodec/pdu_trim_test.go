@@ -26,7 +26,10 @@ func TestTrimFullPDUHexByTPDULengthFallsBackToTPDUDeclaredLength(t *testing.T) {
 	valid := syntheticDeliverPDU(t, true)
 	padded := valid + strings.Repeat("00", 128)
 	total, _ := hex.DecodeString(valid)
-	got, trimmed := TrimFullPDUHexByTPDULength(padded, len(total)-1)
+	// 固定槽存储的模组会把整个槽长度报进 AT header，声明的 tpduLen 大于真实内容长度。
+	// 只按 header 截断仍会残留填充，必须回退到 TPDU 自身声明的 UDL 才能剥干净。
+	oversizedTPDULen := len(total) - 1 + 64
+	got, trimmed := TrimFullPDUHexByTPDULength(padded, oversizedTPDULen)
 	if !trimmed {
 		t.Fatal("TrimFullPDUHexByTPDULength trimmed=false, want true")
 	}
