@@ -1,6 +1,7 @@
 import type {
   CallStatus,
   DeviceStatus,
+  EsimHealth,
   EsimNotification,
   EsimNotificationHistory,
   EsimOverview,
@@ -203,7 +204,7 @@ export const api = {
   dialCall: (number: string) =>
     request<{ dialed: boolean }>('/calls/actions/dial', { method: 'POST', body: JSON.stringify({ number }) }),
   rejectCall: () => request<{ rejected: boolean }>('/calls/actions/reject', { method: 'POST' }),
-  esimHealth: () => request<Record<string, unknown>>('/esim/health'),
+  esimHealth: () => request<EsimHealth>('/esim/health'),
   esimNotes: () =>
     request<{ notes: Record<string, { label: string; phone: string; tags: string }> }>('/esim/notes'),
   saveEsimNote: (iccid: string, note: { label: string; phone: string; tags: string }) =>

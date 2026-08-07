@@ -1,22 +1,24 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import jsQR from 'jsqr'
 import {
   CheckOutlined,
   DeleteOutlined,
   DownloadOutlined,
+  LinkOutlined,
   ReloadOutlined,
+  SearchOutlined,
   SettingOutlined,
 } from '@ant-design/icons-vue'
 import EmptyState from '../components/EmptyState.vue'
-import FieldRow from '../components/FieldRow.vue'
 import LoadingState from '../components/LoadingState.vue'
 import OperationStatusView from '../components/OperationStatus.vue'
-import Panel from '../components/Panel.vue'
+import EsimOperationDock from '../components/esim/EsimOperationDock.vue'
 import { useViewContext } from './context'
+import type { EsimNotification, EsimNotificationHistory } from '../types'
+import { decodeEsimActivationImage } from '../services/esimQr'
 
-const { t } = useI18n()
+const { t, te } = useI18n()
 const {
   closeEsimDownload,
   closeEsimSettings,
@@ -33,17 +35,37 @@ const {
   esimConfirmationInput,
   esimConfirmationOpen,
   esimDownloadOpen,
+  esimDownloadPhase,
+  esimFilteredNotificationHistory,
+  esimFilteredNotifications,
+  esimFilteredProfiles,
+  esimFocusedICCID,
+  esimHealth,
+  esimHealthError,
   esimLabels,
   esimMatchingID,
-  esimNotificationBusy,
+  esimNotificationActionState,
+  esimNotificationEventFilter,
+  esimNotificationEvents,
+  esimNotificationMode,
   esimNotificationHistory,
+  esimNotificationProfileFilter,
+  esimNotificationQuery,
+  esimNotificationStateFilter,
+  esimNotificationsError,
+  esimNotificationsLoading,
   esimNotifications,
   esimOperation,
+  esimOperationActive,
+  esimOverviewError,
+  esimProfileQuery,
+  esimProfileStateFilter,
   esimSettingsOpen,
   esimSettingsICCID: settingsICCID,
+  esimWorkspace,
+  loadedViews,
   loadNotifications,
   loadView,
-  loadedViews,
   localProfileNote,
   maskSensitive,
   noteLabel,
@@ -54,352 +76,233 @@ const {
   openEsimSettings,
   processNotification,
   removeNotification,
+  resetEsimDownloadForRetry,
   saveProfileNote,
+  showEsimNotificationProfile,
+  showEsimProfileNotifications,
+  showEsimWorkspace,
   submitConfirmationCode,
+  clearEsimNotificationProfileFilter,
 } = useViewContext()
 
-// 二维码扫描：文件选择或剪贴板粘贴图片 → jsqr 解码 → 填入激活码输入框。
 const qrInput = ref<HTMLInputElement | null>(null)
 const qrError = ref('')
+
+const activeProfile = computed(() => esim.value?.profiles.find((profile) => profile.state === 'enabled'))
+const healthLabel = computed(() => {
+  if (esimHealthError.value) return t('esim.healthUnavailable')
+  if (!esimHealth.value) return t('esim.healthLoading')
+  return esimHealth.value.ok ? t('esim.healthReady') : t('esim.healthDegraded')
+})
+
+function eventLabel(event?: string) {
+  if (!event) return t('esim.unknownEvent')
+  const key = `esim.events.${event}`
+  return te(key) ? t(key) : t('esim.unknownEvent')
+}
+
+function historyStateLabel(state?: string) {
+  if (!state) return t('esim.stateUnknown')
+  const key = `esim.states.${state}`
+  return te(key) ? t(key) : t('esim.stateUnknown')
+}
+
+function formatTime(value?: string) {
+  if (!value) return ''
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? '' : date.toLocaleString()
+}
+
+function notificationAction(sequence: number, action: 'process' | 'remove') {
+  return esimNotificationActionState.value[sequence]?.action === action
+    ? esimNotificationActionState.value[sequence]
+    : undefined
+}
+
+async function decodeQRFromFile(file: File) {
+  qrError.value = ''
+  const result = await decodeEsimActivationImage(file)
+  if (result) {
+    esimActivationCode.value = result
+  } else {
+    qrError.value = t('esim.qrDecodeFailed')
+  }
+}
 
 function pickQRImage() {
   qrError.value = ''
   qrInput.value?.click()
 }
 
-async function decodeQRFromFile(file: File) {
-  const url = URL.createObjectURL(file)
-  try {
-    const image = new Image()
-    await new Promise<void>((resolve, reject) => {
-      image.onload = () => resolve()
-      image.onerror = () => reject(new Error('image load failed'))
-      image.src = url
-    })
-    const canvas = document.createElement('canvas')
-    canvas.width = image.naturalWidth
-    canvas.height = image.naturalHeight
-    const context = canvas.getContext('2d')
-    if (!context) return false
-    context.drawImage(image, 0, 0)
-    const imageData = context.getImageData(0, 0, canvas.width, canvas.height)
-    const result = jsQR(imageData.data, imageData.width, imageData.height)
-    if (result?.data) {
-      esimActivationCode.value = result.data
-      return true
-    }
-    return false
-  } catch {
-    return false
-  } finally {
-    URL.revokeObjectURL(url)
-  }
-}
-
 async function onQRFileSelected(event: Event) {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
   input.value = ''
-  if (!file) return
-  const ok = await decodeQRFromFile(file)
-  if (!ok) qrError.value = t('esim.qrDecodeFailed')
-}
-
-function historyStateLabel(state?: string) {
-  switch (state) {
-    case 'pending':
-      return t('esim.statePending')
-    case 'processed':
-      return t('esim.stateProcessed')
-    case 'failed':
-      return t('esim.stateFailed')
-    case 'removed':
-      return t('esim.stateRemoved')
-    default:
-      return state || ''
-  }
+  if (file) await decodeQRFromFile(file)
 }
 
 function onDownloadPaste(event: ClipboardEvent) {
   const item = Array.from(event.clipboardData?.items || []).find((entry) => entry.type.startsWith('image/'))
   const file = item?.getAsFile()
-  if (!file) return
-  void (async () => {
-    const ok = await decodeQRFromFile(file)
-    if (!ok) qrError.value = t('esim.qrDecodeFailed')
-  })()
+  if (file) {
+    event.preventDefault()
+    void decodeQRFromFile(file)
+  }
+}
+
+function onDownloadDrop(event: globalThis.DragEvent) {
+  event.preventDefault()
+  const file = event.dataTransfer?.files?.[0]
+  if (file) {
+    void decodeQRFromFile(file)
+    return
+  }
+  const text = event.dataTransfer?.getData('text/plain')?.trim()
+  if (text) esimActivationCode.value = text
+}
+
+function profileName(profile: { iccid?: string; label?: string }) {
+  return profile.label || t('esim.unnamed')
+}
+
+function isBootstrapProfile(profile: { profile_class?: string; label?: string; service_provider_name?: string }) {
+  return [profile.profile_class, profile.label, profile.service_provider_name]
+    .filter(Boolean)
+    .some((value) => ['bootstrap', 'bootstrap profile', 'provisioning'].includes(String(value).trim().toLocaleLowerCase()))
+}
+
+function notificationProfile(item: EsimNotification | EsimNotificationHistory) {
+  return item.iccid ? maskSensitive(item.iccid) : t('esim.profileNotSpecified')
 }
 </script>
 
 <template>
-  <section class="view-grid">
-    <Panel
-      class="esim-panel"
-      :eyebrow="t('esim.eyebrow')"
-      :title="t('esim.profiles')"
-      :meta="esim ? `${esim.profiles.length} ${t('esim.profiles')}` : undefined"
-      ><template #actions
-        ><a-space
-          ><a-button @click="loadView('esim')"><ReloadOutlined />{{ t('common.refresh') }}</a-button
-          ><a-button
-            type="primary"
-            shape="circle"
-            :title="t('common.download')"
-            :aria-label="t('common.download')"
-            :disabled="!device.has('esim')"
-            @click="openEsimDownload"
-            ><DownloadOutlined /></a-button></a-space></template
-      ><LoadingState v-if="!loadedViews.esim" /><template v-else
-        ><div class="detail-list">
-          <FieldRow :label="t('esim.eid')" :value="maskSensitive(esim?.eid)" monospace /><FieldRow
-            :label="t('esim.profiles')"
-            :value="esim?.profiles?.length || 0"
-          />
+  <section class="esim-workbench">
+    <section class="esim-summary" aria-labelledby="esim-summary-title">
+      <div class="esim-summary-heading">
+        <div>
+          <span class="eyebrow">{{ t('esim.eyebrow') }}</span>
+          <h2 id="esim-summary-title">{{ t('esim.workbenchTitle') }}</h2>
+          <p>{{ t('esim.workbenchDetail') }}</p>
         </div>
-        <a-alert
-          v-if="esim?.card_type === 'physical_sim'"
-          class="esim-state-alert"
-          type="info"
-          show-icon
-          :message="t('esim.physical')"
-          :description="t('esim.physicalDetail')" /><a-alert
-          v-else-if="esim?.card_type === 'unknown'"
-          class="esim-state-alert"
-          type="warning"
-          show-icon
-          :message="t('esim.unavailable')"
-          :description="t('esim.unavailableDetail')" />
-        <div v-else class="profile-grid">
-          <div
-            v-for="profile in esim?.profiles"
-            :key="profile.aid + ':' + profile.iccid"
-            class="message-row profile-row"
-          >
-            <div class="profile-card-head">
-              <div>
-                <span class="eyebrow">{{ t('esim.profileCard') }}</span>
-                <h3>{{ profile.label || t('esim.unnamed') }}</h3>
-              </div>
-              <a-tag
-                :color="
-                  profile.state === 'enabled'
-                    ? 'success'
-                    : profile.state === 'disabled'
-                      ? 'warning'
-                      : 'default'
-                "
-                >{{
-                  profile.state === 'enabled'
-                    ? t('esim.enabled')
-                    : profile.state === 'disabled'
-                      ? t('esim.disabled')
-                      : t('esim.stateUnavailable')
-                }}</a-tag
-              >
-            </div>
-            <div class="profile-fields">
-              <div>
-                <span>{{ t('esim.iccid') }}</span
-                ><strong>{{ maskSensitive(profile.iccid) }}</strong>
-              </div>
-              <div>
-                <span>{{ t('esim.provider') }}</span
-                ><strong>{{ profile.service_provider_name || t('esim.unknownProvider') }}</strong>
-              </div>
-              <div>
-                <span>{{ t('esim.profileClass') }}</span
-                ><strong>{{ profile.profile_class || t('esim.unknownClass') }}</strong>
-              </div>
-              <div v-if="profile.aid">
-                <span>{{ t('esim.aid') }}</span
-                ><strong>{{ maskSensitive(profile.aid) }}</strong>
-              </div>
-            </div>
-            <div v-if="noteSummary(localProfileNote(profile.iccid))" class="profile-notes">
-              <div class="profile-note local-note">
-                <b>{{ t('esim.localNote') }}</b
-                >{{ noteSummary(localProfileNote(profile.iccid)) }}
-              </div>
-            </div>
-            <div class="profile-actions">
-              <a-button @click="openEsimSettings(profile.iccid)"
-                ><SettingOutlined />{{ t('common.settings') }}</a-button
-              ><a-popconfirm
-                v-if="profile.state === 'enabled'"
-                :title="t('esim.disableConfirm')"
-                @confirm="disableEsim(profile.iccid)"
-                ><a-button>{{ t('esim.disable') }}</a-button></a-popconfirm
-              ><a-button v-if="profile.state === 'disabled'" type="primary" @click="enableEsim(profile.iccid)"
-                ><CheckOutlined />{{ t('common.enable') }}</a-button
-              ><a-popconfirm
-                v-if="profile.state !== 'enabled'"
-                :title="t('esim.deleteConfirm')"
-                @confirm="deleteEsim(profile.iccid)"
-                ><a-button danger><DeleteOutlined />{{ t('common.delete') }}</a-button></a-popconfirm
-              >
-            </div>
-          </div>
-          <EmptyState v-if="!esim?.profiles?.length" :title="t('esim.noProfiles')" />
-        </div>
-        <OperationStatusView :operation="esimOperation" :label="t('common.operation')" /></template
-    ></Panel>
-    <Panel
-      class="esim-notifications-panel"
-      :eyebrow="t('esim.eyebrow')"
-      :title="t('esim.notifications')"
-      :meta="esimNotifications.length ? `${esimNotifications.length}` : undefined"
-      ><template #actions
-        ><a-button size="small" :disabled="esimNotificationBusy" @click="loadNotifications"
-          ><ReloadOutlined /></a-button></template
-      ><div v-if="!esimNotifications.length" class="notifications-empty">{{
-        t('esim.noNotifications')
-      }}</div>
-      <div v-else class="notification-list">
-        <div
-          v-for="item in esimNotifications"
-          :key="'pending-' + item.sequence_number"
-          class="message-row notification-row"
-        >
-          <div class="notification-meta">
-            <b>{{ item.event }}</b>
-            <span v-if="item.iccid">{{ maskSensitive(item.iccid) }}</span>
-            <span v-if="item.address" class="notification-address">{{ item.address }}</span>
-          </div>
-          <a-space>
-            <a-button
-              size="small"
-              :disabled="esimNotificationBusy"
-              @click="processNotification(item.sequence_number)"
-              >{{ t('esim.retry') }}</a-button
-            ><a-button
-              size="small"
-              danger
-              :disabled="esimNotificationBusy"
-              @click="removeNotification(item.sequence_number)"
-              >{{ t('common.delete') }}</a-button
-            >
-          </a-space>
+        <div class="esim-summary-actions">
+          <a-button @click="loadView('esim')"><ReloadOutlined />{{ t('common.refresh') }}</a-button>
+          <a-button type="primary" :disabled="!device.has('esim')" @click="openEsimDownload">
+            <DownloadOutlined />{{ t('common.download') }}
+          </a-button>
         </div>
       </div>
-      <h3 class="notification-history-title">{{ t('esim.historyTitle') }}</h3>
-      <div v-if="!esimNotificationHistory.length" class="notifications-empty">{{
-        t('esim.noHistory')
-      }}</div>
-      <div v-else class="notification-list">
-        <div
-          v-for="item in esimNotificationHistory"
-          :key="'history-' + item.sequence_number + '-' + item.event + '-' + (item.iccid || '')"
-          class="message-row notification-row"
-        >
-          <div class="notification-meta">
-            <b>{{ item.event }}</b>
-            <a-tag
-              :color="
-                item.state === 'processed'
-                  ? 'success'
-                  : item.state === 'failed'
-                    ? 'error'
-                    : item.state === 'removed'
-                      ? 'default'
-                      : 'warning'
-              "
-              >{{ historyStateLabel(item.state) }}</a-tag
-            >
-            <span v-if="item.iccid">{{ maskSensitive(item.iccid) }}</span>
-            <span v-if="item.updated_at" class="notification-address">{{
-              new Date(item.updated_at).toLocaleString()
-            }}</span>
+      <LoadingState v-if="!loadedViews.esim" :label="t('esim.loading')" />
+      <template v-else-if="!device.has('esim')">
+        <a-alert class="esim-state-alert esim-unavailable-alert" type="warning" show-icon :message="`${t('esim.unavailable')}: ${t('esim.unavailableDetail')}`" />
+      </template>
+      <template v-else-if="esim">
+        <div class="esim-summary-grid">
+          <div class="esim-summary-item"><span>{{ t('esim.eid') }}</span><strong class="mono">{{ maskSensitive(esim.eid) }}</strong></div>
+          <div class="esim-summary-item"><span>{{ t('esim.profileCount') }}</span><strong>{{ esim.profiles.length }}</strong></div>
+          <div class="esim-summary-item"><span>{{ t('esim.activeProfile') }}</span><strong>{{ activeProfile ? profileName(activeProfile) : t('esim.none') }}</strong></div>
+          <div class="esim-summary-item"><span>{{ t('esim.health') }}</span><strong>{{ healthLabel }}</strong></div>
+          <div class="esim-summary-item"><span>{{ t('esim.pendingCount') }}</span><strong>{{ esimNotifications.length }}</strong></div>
+        </div>
+        <a-alert v-if="esim.card_type === 'physical_sim'" class="esim-state-alert" type="info" show-icon :message="t('esim.physical')" :description="t('esim.physicalDetail')" />
+        <a-alert v-else-if="esim.card_type === 'unknown'" class="esim-state-alert esim-unavailable-alert" type="warning" show-icon :message="`${t('esim.unavailable')}: ${t('esim.unavailableDetail')}`" />
+        <a-alert v-else-if="!esim.profiles.length" class="esim-state-alert" type="info" show-icon :message="t('esim.noProfiles')" :description="t('esim.noProfilesDetail')" />
+        <a-alert v-if="esimHealthError" class="esim-state-alert" type="warning" show-icon :message="t('esim.healthUnavailable')" :description="t('esim.healthUnavailableDetail')" />
+      </template>
+      <a-alert v-if="esimOverviewError" class="esim-state-alert" type="error" show-icon :message="esimOverviewError" />
+    </section>
+
+    <EsimOperationDock v-if="esimOperation" :operation="esimOperation" />
+
+    <div class="esim-workspace-tabs" role="tablist" :aria-label="t('esim.workspaces')">
+      <button type="button" role="tab" :aria-selected="esimWorkspace === 'profiles'" :class="{ active: esimWorkspace === 'profiles' }" @click="showEsimWorkspace('profiles')">
+        {{ t('esim.profilesWorkspace') }}
+      </button>
+      <button type="button" role="tab" :aria-selected="esimWorkspace === 'notifications'" :class="{ active: esimWorkspace === 'notifications' }" @click="showEsimWorkspace('notifications')">
+        {{ t('esim.notificationsWorkspace') }} <span class="esim-tab-count">{{ esimNotifications.length }}</span>
+      </button>
+    </div>
+
+    <section v-if="esimWorkspace === 'profiles'" class="esim-workspace" aria-labelledby="profiles-workspace-title">
+      <div class="esim-workspace-heading">
+        <div><span class="eyebrow">{{ t('esim.profileCard') }}</span><h2 id="profiles-workspace-title">{{ t('esim.profilesWorkspace') }}</h2></div>
+        <div class="esim-filter-row">
+          <a-input v-model:value="esimProfileQuery" class="esim-search" allow-clear :placeholder="t('esim.searchProfiles')" :aria-label="t('esim.searchProfiles')"><template #prefix><SearchOutlined /></template></a-input>
+          <a-segmented v-model:value="esimProfileStateFilter" :options="[{ value: 'all', label: t('esim.allStates') }, { value: 'enabled', label: t('esim.enabled') }, { value: 'disabled', label: t('esim.disabled') }]" />
+        </div>
+      </div>
+      <div v-if="esim?.card_type === 'euicc' && esimFilteredProfiles.length" class="profile-grid esim-profile-grid">
+        <article v-for="profile in esimFilteredProfiles" :key="profile.aid + ':' + profile.iccid" class="profile-row esim-profile-card" :class="{ focused: esimFocusedICCID === profile.iccid }">
+          <div class="profile-card-head"><div><span class="eyebrow">{{ t('esim.profileCard') }}</span><h3>{{ profileName(profile) }}</h3></div><span class="profile-state" :class="profile.state">{{ profile.state === 'enabled' ? t('esim.enabled') : profile.state === 'disabled' ? t('esim.disabled') : t('esim.stateUnavailable') }}</span></div>
+          <div class="profile-fields">
+            <div><span>{{ t('esim.iccid') }}</span><strong class="mono">{{ maskSensitive(profile.iccid) }}</strong></div>
+            <div><span>{{ t('esim.provider') }}</span><strong>{{ profile.service_provider_name || t('esim.unknownProvider') }}</strong></div>
+            <div><span>{{ t('esim.profileClass') }}</span><strong>{{ profile.profile_class || t('esim.unknownClass') }}</strong></div>
+            <div><span>{{ t('esim.localNote') }}</span><strong>{{ noteSummary(localProfileNote(profile.iccid)) || t('esim.noLocalNote') }}</strong></div>
           </div>
+          <div class="profile-actions">
+            <a-button v-if="profile.state === 'enabled'" :disabled="esimOperationActive" @click="disableEsim(profile.iccid)">{{ t('esim.disable') }}</a-button>
+            <a-button v-else-if="profile.state === 'disabled'" type="primary" :disabled="esimOperationActive" @click="enableEsim(profile.iccid)"><CheckOutlined />{{ t('esim.enable') }}</a-button>
+            <span v-else class="esim-action-note">{{ t('esim.stateUnavailable') }}</span>
+            <a-button :disabled="esimOperationActive" @click="openEsimSettings(profile.iccid)"><SettingOutlined />{{ t('esim.editProfile') }}</a-button>
+            <a-button @click="showEsimProfileNotifications(profile.iccid)"><LinkOutlined />{{ t('esim.relatedNotifications') }}</a-button>
+            <a-popconfirm v-if="profile.state === 'disabled' && !isBootstrapProfile(profile)" :title="t('esim.deleteConfirmTarget', { name: profileName(profile) })" :description="t('esim.deleteConfirmDetail')" @confirm="deleteEsim(profile.iccid)"><a-button danger :disabled="esimOperationActive"><DeleteOutlined />{{ t('common.delete') }}</a-button></a-popconfirm>
+            <span v-else-if="isBootstrapProfile(profile)" class="esim-action-note">{{ t('esim.bootstrapCannotDelete') }}</span>
+            <span v-else-if="profile.state === 'enabled'" class="esim-action-note">{{ t('esim.disableBeforeDelete') }}</span>
+          </div>
+        </article>
+      </div>
+      <EmptyState v-else-if="esim && esim.profiles.length && !esimFilteredProfiles.length" :title="t('esim.noProfileMatches')" :detail="t('esim.noProfileMatchesDetail')" />
+      <EmptyState v-else-if="esim?.card_type === 'euicc'" :title="t('esim.noProfiles')" :detail="t('esim.noProfilesDetail')"><template #actions><a-button type="primary" @click="openEsimDownload"><DownloadOutlined />{{ t('common.download') }}</a-button></template></EmptyState>
+    </section>
+
+    <section v-else class="esim-workspace" aria-labelledby="notifications-workspace-title">
+      <div class="esim-workspace-heading"><div><span class="eyebrow">{{ t('esim.notifications') }}</span><h2 id="notifications-workspace-title">{{ t('esim.notificationsWorkspace') }}</h2></div><a-button :loading="esimNotificationsLoading" @click="loadNotifications"><ReloadOutlined />{{ t('common.refresh') }}</a-button></div>
+      <div class="notification-mode-row"><a-segmented v-model:value="esimNotificationMode" :options="[{ value: 'pending', label: `${t('esim.pending')} (${esimNotifications.length})` }, { value: 'history', label: `${t('esim.history')} (${esimNotificationHistory.length})` }]" /></div>
+      <div class="esim-filter-row notification-filters"><a-input v-model:value="esimNotificationQuery" allow-clear :placeholder="t('esim.searchNotifications')" :aria-label="t('esim.searchNotifications')"><template #prefix><SearchOutlined /></template></a-input><a-select v-model:value="esimNotificationEventFilter" allow-clear :placeholder="t('esim.filterEvent')" :options="esimNotificationEvents.map((event) => ({ value: event, label: eventLabel(event) }))" /><a-select v-if="esimNotificationMode === 'history'" v-model:value="esimNotificationStateFilter" allow-clear :placeholder="t('esim.filterState')" :options="[{ value: 'pending', label: historyStateLabel('pending') }, { value: 'processed', label: historyStateLabel('processed') }, { value: 'failed', label: historyStateLabel('failed') }, { value: 'removed', label: historyStateLabel('removed') }]" /></div>
+      <div v-if="esimNotificationProfileFilter" class="esim-filter-context"><span>{{ t('esim.filteredProfile', { id: maskSensitive(esimNotificationProfileFilter) }) }}</span><a-button type="link" size="small" @click="clearEsimNotificationProfileFilter">{{ t('esim.clearFilter') }}</a-button></div>
+      <a-alert v-if="esimNotificationsError" type="error" show-icon :message="t('esim.unableNotifications')" :description="t('esim.notificationsErrorDetail')" />
+      <LoadingState v-else-if="esimNotificationsLoading" />
+      <template v-else-if="esimNotificationMode === 'pending'">
+        <div v-if="esimFilteredNotifications.length" class="notification-list">
+          <article v-for="item in esimFilteredNotifications" :key="'pending-' + item.sequence_number" class="message-row notification-row">
+            <div class="notification-meta"><b>{{ eventLabel(item.event) }}</b><span>{{ notificationProfile(item) }}</span><span v-if="item.address" class="notification-address">{{ item.address }}</span></div>
+            <div class="notification-actions"><a-button v-if="item.can_retry" size="small" :loading="notificationAction(item.sequence_number, 'process')?.busy" @click="processNotification(item.sequence_number)">{{ t('esim.process') }}</a-button><a-popconfirm :title="t('esim.removeConfirm')" :description="t('esim.removeConfirmDetail')" @confirm="removeNotification(item.sequence_number)"><a-button size="small" danger :loading="notificationAction(item.sequence_number, 'remove')?.busy">{{ t('esim.remove') }}</a-button></a-popconfirm><a-button v-if="item.iccid" size="small" @click="showEsimNotificationProfile(item.iccid)">{{ t('esim.viewProfile') }}</a-button></div>
+            <p v-if="notificationAction(item.sequence_number, 'process')?.error || notificationAction(item.sequence_number, 'remove')?.error" class="notification-error">{{ t('esim.notificationActionFailed') }}</p>
+          </article>
         </div>
-      </div></Panel
-    >
-    <a-modal
-      v-model:open="esimDownloadOpen"
-      :title="t('esim.downloadTitle')"
-      :footer="null"
-      destroy-on-close
-      @cancel="closeEsimDownload"
-      ><a-form layout="vertical" @submit.prevent="downloadEsim" @paste="onDownloadPaste"
-        ><a-form-item :label="t('esim.activationCode')"
-          ><a-input v-model:value="esimActivationCode" required placeholder="LPA:1$..." /></a-form-item
-        ><div class="qr-entry">
-          <input
-            ref="qrInput"
-            type="file"
-            accept="image/*"
-            class="qr-file-input"
-            @change="onQRFileSelected"
-          />
-          <a-button size="small" @click="pickQRImage">{{ t('esim.scanQR') }}</a-button>
-          <span class="qr-hint">{{ t('esim.scanQRHint') }}</span>
+        <EmptyState v-else :title="esimNotificationProfileFilter || esimNotificationQuery || esimNotificationEventFilter ? t('esim.noNotificationMatches') : t('esim.noPendingNotifications')" :detail="t('esim.noPendingNotificationsDetail')" />
+      </template>
+      <template v-else>
+        <div v-if="esimFilteredNotificationHistory.length" class="notification-list">
+          <article v-for="item in esimFilteredNotificationHistory" :key="'history-' + item.sequence_number + '-' + item.event + '-' + item.iccid" class="message-row notification-row">
+            <div class="notification-meta"><b>{{ eventLabel(item.event) }}</b><span class="profile-state">{{ historyStateLabel(item.state) }}</span><span>{{ notificationProfile(item) }}</span><span v-if="item.updated_at" class="notification-address">{{ formatTime(item.updated_at) }}</span></div><a-button v-if="item.iccid" size="small" @click="showEsimNotificationProfile(item.iccid)">{{ t('esim.viewProfile') }}</a-button>
+          </article>
         </div>
-        <p v-if="qrError" class="qr-error">{{ qrError }}</p>
-        <a-form-item :label="t('esim.confirmationCode')"
-          ><a-input v-model:value="esimConfirmationCode" /></a-form-item
-        ><a-form-item :label="t('esim.matchingId')"><a-input v-model:value="esimMatchingID" /></a-form-item>
-        <div class="modal-actions">
-          <a-button @click="closeEsimDownload">{{ t('common.cancel') }}</a-button
-          ><a-button
-            type="primary"
-            html-type="submit"
-            :disabled="!device.has('esim') || !esimActivationCode.trim()"
-            ><DownloadOutlined />{{ t('common.download') }}</a-button
-          >
-        </div></a-form
-      ></a-modal
-    >
-    <a-modal
-      v-model:open="esimConfirmationOpen"
-      :title="t('esim.confirmationTitle')"
-      :footer="null"
-      :closable="false"
-      ><p class="confirmation-hint">{{ t('esim.confirmationHint') }}</p>
-      <a-input
-        v-model:value="esimConfirmationInput"
-        autofocus
-        :disabled="esimConfirmationBusy"
-        @press-enter="submitConfirmationCode"
-      />
-      <div class="modal-actions">
-        <a-button :disabled="esimConfirmationBusy" @click="declineConfirmationCode">{{
-          t('common.cancel')
-        }}</a-button
-        ><a-button
-          type="primary"
-          :loading="esimConfirmationBusy"
-          :disabled="!esimConfirmationInput.trim()"
-          @click="submitConfirmationCode"
-          >{{ t('common.confirm') }}</a-button
-        >
-      </div></a-modal
-    >
-    <a-modal
-      v-model:open="esimSettingsOpen"
-      :title="t('esim.settings')"
-      :width="680"
-      :footer="null"
-      destroy-on-close
-      @cancel="closeEsimSettings"
-      ><a-form layout="vertical" @submit.prevent="saveProfileNote"
-        ><a-form-item :label="t('esim.profileName')"
-          ><a-input v-model:value="esimLabels[settingsICCID]" required :maxlength="64"
-        /></a-form-item>
-        <div class="settings-note-fields">
-          <h3>{{ t('esim.localNote') }}</h3>
-          <p>{{ t('esim.localNoteHint') }}</p>
-          <a-form-item :label="t('esim.noteLabel')"
-            ><a-input v-model:value="noteLabel" :maxlength="80" /></a-form-item
-          ><a-form-item :label="t('esim.notePhone')"
-            ><a-input v-model:value="notePhone" :maxlength="80" /></a-form-item
-          ><a-form-item :label="t('esim.noteTags')"
-            ><a-input v-model:value="noteTags" :maxlength="200"
-          /></a-form-item>
-        </div>
-        <div class="modal-actions">
-          <a-button @click="closeEsimSettings">{{ t('common.cancel') }}</a-button
-          ><a-button type="primary" html-type="submit">{{ t('esim.saveLocal') }}</a-button>
-        </div></a-form
-      >
+        <EmptyState v-else :title="t('esim.noHistory')" :detail="t('esim.noHistoryDetail')" />
+      </template>
+    </section>
+
+    <a-modal :open="esimDownloadOpen || esimConfirmationOpen" :title="t('esim.downloadTitle')" :footer="null" :closable="!esimConfirmationOpen" :mask-closable="!esimConfirmationOpen" destroy-on-close @cancel="closeEsimDownload">
+      <template v-if="esimDownloadPhase === 'input'">
+        <a-form layout="vertical" @submit.prevent="downloadEsim" @paste="onDownloadPaste">
+          <a-form-item :label="t('esim.activationCode')"><a-input v-model:value="esimActivationCode" required placeholder="LPA:1$..." /></a-form-item>
+          <div class="qr-drop-zone" @dragover.prevent @drop="onDownloadDrop"><input ref="qrInput" type="file" accept="image/*" class="qr-file-input" @change="onQRFileSelected" /><a-button size="small" @click="pickQRImage">{{ t('esim.scanQR') }}</a-button><span>{{ t('esim.dropQR') }}</span></div>
+          <p v-if="qrError" class="qr-error">{{ qrError }}</p>
+          <a-form-item :label="t('esim.confirmationCode')"><a-input v-model:value="esimConfirmationCode" /></a-form-item><a-form-item :label="t('esim.matchingId')"><a-input v-model:value="esimMatchingID" /></a-form-item>
+          <div class="modal-actions"><a-button @click="closeEsimDownload">{{ t('common.cancel') }}</a-button><a-button type="primary" html-type="submit" :disabled="!device.has('esim') || !esimActivationCode.trim()"><DownloadOutlined />{{ t('common.download') }}</a-button></div>
+        </a-form>
+      </template>
+      <template v-else>
+        <p class="confirmation-hint">{{ t('esim.downloadProgressDetail') }}</p>
+        <OperationStatusView v-if="esimOperation" :operation="esimOperation" :label="t('esim.downloadProgress')" />
+        <a-alert v-if="esimConfirmationOpen" class="esim-confirmation-inline" type="info" show-icon :message="t('esim.confirmationTitle')" :description="t('esim.confirmationHint')"><template #description><div>{{ t('esim.confirmationHint') }}</div><a-input v-model:value="esimConfirmationInput" autofocus :disabled="esimConfirmationBusy" @press-enter="submitConfirmationCode" /><div class="modal-actions"><a-button :disabled="esimConfirmationBusy" @click="declineConfirmationCode">{{ t('common.cancel') }}</a-button><a-button type="primary" :loading="esimConfirmationBusy" :disabled="!esimConfirmationInput.trim()" @click="submitConfirmationCode">{{ t('common.confirm') }}</a-button></div></template></a-alert>
+        <div v-if="esimDownloadPhase === 'terminal' && esimOperation && ['failed', 'cancelled'].includes(esimOperation.state)" class="modal-actions"><a-button @click="resetEsimDownloadForRetry">{{ t('esim.retryDownload') }}</a-button><a-button @click="closeEsimDownload">{{ t('common.close') }}</a-button></div>
+      </template>
+    </a-modal>
+
+    <a-modal v-model:open="esimSettingsOpen" :title="t('esim.editProfile')" :footer="null" :width="680" destroy-on-close @cancel="closeEsimSettings">
+      <a-form layout="vertical" @submit.prevent="saveProfileNote"><a-form-item :label="t('esim.profileNameCard')"><a-input v-model:value="esimLabels[settingsICCID]" :maxlength="64" /></a-form-item><div class="settings-note-fields"><h3>{{ t('esim.localNote') }}</h3><p>{{ t('esim.localNoteHint') }}</p><a-form-item :label="t('esim.noteLabel')"><a-input v-model:value="noteLabel" :maxlength="80" /></a-form-item><a-form-item :label="t('esim.notePhone')"><a-input v-model:value="notePhone" :maxlength="80" /></a-form-item><a-form-item :label="t('esim.noteTags')"><a-input v-model:value="noteTags" :maxlength="200" /></a-form-item></div><div class="modal-actions"><a-button @click="closeEsimSettings">{{ t('common.cancel') }}</a-button><a-button type="primary" html-type="submit">{{ t('common.save') }}</a-button></div></a-form>
     </a-modal>
   </section>
 </template>

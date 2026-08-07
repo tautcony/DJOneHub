@@ -122,13 +122,22 @@ const sortedCards = computed(() =>
             </div>
           </div>
           <div class="simcard-actions">
-            <a-button size="small" @click="openEdit(card)"
+            <a-button
+              size="small"
+              :aria-label="t('simcards.editTitle')"
+              :title="t('simcards.editTitle')"
+              @click="openEdit(card)"
               ><template #icon><EditOutlined /></template
             ></a-button
             ><a-popconfirm
               :title="t('simcards.deleteConfirm')"
               @confirm="deleteSimCard(card.iccid)"
-              ><a-button size="small" danger :disabled="simCardsBusy"
+              ><a-button
+                size="small"
+                danger
+                :aria-label="t('common.delete')"
+                :title="t('common.delete')"
+                :disabled="simCardsBusy"
                 ><template #icon><DeleteOutlined /></template
               ></a-button></a-popconfirm
             >

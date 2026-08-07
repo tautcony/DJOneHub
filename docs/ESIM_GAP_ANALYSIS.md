@@ -2,7 +2,7 @@
 
 > 日期：2026-08-07
 > 范围：DJOneHub 当前 eSIM/eUICC 实现 vs 业界主流工具（Android LPA、iOS、SimpleESIM、GSMA SGP.22/SGP.32 等）
-> 结论摘要：核心 SGP.22 下载/启用/删除/改名链路已完整落地；**Profile 停用（Disable）、eUICC 重置、SM-DS 发现、通知管理 UI、确认码交互、QMI/MBIM eUICC 传输启用**等业界标配能力尚未实现或未接线。
+> 结论摘要：核心 SGP.22 下载/启用/停用/删除/改名链路已完整落地；eUICC 重置、SM-DS 发现和 QMI/MBIM eUICC 传输仍未接线。本次 `redesign-esim-workbench` 只重组已有能力，不新增这些未验证的入口。
 >
 > 状态更新（2026-08-07，openspec 变更 `complete-esim-management`）：**P0/P1 五项差距（Profile 停用、下载阶段进度、确认码交互、通知管理、二维码扫描）已全部接线落地**，下文 §2 中对应项标记 ✅ 已实现；P2/P3 项仍为缺口。
 
@@ -37,12 +37,20 @@
 
 ### 1.3 前端与 API（`web/src/views/EsimView.vue`、`internal/api/http/server.go`）
 
-- Profile 卡片：状态标签、掩码 ICCID、SPN、Profile Class、AID、本地备注
-- 操作：**下载 / 启用 / 删除 / 改名（设置）**，无停用
-- 下载对话框：激活码、确认码、matchingID 均为**手动文本输入**，无二维码扫描
-- API：`GET /api/v1/esim`、`POST .../actions/{download,enable,rename,delete}`、`GET /health`、`GET|PUT /notes`
+- eSIM route 现在使用共享摘要和 `Profiles` / `Notifications` 两个页内工作区；Profiles 为默认工作区。
+- Profile 卡片显示状态、掩码 ICCID、SPN、Profile Class 和 DJOneHub 本地元数据；启用/停用是主状态操作，删除只对停用 Profile 提供并要求确认。
+- Notifications 将卡片待处理队列和本地 history 分开，继续使用单项 process/remove API，并支持本地过滤和 Profile 双向定位。
+- 下载流程统一手动激活码、二维码文件/剪贴板/拖放、确认码、matchingID、operation 进度和终态重试；二维码输入通过 `web/src/services/esimQr.ts` 共用解码路径。
+- API 契约保持不变：`GET /api/v1/esim`、`POST .../actions/{download,enable,disable,rename,delete}`、`GET /health`、`GET|PUT /notes`、通知和 operation 端点继续复用。
 
-### 1.4 规范承诺（openspec/specs/）
+### 1.4 Workbench redesign（2026-08-07）
+
+- eUICC nickname 与 DJOneHub 本地 label、phone、tags 分开编辑；只改本地元数据时不调用 rename。
+- operation dock 保留 accepted、running、progress、terminal 和 structured error 状态；弹窗关闭不会清除 operation ID，终态会协调刷新 Profile、health、通知和 history 快照。
+- capability 不可用、实体 SIM、不可读 eUICC、可读但无 Profile、局部 health/notes/notification 失败和无搜索结果分别表达；未验证的 eUICC detail、默认 SM-DP+、行为策略、批量通知、SM-DS、重置和摄像头扫码不进入工作台。
+- 敏感设置关闭时，EID、ICCID、AID 等标识继续使用既有掩码策略，不进入可见标签、tooltip、URL 或操作文案。
+
+### 1.5 规范承诺（openspec/specs/）
 
 所有 openspec 规范承诺均已兑现；差距均属"静默缺失"，非规范违约。
 
@@ -115,16 +123,16 @@
 | 能力项 | **DJOneHub（现状）** | lpac/EasyLPAC | Android LPA | OpenEUICC | Windows 内置 | Quectel AT+QESIM | iOS |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | Profile 列表（状态/昵称/SPN/Class/图标） | ✅（无图标） | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ |
-| 下载（激活码+确认码+matchingID/IMEI） | ✅ 手动文本 | ✅ 含确认码、IMEI、预览 | ✅ | ✅ | ✅ QR/手动 | ✅ | ✅ QR/链接 |
-| 二维码扫描输入 | ❌ | ⚠️（文本为主） | ✅ | ✅ | ✅ | ⚠️ | ✅ |
-| 下载中确认码交互（OnConfirm） | ❌ 缺失即中止 | ✅ 交互式预览 | ✅ LUI 可解析错误 | ✅ | ✅ | ⚠️ | ✅ |
-| 下载阶段进度 | ❌ 仅 5%/100% | ✅ 阶段日志 | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Profile 停用（Disable）** | ❌ 库支持未接线 | ✅ 含 refreshFlag | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 下载（激活码+确认码+matchingID/IMEI） | ✅ 手动/QR 图片/粘贴/拖放 | ✅ 含确认码、IMEI、预览 | ✅ | ✅ | ✅ QR/手动 | ✅ | ✅ QR/链接 |
+| 二维码扫描输入 | ✅ 文件/剪贴板/拖放（无摄像头） | ⚠️（文本为主） | ✅ | ✅ | ✅ | ⚠️ | ✅ |
+| 下载中确认码交互（OnConfirm） | ✅ operation 事件交互 | ✅ 交互式预览 | ✅ LUI 可解析错误 | ✅ | ✅ | ⚠️ | ✅ |
+| 下载阶段进度 | ✅ 分阶段 operation 进度 | ✅ 阶段日志 | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Profile 停用（Disable）** | ✅ | ✅ 含 refreshFlag | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 启用/切换（Enable, refresh） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 删除（Delete+通知上报） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 改名（SetNickname） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | eUICC 信息（EID/EUICCInfo2/地址） | ✅ EID+Info2+地址 | ✅ | ✅ | ✅ | ⚠️ | ⚠️ EID | ⚠️ EID |
-| **通知管理（列出/重发/删除）** | ❌ 无 API/UI | ✅ auto-process | ✅ | ✅ | ✅ | ⚠️ | ⚠️ 静默 |
+| **通知管理（列出/重发/删除）** | ✅ 待处理/历史/单项操作 | ✅ auto-process | ✅ | ✅ | ✅ | ⚠️ | ⚠️ 静默 |
 | **SM-DS 发现（ES11）** | ❌ 库支持未接线 | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ 内部 |
 | **eUICC 重置（MemoryReset）** | ❌ 库支持未接线 | ✅ chip purge | ✅ | ✅ | ✅ Wipe | ❌ | ❌ |
 | 多 Profile/PPR 感知 | ⚠️ 仅显示 Class | ⚠️ | ✅ PPR 码 | ✅ | ⚠️ | ⚠️ | ⚠️ |
@@ -136,7 +144,7 @@
 ### 3.3 结论要点
 
 1. **已超越/持平部分**：下载完整流程（含防变砖 NVRAM 预检、matchingID、确认码参数、安装失败恢复）、启用/删除/改名、eUICC 信息读取、多厂商 ISD-R AID 兼容（eSTK.me/5ber/eSIM.me/XeSIM 等）——这些与 lpac、Android LPA 相当。
-2. **明显落后部分**：停用（Disable）、通知管理、SM-DS 发现、eUICC 重置、确认码交互、下载进度、二维码——全部是业界主流 LPA 的标配，本项目"库已支持但未接线"或完全缺失。
+2. **明显落后部分**：SM-DS 发现、eUICC 重置和 QMI/MBIM 生产传输仍未接线；摄像头实时扫码、Profile 图标/PPR 和更细粒度错误指引仍可增强。
 3. **调研修正**（与常见认知相反，值得记录）：
    - SGP.22 中 Profile 状态只有 `disabled(0)/enabled(1)` 两种，**不存在 "enabled-and-disabled" 状态**（本实现 Profile.State 三值显示是兼容的）；
    - SGP.22 无 `SetFallbackAddress` 函数，只有 `GetEuiccConfiguredAddresses`/`SetDefaultDpAddress`；

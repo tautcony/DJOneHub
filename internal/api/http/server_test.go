@@ -25,7 +25,6 @@ import (
 	"github.com/iniwex5/vohive/internal/application/operation"
 	"github.com/iniwex5/vohive/internal/application/rawat"
 	"github.com/iniwex5/vohive/internal/application/simcards"
-	"github.com/iniwex5/vohive/internal/storage"
 	"github.com/iniwex5/vohive/internal/application/sms"
 	"github.com/iniwex5/vohive/internal/application/vowifi"
 	"github.com/iniwex5/vohive/internal/backend"
@@ -34,6 +33,7 @@ import (
 	"github.com/iniwex5/vohive/internal/platform/startup"
 	"github.com/iniwex5/vohive/internal/platform/unsupported"
 	"github.com/iniwex5/vohive/internal/runtime"
+	"github.com/iniwex5/vohive/internal/storage"
 	"github.com/iniwex5/vohive/internal/transport"
 )
 
@@ -188,16 +188,16 @@ func (b *contractBackend) Profiles(context.Context) ([]backend.Profile, error) {
 func (b *contractBackend) Download(context.Context, string, string, string, *backend.ESIMDownloadOptions) error {
 	return nil
 }
-func (b *contractBackend) Enable(context.Context, string) error  { return nil }
-func (b *contractBackend) Disable(context.Context, string) error { return nil }
+func (b *contractBackend) Enable(context.Context, string) error         { return nil }
+func (b *contractBackend) Disable(context.Context, string) error        { return nil }
 func (b *contractBackend) Rename(context.Context, string, string) error { return nil }
-func (b *contractBackend) Delete(context.Context, string) error   { return nil }
+func (b *contractBackend) Delete(context.Context, string) error         { return nil }
 func (b *contractBackend) ListNotifications(context.Context) ([]backend.NotificationItem, error) {
 	return []backend.NotificationItem{{SequenceNumber: 1, Event: "install", CanRetry: true}}, nil
 }
 func (b *contractBackend) ProcessNotification(context.Context, int64) error { return nil }
-func (b *contractBackend) RemoveNotification(context.Context, int64) error { return nil }
-func (b *contractBackend) RawAT(context.Context, string) (string, error)   { return "OK", nil }
+func (b *contractBackend) RemoveNotification(context.Context, int64) error  { return nil }
+func (b *contractBackend) RawAT(context.Context, string) (string, error)    { return "OK", nil }
 
 type contractVoWiFiBackend struct{ *contractBackend }
 
@@ -245,12 +245,12 @@ func newReadyServerWithBackend(t *testing.T, discovery *fakeReadyDiscovery, b ba
 	ops := operation.NewManager(r.Events())
 	devices := device.NewService(r)
 	smsService := sms.NewService(devices, ops, r)
-	esimService := esim.NewService(devices, ops, r)
 	db, err := storage.OpenSQLite(filepath.Join(t.TempDir(), "server-test.sqlite3"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
+	esimService := esim.NewService(devices, ops, r, db)
 	simCardsService := simcards.NewService(db)
 	networkService := network.NewService(devices, ops, r, contractNetwork{})
 	rawATService := rawat.NewService(devices, r)

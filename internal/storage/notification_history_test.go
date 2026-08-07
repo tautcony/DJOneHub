@@ -134,6 +134,67 @@ func TestMarkNotificationHistoryAbsent(t *testing.T) {
 	}
 }
 
+func TestUpdateNotificationHistoryStatePreservesObservedNotification(t *testing.T) {
+	store := openTestStore(t)
+	if _, err := store.db.Exec(`
+		INSERT INTO esim_notification_history(sequence_number, event, iccid, state, observed_at, updated_at)
+		VALUES(23, 'enable', 'older-card', 'processed', '2026-08-06T01:00:00Z', '2026-08-06T01:00:00Z')
+	`); err != nil {
+		t.Fatalf("seed reused sequence: %v", err)
+	}
+	if err := store.UpsertNotificationHistory(NotificationHistoryRecord{
+		SequenceNumber: 23,
+		Event:          "install",
+		ICCID:          "8986012001000000000",
+		State:          NotificationStatePending,
+	}); err != nil {
+		t.Fatalf("upsert pending: %v", err)
+	}
+	if err := store.UpdateNotificationHistoryState(23, NotificationStateRemoved); err != nil {
+		t.Fatalf("mark removed: %v", err)
+	}
+	records, err := store.ListNotificationHistory(0)
+	if err != nil {
+		t.Fatalf("list history: %v", err)
+	}
+	if len(records) != 2 || records[0].Event != "install" || records[0].State != NotificationStateRemoved {
+		t.Fatalf("history = %#v, want latest install record removed", records)
+	}
+	if records[1].Event != "enable" || records[1].State != NotificationStateProcessed {
+		t.Fatalf("older reused sequence changed: %#v", records[1])
+	}
+	if err := store.UpdateNotificationHistoryState(0, NotificationStateProcessed); err == nil {
+		t.Fatal("missing sequence must fail")
+	}
+}
+
+func TestNotificationHistoryOrdersByUpdatedAtAndHonorsLimit(t *testing.T) {
+	store := openTestStore(t)
+	entries := []struct {
+		sequence int64
+		updated  string
+	}{
+		{sequence: 1, updated: "2026-08-07T01:00:00Z"},
+		{sequence: 3, updated: "2026-08-07T03:00:00Z"},
+		{sequence: 2, updated: "2026-08-07T02:00:00Z"},
+	}
+	for _, entry := range entries {
+		if _, err := store.db.Exec(`
+			INSERT INTO esim_notification_history(sequence_number, event, state, observed_at, updated_at)
+			VALUES(?, 'install', 'pending', ?, ?)
+		`, entry.sequence, entry.updated, entry.updated); err != nil {
+			t.Fatalf("seed history %d: %v", entry.sequence, err)
+		}
+	}
+	records, err := store.ListNotificationHistory(2)
+	if err != nil {
+		t.Fatalf("list history: %v", err)
+	}
+	if len(records) != 2 || records[0].SequenceNumber != 3 || records[1].SequenceNumber != 2 {
+		t.Fatalf("ordered bounded history = %#v, want sequence 3 then 2", records)
+	}
+}
+
 func TestNotificationHistorySchemaVersion(t *testing.T) {
 	store := openTestStore(t)
 	var version int

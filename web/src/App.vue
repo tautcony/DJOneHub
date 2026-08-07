@@ -86,7 +86,27 @@ const {
 const esimStore = useEsimStore()
 const {
   overview: esim,
+  overviewError: esimOverviewError,
+  notesError: esimNotesError,
+  healthError: esimHealthError,
+  notificationsError: esimNotificationsError,
+  notificationsLoading: esimNotificationsLoading,
+  activeWorkspace: esimWorkspace,
+  notificationMode: esimNotificationMode,
+  profileQuery: esimProfileQuery,
+  profileStateFilter: esimProfileStateFilter,
+  notificationQuery: esimNotificationQuery,
+  notificationEventFilter: esimNotificationEventFilter,
+  notificationProfileFilter: esimNotificationProfileFilter,
+  notificationStateFilter: esimNotificationStateFilter,
+  focusedICCID: esimFocusedICCID,
+  filteredProfiles: esimFilteredProfiles,
+  filteredNotifications: esimFilteredNotifications,
+  filteredNotificationHistory: esimFilteredNotificationHistory,
+  notificationEvents: esimNotificationEvents,
+  operationActive: esimOperationActive,
   downloadOpen: esimDownloadOpen,
+  downloadPhase: esimDownloadPhase,
   settingsOpen: esimSettingsOpen,
   settingsICCID: esimSettingsICCID,
   activationCode: esimActivationCode,
@@ -98,6 +118,8 @@ const {
   notifications: esimNotifications,
   notificationHistory: esimNotificationHistory,
   notificationBusy: esimNotificationBusy,
+  notificationActionState: esimNotificationActionState,
+  health: esimHealth,
   confirmationOpen: esimConfirmationOpen,
   confirmationOperationID: esimConfirmationOperationID,
   confirmationInput: esimConfirmationInput,
@@ -621,6 +643,7 @@ watch(esimOperation, (operation) => {
   esimReloadedOperationID.value = operation.operation_id
   const delay = operation.state === 'succeeded' ? 1200 : 0
   scheduleViewRefresh('esim', delay)
+  window.setTimeout(() => void esimStore.refreshAfterOperation(), delay)
 })
 
 watch(firmwareOperation, (operation) => {
@@ -761,7 +784,6 @@ async function downloadEsim() {
   try {
     const result = await esimStore.download()
     notifySuccess(t('esim.operationAccepted', { id: result.operation_id }))
-    closeEsimDownload()
   } catch (error) {
     notifyError('view', errorText(error, 'esim.unableDownload'))
   }
@@ -1263,9 +1285,29 @@ provide(viewContextKey, {
   downloadEsim,
   enableEsim,
   esim,
+  esimOverviewError,
+  esimNotesError,
+  esimHealthError,
+  esimNotificationsError,
+  esimNotificationsLoading,
+  esimWorkspace,
+  esimNotificationMode,
+  esimProfileQuery,
+  esimProfileStateFilter,
+  esimNotificationQuery,
+  esimNotificationEventFilter,
+  esimNotificationProfileFilter,
+  esimNotificationStateFilter,
+  esimFocusedICCID,
+  esimFilteredProfiles,
+  esimFilteredNotifications,
+  esimFilteredNotificationHistory,
+  esimNotificationEvents,
+  esimOperationActive,
   esimActivationCode,
   esimConfirmationCode,
   esimDownloadOpen,
+  esimDownloadPhase,
   esimLabels,
   esimMatchingID,
   esimOperation,
@@ -1279,6 +1321,8 @@ provide(viewContextKey, {
   esimNotifications,
   esimNotificationHistory,
   esimNotificationBusy,
+  esimNotificationActionState,
+  esimHealth,
   simCards,
   simCardsBusy,
   createSimCard,
@@ -1294,7 +1338,14 @@ provide(viewContextKey, {
   noteTags,
   noteSummary,
   openEsimDownload,
+  resetEsimDownloadForRetry: esimStore.resetDownloadForRetry,
   openEsimSettings,
+  showEsimWorkspace: esimStore.showWorkspace,
+  showEsimProfileNotifications: esimStore.showProfileNotifications,
+  showEsimNotificationProfile: esimStore.showNotificationProfile,
+  clearEsimNotificationProfileFilter: esimStore.clearNotificationProfileFilter,
+  refreshEsimSnapshots: esimStore.refreshSnapshots,
+  refreshEsimAfterOperation: esimStore.refreshAfterOperation,
   saveProfileNote,
   checkNetwork,
   loadNetwork,

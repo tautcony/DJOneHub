@@ -105,6 +105,19 @@ export interface EsimNotificationHistory {
   updated_at?: string
 }
 
+export interface EsimHealth {
+  ok: boolean
+  module_iccid?: string
+  imsi?: string
+  operator?: string
+  registration?: boolean
+  registered?: boolean
+  signal_dbm?: number
+  network_mode?: string
+  active_profile?: EsimOverview['profiles'][number]
+  message?: string
+}
+
 export interface NetworkStatus {
   mode?: string
   network_mode?: string

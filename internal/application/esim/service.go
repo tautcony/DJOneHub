@@ -244,6 +244,17 @@ func (s *Service) Delete(ctx context.Context, iccid string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	profiles, err := port.Profiles(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, profile := range profiles {
+		if profile.ICCID == iccid && isBootstrapProfile(profile) {
+			return "", derrors.New(derrors.InvalidRequest, "bootstrap profile cannot be deleted", false, map[string]any{
+				"profile_class": profile.ProfileClass,
+			})
+		}
+	}
 	return s.ops.Start(ctx, "esim.delete", func(taskCtx context.Context, _ string, progress func(int, string)) error {
 		release, err := s.runtime.Acquire(taskCtx, runtime.ResourceSIM)
 		if err != nil {
@@ -258,6 +269,16 @@ func (s *Service) Delete(ctx context.Context, iccid string) (string, error) {
 		s.ops.Publish("esim.updated", map[string]any{"operation": "delete", "iccid": iccid})
 		return nil
 	})
+}
+
+func isBootstrapProfile(profile backend.Profile) bool {
+	for _, value := range []string{profile.ProfileClass, profile.Label, profile.ServiceProviderName} {
+		normalized := strings.ToLower(strings.TrimSpace(value))
+		if normalized == "bootstrap" || normalized == "provisioning" || normalized == "bootstrap profile" {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) ListNotifications(ctx context.Context) ([]backend.NotificationItem, error) {
@@ -292,6 +313,7 @@ func (s *Service) RemoveNotification(ctx context.Context, sequenceNumber int64) 
 		return err
 	}
 	if err := port.RemoveNotification(ctx, sequenceNumber); err != nil {
+		s.recordNotificationState(sequenceNumber, storage.NotificationStateFailed)
 		return err
 	}
 	s.recordNotificationState(sequenceNumber, storage.NotificationStateRemoved)
@@ -332,16 +354,13 @@ func (s *Service) syncNotificationHistory(items []backend.NotificationItem) {
 	}
 }
 
-// recordNotificationState 按卡片序号把历史记录标记为指定状态。通知可能尚未被
-// 观察过（无对应记录），此时按失败/处置结果补写一条，保证处置轨迹可见。
+// recordNotificationState 按卡片序号把已观察的历史记录标记为指定状态。通知
+// 元数据只来自待处理快照，因此不能用缺少 event 的记录创建新的历史条目。
 func (s *Service) recordNotificationState(sequenceNumber int64, state storage.NotificationHistoryState) {
 	if s.store == nil || sequenceNumber <= 0 {
 		return
 	}
-	if err := s.store.UpsertNotificationHistory(storage.NotificationHistoryRecord{
-		SequenceNumber: sequenceNumber,
-		State:          state,
-	}); err != nil {
+	if err := s.store.UpdateNotificationHistoryState(sequenceNumber, state); err != nil {
 		log.Printf("esim notification history state update failed: %v", err)
 	}
 }

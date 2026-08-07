@@ -676,7 +676,7 @@ func (s *Server) esimHealth(w nethttp.ResponseWriter, r *nethttp.Request) {
 	if !s.requireMethod(w, r, nethttp.MethodGet) || !s.protected(w, r) {
 		return
 	}
-	if s.config.Extras == nil {
+	if s.config.Device == nil || s.config.ESIM == nil {
 		writeError(w, fmt.Errorf("eSIM health is unavailable"))
 		return
 	}

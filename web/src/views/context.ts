@@ -3,6 +3,7 @@ import type { ATPreset, ParsedATResponse } from '../services/at'
 import type { useDeviceStore } from '../stores/device'
 import type {
   CallStatus,
+  EsimHealth,
   EsimNotification,
   SimCard,
   EsimNotificationHistory,
@@ -19,6 +20,13 @@ import type {
   StartupStatus,
   VowifiStatus,
 } from '../types'
+import type {
+  EsimDownloadPhase,
+  EsimWorkspace,
+  NotificationActionState,
+  NotificationMode,
+  ProfileStateFilter,
+} from '../stores/esim'
 import type { ViewID } from '../router'
 
 // The shell owns device polling and actions; routed views consume this shared,
@@ -95,6 +103,26 @@ export type ViewContext = {
   downloadEsim: () => Promise<void>
   enableEsim: (iccid?: string) => Promise<void>
   esim: Ref<EsimOverview | null>
+  esimOverviewError: Ref<string>
+  esimNotesError: Ref<string>
+  esimHealthError: Ref<string>
+  esimNotificationsError: Ref<string>
+  esimNotificationsLoading: Ref<boolean>
+  esimWorkspace: Ref<EsimWorkspace>
+  esimNotificationMode: Ref<NotificationMode>
+  esimProfileQuery: Ref<string>
+  esimProfileStateFilter: Ref<ProfileStateFilter>
+  esimNotificationQuery: Ref<string>
+  esimNotificationEventFilter: Ref<string>
+  esimNotificationProfileFilter: Ref<string>
+  esimNotificationStateFilter: Ref<string>
+  esimFocusedICCID: Ref<string>
+  esimFilteredProfiles: ComputedRef<EsimOverview['profiles']>
+  esimFilteredNotifications: ComputedRef<EsimNotification[]>
+  esimFilteredNotificationHistory: ComputedRef<EsimNotificationHistory[]>
+  esimNotificationEvents: ComputedRef<string[]>
+  esimOperationActive: ComputedRef<boolean>
+  esimHealth: Ref<EsimHealth | null>
   esimActivationCode: Ref<string>
   esimConfirmationCode: Ref<string>
   esimDownloadOpen: Ref<boolean>
@@ -106,11 +134,15 @@ export type ViewContext = {
   esimNotifications: Ref<EsimNotification[]>
   esimNotificationHistory: Ref<EsimNotificationHistory[]>
   esimNotificationBusy: Ref<boolean>
+  esimNotificationActionState: Ref<Record<number, NotificationActionState>>
+  esimDownloadPhase: Ref<EsimDownloadPhase>
   esimConfirmationOpen: Ref<boolean>
   esimConfirmationOperationID: Ref<string>
   esimConfirmationInput: Ref<string>
   esimConfirmationBusy: Ref<boolean>
   loadNotifications: () => Promise<void>
+  refreshEsimSnapshots: () => Promise<void>
+  refreshEsimAfterOperation: () => Promise<void>
   processNotification: (sequence: number) => Promise<void>
   removeNotification: (sequence: number) => Promise<void>
   submitConfirmationCode: () => Promise<void>
@@ -121,7 +153,12 @@ export type ViewContext = {
   noteTags: Ref<string>
   noteSummary: (note?: ProfileNote) => string
   openEsimDownload: () => void
+  resetEsimDownloadForRetry: () => void
   openEsimSettings: (iccid?: string) => void
+  showEsimWorkspace: (workspace: EsimWorkspace) => void
+  showEsimProfileNotifications: (iccid?: string) => void
+  showEsimNotificationProfile: (iccid?: string) => void
+  clearEsimNotificationProfileFilter: () => void
   saveProfileNote: () => Promise<void>
 
   // SIM cards

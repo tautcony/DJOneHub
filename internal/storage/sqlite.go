@@ -901,6 +901,30 @@ func (s *SQLiteStore) UpsertNotificationHistory(record NotificationHistoryRecord
 	return nil
 }
 
+// UpdateNotificationHistoryState records an explicit user-driven outcome for
+// the most recently observed notification with the supplied sequence number.
+// Sequence numbers can be reused across cards, while the action endpoint only
+// carries the current sequence, so older matching history must remain intact.
+func (s *SQLiteStore) UpdateNotificationHistoryState(sequenceNumber int64, state NotificationHistoryState) error {
+	if sequenceNumber <= 0 {
+		return fmt.Errorf("notification sequence is required")
+	}
+	if strings.TrimSpace(string(state)) == "" {
+		return fmt.Errorf("notification state is required")
+	}
+	if _, err := s.db.Exec(`
+		UPDATE esim_notification_history SET state = ?, updated_at = ?
+		WHERE rowid = (
+			SELECT rowid FROM esim_notification_history
+			WHERE sequence_number = ?
+			ORDER BY updated_at DESC, rowid DESC LIMIT 1
+		)
+	`, string(state), time.Now().UTC().Format(time.RFC3339Nano), sequenceNumber); err != nil {
+		return fmt.Errorf("update notification history state: %w", err)
+	}
+	return nil
+}
+
 // MarkNotificationHistoryAbsent 把仍处于 pending 状态、但不在当前卡片待处理
 // 快照中的记录标记为 processed——说明通知已被自动清理或卡片自行处置。
 // current 是本次快照中仍在卡片上的记录键集合。
