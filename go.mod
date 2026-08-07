@@ -10,8 +10,6 @@ replace github.com/damonto/euicc-go => ./third_party/euicc-go
 
 replace github.com/electricbubble/gadb => ./third_party/gadb
 
-replace golang.org/x/sys => ./third_party/x-sys
-
 replace github.com/iniwex5/netlink => ./third_party/netlink
 
 require (

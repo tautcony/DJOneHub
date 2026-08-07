@@ -23,8 +23,7 @@ The source repository includes selected source dependencies under `third_party/`
 | euicc-go | `third_party/euicc-go/LICENSE` |
 | gadb | `third_party/gadb/LICENSE` |
 | github.com/iniwex5/netlink | `third_party/netlink/LICENSE` |
-| golang.org/x/sys | `third_party/x-sys/LICENSE` |
 
-The following dependencies are fetched directly through Go modules and retain their upstream licenses and copyright notices: `github.com/damonto/uicc-go`, `github.com/iniwex5/quectel-qmi-go`, `github.com/lestrrat-go/strftime`, `github.com/pkg/errors`, `golang.org/x/text`, and `go.uber.org/multierr`.
+The following dependencies are fetched directly through Go modules and retain their upstream licenses and copyright notices: `github.com/damonto/uicc-go`, `github.com/iniwex5/quectel-qmi-go`, `github.com/lestrrat-go/strftime`, `github.com/pkg/errors`, `golang.org/x/sys`, `golang.org/x/text`, and `go.uber.org/multierr`.
 
 This file is informational and does not replace any component's full license text.
