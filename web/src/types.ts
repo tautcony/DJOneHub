@@ -209,6 +209,7 @@ export interface CallRecord {
   started_at: string
   updated_at: string
   ended_at?: string
+  connected_at?: string
   missed: boolean
   iccid?: string
 }

@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { DeleteOutlined, PhoneOutlined, StopOutlined } from '@ant-design/icons-vue'
+import { ClockCircleOutlined, DeleteOutlined, PhoneOutlined, StopOutlined } from '@ant-design/icons-vue'
 import EmptyState from '../components/EmptyState.vue'
 import LoadingState from '../components/LoadingState.vue'
 import Panel from '../components/Panel.vue'
-import { formatDateTime } from '../utils/date'
+import { formatDateTime, formatDuration } from '../utils/date'
 import { simProfileICCIDs, simProfileLabel } from '../utils/simprofiles'
 import { useViewContext } from './context'
 
@@ -26,6 +26,8 @@ const {
   simProfiles,
 } = useViewContext()
 const simFilter = ref('')
+const now = ref(Date.now())
+let durationTimer: number | undefined
 const simOptions = computed(() =>
   simProfileICCIDs(simProfiles.value, [
     calls.value?.active?.iccid,
@@ -35,6 +37,19 @@ const simOptions = computed(() =>
 const filteredHistory = computed(() =>
   (calls.value?.history || []).filter((item) => !simFilter.value || item.iccid === simFilter.value),
 )
+const activeCallDuration = computed(() =>
+  calls.value?.active?.connected_at ? formatDuration(calls.value.active.connected_at, undefined, now.value) : '',
+)
+
+onMounted(() => {
+  durationTimer = window.setInterval(() => {
+    now.value = Date.now()
+  }, 1000)
+})
+
+onBeforeUnmount(() => {
+  if (durationTimer !== undefined) window.clearInterval(durationTimer)
+})
 
 // 活动通话按钮按方向区分文案: 来电「拒接」, 去电/通话中「挂断」, 均走 AT+CHUP。
 const activeCallActionLabel = computed(() =>
@@ -66,6 +81,10 @@ function callDirection(direction: string) {
   const key = `calls.direction.${direction}`
   return te(key) ? t(key) : t('common.unknown')
 }
+
+function historyDuration(connectedAt?: string, endedAt?: string) {
+  return connectedAt && endedAt ? formatDuration(connectedAt, endedAt) : ''
+}
 </script>
 
 <template>
@@ -93,6 +112,8 @@ function callDirection(direction: string) {
           ><span v-if="calls.active.iccid" class="active-call-sim">{{
             simProfileLabel(calls.active.iccid, simProfiles, maskSensitive)
           }}</span
+          ><span v-if="activeCallDuration" class="call-duration active-call-duration">
+            <ClockCircleOutlined />{{ t('calls.duration', { duration: activeCallDuration }) }} </span
           ><time>{{ formatDateTime(calls.active.started_at) }}</time>
         </div>
         <a-button
@@ -144,7 +165,14 @@ function callDirection(direction: string) {
                 }}</span>
               </div>
             </div>
-            <time class="call-history-time">{{ formatDateTime(item.started_at) }}</time>
+            <div class="call-history-timing">
+              <time class="call-history-time">{{ formatDateTime(item.started_at) }}</time>
+              <span v-if="historyDuration(item.connected_at, item.ended_at)" class="call-duration">
+                <ClockCircleOutlined />{{
+                  t('calls.duration', { duration: historyDuration(item.connected_at, item.ended_at) })
+                }}
+              </span>
+            </div>
           </a-list-item>
         </template>
       </a-list>

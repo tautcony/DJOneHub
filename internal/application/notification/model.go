@@ -223,13 +223,14 @@ func DebugActions() []DebugAction {
 // call.missed. It is a copy of extras.CallRecord restricted to fields the
 // native UI displays; no backend or AT types cross the bridge.
 type CallEvent struct {
-	ID        string     `json:"id"`
-	Direction string     `json:"direction"` // incoming | outgoing
-	State     string     `json:"state"`     // incoming | waiting | active | alerting | dialing | held
-	Number    string     `json:"number,omitempty"`
-	StartedAt time.Time  `json:"started_at"`
-	EndedAt   *time.Time `json:"ended_at,omitempty"`
-	Missed    bool       `json:"missed"`
+	ID          string     `json:"id"`
+	Direction   string     `json:"direction"` // incoming | outgoing
+	State       string     `json:"state"`     // incoming | waiting | active | alerting | dialing | held
+	Number      string     `json:"number,omitempty"`
+	StartedAt   time.Time  `json:"started_at"`
+	EndedAt     *time.Time `json:"ended_at,omitempty"`
+	ConnectedAt *time.Time `json:"connected_at,omitempty"`
+	Missed      bool       `json:"missed"`
 	// NotificationEligible is internal reconciliation policy state. EventBus
 	// call events are already authoritative; only state-based recovery checks
 	// this field. It must never cross the native bridge contract.

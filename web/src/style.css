@@ -1438,6 +1438,20 @@ button:disabled {
   font-size: 12px;
   overflow-wrap: anywhere;
 }
+.call-duration {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--ui-text-secondary);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.active-call-duration {
+  color: #cf1322;
+  font-size: 14px;
+  font-weight: 650;
+}
 .active-call-action {
   flex: 0 0 auto;
 }
@@ -1506,6 +1520,12 @@ button:disabled {
   max-width: 142px;
   text-align: right;
   white-space: nowrap;
+}
+.call-history-timing {
+  display: grid;
+  flex: 0 0 auto;
+  justify-items: end;
+  gap: 5px;
 }
 .call-numpad-display {
   padding: 12px 14px;

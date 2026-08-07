@@ -48,16 +48,17 @@ type SMSRecord struct {
 
 // CallRecord is the storage representation of one completed call.
 type CallRecord struct {
-	ID        string
-	Index     int
-	Direction string
-	State     string
-	Number    string
-	StartedAt time.Time
-	UpdatedAt time.Time
-	EndedAt   *time.Time
-	Missed    bool
-	ICCID     string
+	ID          string
+	Index       int
+	Direction   string
+	State       string
+	Number      string
+	StartedAt   time.Time
+	UpdatedAt   time.Time
+	EndedAt     *time.Time
+	ConnectedAt *time.Time
+	Missed      bool
+	ICCID       string
 }
 
 // TrafficDailyRecord stores usage derived from network-interface counters for
@@ -196,6 +197,7 @@ func (s *SQLiteStore) configure() error {
 			started_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL,
 			ended_at TEXT,
+			connected_at TEXT,
 			missed INTEGER NOT NULL DEFAULT 0,
 			iccid TEXT NOT NULL DEFAULT '',
 			created_at TEXT NOT NULL
@@ -306,13 +308,20 @@ func (s *SQLiteStore) applyMigrations() error {
 			if err := s.migrateSIMProfiles(); err != nil {
 				return err
 			}
+		case 7:
+			if err := s.ensureColumn("call_records", "connected_at", "connected_at TEXT"); err != nil {
+				return err
+			}
+			if err := s.recordMigration(version); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
 }
 
 // migrationVersion is the newest schema version this binary understands.
-const migrationVersion = 6
+const migrationVersion = 7
 
 func (s *SQLiteStore) recordMigration(version int) error {
 	if _, err := s.db.Exec(`INSERT INTO schema_migrations(version, applied_at) VALUES(?, ?)`, version, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
@@ -663,8 +672,8 @@ func (s *SQLiteStore) InsertCall(record CallRecord) error {
 	_, err := s.db.Exec(`
 		INSERT INTO call_records(
 			id, call_index, direction, state, number, started_at, updated_at,
-			ended_at, missed, iccid, created_at
-		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ended_at, connected_at, missed, iccid, created_at
+		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			call_index = excluded.call_index,
 			direction = excluded.direction,
@@ -673,11 +682,12 @@ func (s *SQLiteStore) InsertCall(record CallRecord) error {
 			started_at = excluded.started_at,
 			updated_at = excluded.updated_at,
 			ended_at = excluded.ended_at,
+			connected_at = excluded.connected_at,
 			missed = excluded.missed,
 			iccid = excluded.iccid
 	`, record.ID, record.Index, record.Direction, record.State, record.Number,
 		record.StartedAt.UTC().Format(time.RFC3339Nano), record.UpdatedAt.UTC().Format(time.RFC3339Nano),
-		formatNullableTime(record.EndedAt), boolInt(record.Missed), record.ICCID, time.Now().UTC().Format(time.RFC3339Nano))
+		formatNullableTime(record.EndedAt), formatNullableTime(record.ConnectedAt), boolInt(record.Missed), record.ICCID, time.Now().UTC().Format(time.RFC3339Nano))
 	if err != nil {
 		return fmt.Errorf("insert call record: %w", err)
 	}
@@ -686,7 +696,7 @@ func (s *SQLiteStore) InsertCall(record CallRecord) error {
 
 func (s *SQLiteStore) ListCalls(limit int) ([]CallRecord, error) {
 	query := `
-		SELECT id, call_index, direction, state, number, started_at, updated_at, ended_at, missed, iccid
+		SELECT id, call_index, direction, state, number, started_at, updated_at, ended_at, connected_at, missed, iccid
 		FROM call_records ORDER BY started_at DESC, id DESC`
 	args := []any{}
 	if limit > 0 {
@@ -702,9 +712,9 @@ func (s *SQLiteStore) ListCalls(limit int) ([]CallRecord, error) {
 	for rows.Next() {
 		var record CallRecord
 		var startedAt, updatedAt string
-		var endedAt sql.NullString
+		var endedAt, connectedAt sql.NullString
 		var missed int
-		if err := rows.Scan(&record.ID, &record.Index, &record.Direction, &record.State, &record.Number, &startedAt, &updatedAt, &endedAt, &missed, &record.ICCID); err != nil {
+		if err := rows.Scan(&record.ID, &record.Index, &record.Direction, &record.State, &record.Number, &startedAt, &updatedAt, &endedAt, &connectedAt, &missed, &record.ICCID); err != nil {
 			return nil, fmt.Errorf("scan call record: %w", err)
 		}
 		record.StartedAt, err = time.Parse(time.RFC3339Nano, startedAt)
@@ -721,6 +731,13 @@ func (s *SQLiteStore) ListCalls(limit int) ([]CallRecord, error) {
 				return nil, fmt.Errorf("parse call ended_at: %w", parseErr)
 			}
 			record.EndedAt = &parsed
+		}
+		if connectedAt.Valid {
+			parsed, parseErr := time.Parse(time.RFC3339Nano, connectedAt.String)
+			if parseErr != nil {
+				return nil, fmt.Errorf("parse call connected_at: %w", parseErr)
+			}
+			record.ConnectedAt = &parsed
 		}
 		record.Missed = missed != 0
 		records = append(records, record)

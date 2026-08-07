@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"sort"
 	"strings"
@@ -77,6 +78,7 @@ func NewService(devices *device.Service, ops *operation.Manager, runtime *runtim
 			service.sent = append(service.sent, backend.SMSMessage{
 				Index: record.ProviderID, Recipient: record.Recipient, Body: record.Body,
 				ReceivedAt: record.ReceivedAt, RecordedAt: record.RecordedAt,
+				ICCID:     record.ICCID,
 				ConcatRef: record.ConcatRef, PartNumber: record.PartNumber, TotalParts: record.TotalParts,
 			})
 		}
@@ -93,6 +95,7 @@ func NewService(devices *device.Service, ops *operation.Manager, runtime *runtim
 				service.cache = append(service.cache, backend.SMSMessage{
 					Index: record.ProviderID, Sender: record.Sender, Recipient: record.Recipient, Body: record.Body,
 					ReceivedAt: record.ReceivedAt, RecordedAt: record.RecordedAt,
+					ICCID:     record.ICCID,
 					ConcatRef: record.ConcatRef, PartNumber: record.PartNumber, TotalParts: record.TotalParts,
 				})
 			}
@@ -272,9 +275,14 @@ func (s *Service) List(ctx context.Context) ([]backend.SMSMessage, error) {
 	return s.Refresh(ctx)
 }
 
-// Refresh reads module storage and merges it with locally persisted sent
-// messages. Clear only affects the module inbox.
+// Refresh reloads SQLite history, then reads module storage and merges the two
+// sources. Clear only affects the module inbox.
 func (s *Service) Refresh(ctx context.Context) ([]backend.SMSMessage, error) {
+	if s.store != nil {
+		if err := s.reloadPersistedMessages(); err != nil {
+			return nil, fmt.Errorf("reload sms history: %w", err)
+		}
+	}
 	b, err := s.devices.RequireCapability(domain.CapabilitySMSRead, "refresh_sms")
 	if err != nil {
 		// 设备离线/未就绪时无法从模组读取短信, 但 SQLite 中已持久化的记录
@@ -338,6 +346,72 @@ func (s *Service) Refresh(ctx context.Context) ([]backend.SMSMessage, error) {
 		s.ops.Publish("sms.updated", map[string]any{"count": len(merged)})
 	}
 	return merged, nil
+}
+
+func (s *Service) reloadPersistedMessages() error {
+	outbound, err := listAllSMS(s.store, "outbound")
+	if err != nil {
+		return err
+	}
+	inbound, err := listAllSMS(s.store, "inbound")
+	if err != nil {
+		return err
+	}
+
+	persistedSent := make([]backend.SMSMessage, 0, len(outbound))
+	persistedCache := make([]backend.SMSMessage, 0, len(outbound)+len(inbound))
+	persistedKeys := make(map[string]struct{}, len(outbound)+len(inbound))
+	for _, record := range outbound {
+		item := smsMessageFromRecord(record)
+		persistedSent = append(persistedSent, item)
+		persistedCache = append(persistedCache, item)
+		persistedKeys[smsCacheKey(item)] = struct{}{}
+	}
+	for _, record := range inbound {
+		item := smsMessageFromRecord(record)
+		persistedCache = append(persistedCache, item)
+		persistedKeys[smsCacheKey(item)] = struct{}{}
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// Identity-less messages cannot be persisted. Preserve those process-local
+	// entries unless SQLite now contains the same message after a backfill.
+	for _, item := range s.cache {
+		if item.ICCID != "" {
+			continue
+		}
+		if _, persisted := persistedKeys[smsCacheKey(item)]; !persisted {
+			persistedCache = append(persistedCache, item)
+		}
+	}
+	for _, item := range s.sent {
+		if item.ICCID != "" {
+			continue
+		}
+		if _, persisted := persistedKeys[smsCacheKey(item)]; !persisted {
+			persistedSent = append(persistedSent, item)
+		}
+	}
+	s.sent = persistedSent
+	s.cache = persistedCache
+	sortMessages(s.sent)
+	sortMessages(s.cache)
+	if len(s.sent) > 500 {
+		s.sent = s.sent[:500]
+	}
+	if len(s.cache) > 500 {
+		s.cache = s.cache[:500]
+	}
+	return nil
+}
+
+func smsMessageFromRecord(record storage.SMSRecord) backend.SMSMessage {
+	return backend.SMSMessage{
+		Index: record.ProviderID, Sender: record.Sender, Recipient: record.Recipient, Body: record.Body,
+		ReceivedAt: record.ReceivedAt, RecordedAt: record.RecordedAt, ICCID: record.ICCID,
+		ConcatRef: record.ConcatRef, PartNumber: record.PartNumber, TotalParts: record.TotalParts,
+	}
 }
 
 func toSMSMessageEvent(message backend.SMSMessage) notification.SMSMessageEvent {

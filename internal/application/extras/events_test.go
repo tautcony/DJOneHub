@@ -113,6 +113,20 @@ func TestApplyCallsPublishesEndedNotMissedForAnsweredCall(t *testing.T) {
 	}
 }
 
+func TestOutgoingCallTracksDurationFromDial(t *testing.T) {
+	now := time.Date(2026, 8, 2, 10, 0, 0, 0, time.UTC)
+	service := NewService(nil, operation.NewManager(runtime.NewEventBus()), nil)
+	service.baselineDone = true
+	service.applyCalls([]callCandidate{candidate(1, "outgoing", "dialing", "10010")}, now, "")
+	service.applyCalls(nil, now.Add(12*time.Second), "")
+	if len(service.history) != 1 || service.history[0].ConnectedAt == nil {
+		t.Fatalf("outgoing call connected_at = %+v, want dial time", service.history)
+	}
+	if got := service.history[0].EndedAt.Sub(*service.history[0].ConnectedAt); got != 12*time.Second {
+		t.Fatalf("outgoing duration = %v, want 12s", got)
+	}
+}
+
 func TestApplyCallsArchivesReplacedActiveCall(t *testing.T) {
 	now := time.Date(2026, 8, 2, 10, 0, 0, 0, time.UTC)
 	collected := collectCallEvents(t, 3, func(service *Service) {

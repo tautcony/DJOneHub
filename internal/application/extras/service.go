@@ -21,16 +21,17 @@ import (
 )
 
 type CallRecord struct {
-	ID        string     `json:"id"`
-	Index     int        `json:"index"`
-	Direction string     `json:"direction"`
-	State     string     `json:"state"`
-	Number    string     `json:"number,omitempty"`
-	StartedAt time.Time  `json:"started_at"`
-	UpdatedAt time.Time  `json:"updated_at"`
-	EndedAt   *time.Time `json:"ended_at,omitempty"`
-	Missed    bool       `json:"missed"`
-	ICCID     string     `json:"iccid,omitempty"`
+	ID          string     `json:"id"`
+	Index       int        `json:"index"`
+	Direction   string     `json:"direction"`
+	State       string     `json:"state"`
+	Number      string     `json:"number,omitempty"`
+	StartedAt   time.Time  `json:"started_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
+	EndedAt     *time.Time `json:"ended_at,omitempty"`
+	ConnectedAt *time.Time `json:"connected_at,omitempty"`
+	Missed      bool       `json:"missed"`
+	ICCID       string     `json:"iccid,omitempty"`
 	// NotificationEligible is process-local policy state. It is deliberately
 	// excluded from the API and persistence contracts: notification
 	// reconciliation uses it to distinguish real calls from startup leftovers.
@@ -104,6 +105,7 @@ func callRecordFromStorage(record storage.CallRecord) CallRecord {
 		ID: record.ID, Index: record.Index, Direction: record.Direction, State: record.State,
 		Number: record.Number, StartedAt: record.StartedAt, UpdatedAt: record.UpdatedAt,
 		EndedAt: record.EndedAt, Missed: record.Missed, ICCID: record.ICCID,
+		ConnectedAt: record.ConnectedAt,
 	}
 }
 
@@ -361,6 +363,9 @@ func (s *Service) applyCalls(calls []callCandidate, now time.Time, iccid string)
 			Direction: selected.Direction, State: selected.State, Number: selected.Number,
 			StartedAt: now, UpdatedAt: now, ICCID: iccid, NotificationEligible: baselineDone,
 		}
+		if callConnectedState(selected.Direction, selected.State) {
+			s.active.ConnectedAt = &now
+		}
 		// Calls seen while the startup settling window is open are presumed to
 		// have started before the app did and are only tracked, never announced.
 		// Only transitions seen after the baseline publish real events.
@@ -375,6 +380,9 @@ func (s *Service) applyCalls(calls []callCandidate, now time.Time, iccid string)
 	} else {
 		oldState, oldNumber := s.active.State, s.active.Number
 		s.active.State, s.active.UpdatedAt = selected.State, now
+		if s.active.ConnectedAt == nil && callConnectedState(selected.Direction, selected.State) {
+			s.active.ConnectedAt = &now
+		}
 		if selected.Number != "" {
 			s.active.Number = selected.Number
 		}
@@ -391,6 +399,7 @@ func (s *Service) applyCalls(calls []callCandidate, now time.Time, iccid string)
 				ID: archived.ID, Index: archived.Index, Direction: archived.Direction, State: archived.State,
 				Number: archived.Number, StartedAt: archived.StartedAt, UpdatedAt: archived.UpdatedAt,
 				EndedAt: archived.EndedAt, Missed: archived.Missed, ICCID: archived.ICCID,
+				ConnectedAt: archived.ConnectedAt,
 			}); err != nil {
 				return err
 			}
@@ -411,6 +420,13 @@ func (s *Service) applyCalls(calls []callCandidate, now time.Time, iccid string)
 		logger.Debug("[calls] suppress active", "index", selected.Index, "direction", selected.Direction, "state", selected.State, "baseline_done", baselineDone, "notification_eligible", activeEligibleAfter)
 	}
 	return nil
+}
+
+func callConnectedState(direction, state string) bool {
+	// Some modems report outgoing calls only as dialing/alerting before they
+	// disappear from CLCC. Start their duration at dial time; incoming calls
+	// require an explicit active/held state so ringing is never called talk time.
+	return direction == "outgoing" || state == "active" || state == "held"
 }
 
 // CallEventFromRecord converts a call record into the bridge DTO; used by the

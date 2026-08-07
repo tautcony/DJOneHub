@@ -101,7 +101,32 @@ func TestRecordSentPersistsAndRestoresHistory(t *testing.T) {
 		t.Fatalf("restored sent=%d cache=%d, want one message", len(restored2.sent), len(restored2.cache))
 	}
 	message := restored2.sent[0]
-	if message.Sender != "" || message.Recipient != "13800138000" || message.Body != "hello" {
+	if message.Sender != "" || message.Recipient != "13800138000" || message.Body != "hello" || message.ICCID != "8901" {
 		t.Fatalf("restored message = %+v", message)
+	}
+}
+
+func TestReloadPersistedMessagesRepairsMemoryCache(t *testing.T) {
+	store, err := storage.OpenSQLite(filepath.Join(t.TempDir(), "djonehub.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
+	if err := store.InsertSMS(storage.SMSRecord{
+		Direction: "inbound", Sender: "10086", Body: "hello", ReceivedAt: now,
+		RecordedAt: now, ICCID: "8901",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(nil, nil, nil, store)
+	service.cache[0].ICCID = ""
+
+	if err := service.reloadPersistedMessages(); err != nil {
+		t.Fatal(err)
+	}
+	if service.cache[0].ICCID != "8901" {
+		t.Fatalf("reloaded ICCID = %q, want 8901", service.cache[0].ICCID)
 	}
 }
