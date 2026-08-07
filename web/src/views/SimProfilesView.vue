@@ -106,14 +106,17 @@ const sortedProfiles = computed(() =>
         </a-space>
       </template>
       <LoadingState v-if="!loadedViews['sim-profiles']" />
-      <div v-else class="detail-list">
-        <article v-for="profile in sortedProfiles" :key="profile.iccid" class="message-row sim-profile-row">
-          <div class="sim-profile-main">
-            <div class="sim-profile-title">
-              <h3>{{ profile.name || t('simProfiles.unnamed') }}</h3>
+      <div v-else>
+        <div v-if="sortedProfiles.length" class="profile-grid sim-profile-grid">
+          <article v-for="profile in sortedProfiles" :key="profile.iccid" class="profile-row sim-profile-card">
+            <div class="profile-card-head">
+              <div>
+                <span class="eyebrow">{{ t('simProfiles.cardEyebrow') }}</span>
+                <h3>{{ profile.name || t('simProfiles.unnamed') }}</h3>
+              </div>
               <span class="profile-state">{{ t(`simProfiles.types.${profile.profile_type}`) }}</span>
             </div>
-            <div class="sim-profile-fields">
+            <div class="profile-fields">
               <div>
                 <span>{{ t('simProfiles.iccid') }}</span
                 ><strong>{{ maskSensitive(profile.iccid) }}</strong>
@@ -147,30 +150,19 @@ const sortedProfiles = computed(() =>
                 ><span>{{ formatTime(profile.first_seen_at) }}</span>
               </div>
             </div>
-          </div>
-          <div class="sim-profile-actions">
-            <a-button
-              size="small"
-              :aria-label="t('simProfiles.editTitle')"
-              :title="t('simProfiles.editTitle')"
-              @click="openEdit(profile)"
-            >
-              <template #icon><EditOutlined /></template>
-            </a-button>
-            <a-popconfirm :title="t('simProfiles.deleteConfirm')" @confirm="deleteSimProfile(profile.iccid)">
-              <a-button
-                size="small"
-                danger
-                :aria-label="t('common.delete')"
-                :title="t('common.delete')"
-                :disabled="simProfilesBusy"
-              >
-                <template #icon><DeleteOutlined /></template>
+            <div class="profile-actions">
+              <a-button :disabled="simProfilesBusy" @click="openEdit(profile)">
+                <EditOutlined />{{ t('simProfiles.edit') }}
               </a-button>
-            </a-popconfirm>
-          </div>
-        </article>
-        <EmptyState v-if="!simProfiles.length" :title="t('simProfiles.noProfiles')" />
+              <a-popconfirm :title="t('simProfiles.deleteConfirm')" @confirm="deleteSimProfile(profile.iccid)">
+                <a-button danger :disabled="simProfilesBusy">
+                  <DeleteOutlined />{{ t('common.delete') }}
+                </a-button>
+              </a-popconfirm>
+            </div>
+          </article>
+        </div>
+        <EmptyState v-else :title="t('simProfiles.noProfiles')" />
       </div>
     </Panel>
 

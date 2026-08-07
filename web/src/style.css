@@ -3748,64 +3748,9 @@ button:disabled {
   font-weight: 600;
   color: var(--ui-text-secondary);
 }
-.sim-profile-row {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px 14px;
+.sim-profile-grid {
+  margin-top: 0;
 }
-.sim-profile-main {
-  flex: 1 1 auto;
+.sim-profile-card {
   min-width: 0;
-  overflow: hidden;
-}
-.sim-profile-main h3 {
-  margin: 0;
-  font-size: 14px;
-}
-.sim-profile-title {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 8px;
-}
-.sim-profile-fields {
-  display: grid;
-  gap: 5px 18px;
-  grid-template-columns: minmax(0, 1fr);
-}
-.sim-profile-fields > div {
-  display: flex;
-  min-width: 0;
-  gap: 8px;
-  font-size: 12px;
-}
-.sim-profile-fields span {
-  color: var(--ui-text-tertiary);
-  white-space: nowrap;
-}
-.sim-profile-fields strong,
-.sim-profile-fields span:last-child {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.sim-profile-actions {
-  display: flex;
-  flex-shrink: 0;
-  align-items: center;
-  gap: 6px;
-}
-.sim-profile-actions .ant-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-.sim-profile-actions .ant-btn .anticon {
-  display: inline-flex;
-  margin-bottom: 0;
 }
