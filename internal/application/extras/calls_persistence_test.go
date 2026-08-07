@@ -19,14 +19,14 @@ func TestCallHistoryRestoresFromSQLite(t *testing.T) {
 	defer store.Close()
 
 	bus := runtime.NewEventBus()
-	service := NewService(nil, operation.NewManager(bus), nil, nil, store)
+	service := NewService(nil, operation.NewManager(bus), nil, store)
 	startedAt := time.Date(2026, 8, 4, 0, 30, 0, 0, time.UTC)
 	// The first snapshot is the silent startup baseline, but the archived
 	// leftover call must still be persisted as history.
 	service.applyCalls([]callCandidate{candidate(1, "incoming", "incoming", "1502")}, startedAt, "")
 	service.applyCalls(nil, startedAt.Add(time.Minute), "")
 
-	restored := NewService(nil, operation.NewManager(bus), nil, nil, store)
+	restored := NewService(nil, operation.NewManager(bus), nil, store)
 	status := restored.Calls(context.Background())
 	if len(status.History) != 1 {
 		t.Fatalf("history = %+v", status.History)

@@ -84,12 +84,15 @@ export interface EsimNotification {
   can_retry?: boolean
 }
 
-export interface SimCard {
+export interface SimProfile {
   iccid: string
   imsi?: string
   msisdn?: string
   name?: string
+  local_phone?: string
   notes?: string
+  tags?: string
+  profile_type: 'unknown' | 'physical' | 'esim'
   first_seen_at?: string
   last_seen_at?: string
 }

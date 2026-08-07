@@ -5,7 +5,7 @@ import type {
   CallStatus,
   EsimHealth,
   EsimNotification,
-  SimCard,
+  SimProfile,
   EsimNotificationHistory,
   EsimOverview,
   FirmwareStatus,
@@ -104,7 +104,7 @@ export type ViewContext = {
   enableEsim: (iccid?: string) => Promise<void>
   esim: Ref<EsimOverview | null>
   esimOverviewError: Ref<string>
-  esimNotesError: Ref<string>
+  esimMetadataError: Ref<string>
   esimHealthError: Ref<string>
   esimNotificationsError: Ref<string>
   esimNotificationsLoading: Ref<boolean>
@@ -147,11 +147,8 @@ export type ViewContext = {
   removeNotification: (sequence: number) => Promise<void>
   submitConfirmationCode: () => Promise<void>
   declineConfirmationCode: () => Promise<void>
-  localProfileNote: (iccid?: string) => ProfileNote | undefined
-  noteLabel: Ref<string>
-  notePhone: Ref<string>
-  noteTags: Ref<string>
-  noteSummary: (note?: ProfileNote) => string
+  localSimProfile: (iccid?: string) => SimProfile | undefined
+  simProfileSummary: (profile?: SimProfile) => string
   openEsimDownload: () => void
   resetEsimDownloadForRetry: () => void
   openEsimSettings: (iccid?: string) => void
@@ -159,20 +156,17 @@ export type ViewContext = {
   showEsimProfileNotifications: (iccid?: string) => void
   showEsimNotificationProfile: (iccid?: string) => void
   clearEsimNotificationProfileFilter: () => void
-  saveProfileNote: () => Promise<void>
+  saveEsimProfileName: () => Promise<void>
 
-  // SIM cards
-  simCards: Ref<SimCard[]>
-  simCardsBusy: Ref<boolean>
-  createSimCard: (input: {
-    iccid: string
-    imsi: string
-    msisdn: string
-    name: string
-    notes: string
-  }) => Promise<void>
-  updateSimCard: (iccid: string, input: { name: string; notes: string; msisdn: string }) => Promise<void>
-  deleteSimCard: (iccid: string) => Promise<void>
+  // SIM Profiles
+  simProfiles: Ref<SimProfile[]>
+  simProfilesBusy: Ref<boolean>
+  createSimProfile: (input: Omit<SimProfile, 'first_seen_at' | 'last_seen_at'>) => Promise<void>
+  updateSimProfile: (
+    iccid: string,
+    input: Pick<SimProfile, 'name' | 'local_phone' | 'notes' | 'tags'>,
+  ) => Promise<void>
+  deleteSimProfile: (iccid: string) => Promise<void>
 
   // VoWiFi
   loadVowifi: () => Promise<void>
@@ -240,13 +234,6 @@ export interface SmsThread {
   iccid: string
   items: SMSMessage[]
   latest?: SMSMessage
-}
-
-export interface ProfileNote {
-  label?: string
-  phone?: string
-  tags?: string
-  profile_class?: string
 }
 
 export const viewContextKey: InjectionKey<ViewContext> = Symbol('djonehub.view-context')

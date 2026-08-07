@@ -24,7 +24,7 @@ import (
 	"github.com/iniwex5/vohive/internal/application/notification"
 	"github.com/iniwex5/vohive/internal/application/operation"
 	"github.com/iniwex5/vohive/internal/application/rawat"
-	"github.com/iniwex5/vohive/internal/application/simcards"
+	"github.com/iniwex5/vohive/internal/application/simprofiles"
 	"github.com/iniwex5/vohive/internal/application/sms"
 	"github.com/iniwex5/vohive/internal/application/vowifi"
 	"github.com/iniwex5/vohive/internal/backend"
@@ -251,13 +251,14 @@ func newReadyServerWithBackend(t *testing.T, discovery *fakeReadyDiscovery, b ba
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	esimService := esim.NewService(devices, ops, r, db)
-	simCardsService := simcards.NewService(db)
+	simProfilesService := simprofiles.NewService(db)
+	esimService.SetProfileRegistry(simProfilesService)
 	networkService := network.NewService(devices, ops, r, contractNetwork{})
 	rawATService := rawat.NewService(devices, r)
 	vowifiService := vowifi.NewService(devices, ops, r)
 	notificationService := notification.New(notification.Config{Events: r.Events()})
 	return NewServer(Config{
-		Device: devices, SMS: smsService, ESIM: esimService, SimCards: simCardsService,
+		Device: devices, SMS: smsService, ESIM: esimService, SimProfiles: simProfilesService,
 		Network: networkService, Notification: notificationService, RawAT: rawATService,
 		VoWiFi: vowifiService, Operations: ops, Runtime: r, LoopbackPort: testLoopbackPort,
 	}), ops
@@ -475,20 +476,20 @@ func TestEsimNotificationHistoryEndpoint(t *testing.T) {
 	}
 }
 
-func TestSimCardsAPI(t *testing.T) {
+func TestSimProfilesAPI(t *testing.T) {
 	server, _ := newReadyServer(t, allContractCapabilities())
 	handler := server.Handler()
 
 	// 空列表。
 	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/simcards", nil))
-	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"cards":[]`) {
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/sim-profiles", nil))
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"profiles":[]`) {
 		t.Fatalf("empty list = %d %s", recorder.Code, recorder.Body.String())
 	}
 
 	// 手动建档。
-	create := withSameOrigin(httptest.NewRequest(http.MethodPost, "/api/v1/simcards",
-		strings.NewReader(`{"iccid":"89860120010000000001","msisdn":"+8613800000000","name":"work","notes":"travel card"}`)))
+	create := withSameOrigin(httptest.NewRequest(http.MethodPost, "/api/v1/sim-profiles",
+		strings.NewReader(`{"iccid":"89860120010000000001","msisdn":"+8613900000000","local_phone":"+8613800000000","name":"work","notes":"travel card","tags":"primary"}`)))
 	create.Header.Set("Content-Type", "application/json")
 	recorder = httptest.NewRecorder()
 	handler.ServeHTTP(recorder, create)
@@ -498,7 +499,7 @@ func TestSimCardsAPI(t *testing.T) {
 
 	// 重复建档 → 409。
 	recorder = httptest.NewRecorder()
-	handler.ServeHTTP(recorder, withSameOrigin(httptest.NewRequest(http.MethodPost, "/api/v1/simcards",
+	handler.ServeHTTP(recorder, withSameOrigin(httptest.NewRequest(http.MethodPost, "/api/v1/sim-profiles",
 		strings.NewReader(`{"iccid":"89860120010000000001"}`))))
 	if recorder.Code != http.StatusConflict {
 		t.Fatalf("duplicate create status = %d, want 409", recorder.Code)
@@ -506,14 +507,14 @@ func TestSimCardsAPI(t *testing.T) {
 
 	// 列表包含档案。
 	recorder = httptest.NewRecorder()
-	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/simcards", nil))
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/sim-profiles", nil))
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "89860120010000000001") {
 		t.Fatalf("list = %d %s", recorder.Code, recorder.Body.String())
 	}
 
 	// 更新元数据。
-	update := withSameOrigin(httptest.NewRequest(http.MethodPut, "/api/v1/simcards/89860120010000000001",
-		strings.NewReader(`{"name":"renamed","notes":"updated","msisdn":""}`)))
+	update := withSameOrigin(httptest.NewRequest(http.MethodPut, "/api/v1/sim-profiles/89860120010000000001",
+		strings.NewReader(`{"name":"renamed","local_phone":"+8613800000001","notes":"updated","tags":"travel"}`)))
 	update.Header.Set("Content-Type", "application/json")
 	recorder = httptest.NewRecorder()
 	handler.ServeHTTP(recorder, update)
@@ -521,29 +522,49 @@ func TestSimCardsAPI(t *testing.T) {
 		t.Fatalf("update status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
 	recorder = httptest.NewRecorder()
-	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/simcards", nil))
-	if !strings.Contains(recorder.Body.String(), "renamed") || !strings.Contains(recorder.Body.String(), "+8613800000000") {
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/sim-profiles", nil))
+	if !strings.Contains(recorder.Body.String(), "renamed") || !strings.Contains(recorder.Body.String(), "+8613800000001") || !strings.Contains(recorder.Body.String(), "travel") {
 		t.Fatalf("update result = %s", recorder.Body.String())
 	}
 
 	// 删除。
-	remove := withSameOrigin(httptest.NewRequest(http.MethodDelete, "/api/v1/simcards/89860120010000000001", nil))
+	remove := withSameOrigin(httptest.NewRequest(http.MethodDelete, "/api/v1/sim-profiles/89860120010000000001", nil))
 	recorder = httptest.NewRecorder()
 	handler.ServeHTTP(recorder, remove)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("delete status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
 	recorder = httptest.NewRecorder()
-	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/simcards", nil))
-	if !strings.Contains(recorder.Body.String(), `"cards":[]`) {
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/sim-profiles", nil))
+	if !strings.Contains(recorder.Body.String(), `"profiles":[]`) {
 		t.Fatalf("list after delete = %s", recorder.Body.String())
 	}
 
 	// 删除不存在的卡 → 404。
 	recorder = httptest.NewRecorder()
-	handler.ServeHTTP(recorder, withSameOrigin(httptest.NewRequest(http.MethodDelete, "/api/v1/simcards/89860120010000000002", nil)))
+	handler.ServeHTTP(recorder, withSameOrigin(httptest.NewRequest(http.MethodDelete, "/api/v1/sim-profiles/89860120010000000002", nil)))
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("delete missing status = %d, want 404", recorder.Code)
+	}
+}
+
+func TestRemovedSIMMetadataRoutesReturnNotFound(t *testing.T) {
+	server, _ := newReadyServer(t, allContractCapabilities())
+	handler := server.Handler()
+	for _, path := range []string{"/api/v1/simcards", "/api/v1/simcards/8901", "/api/v1/esim/notes"} {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+		if recorder.Code != http.StatusNotFound {
+			t.Fatalf("GET %s status = %d, want 404", path, recorder.Code)
+		}
+	}
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/openapi.json", nil))
+	body := recorder.Body.String()
+	if recorder.Code != http.StatusOK || !strings.Contains(body, "/api/v1/sim-profiles") ||
+		strings.Contains(body, "/api/v1/simcards") || strings.Contains(body, "/api/v1/esim/notes") {
+		t.Fatalf("OpenAPI SIM Profile paths are inconsistent: %s", body)
 	}
 }
 

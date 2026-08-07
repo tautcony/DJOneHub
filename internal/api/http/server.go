@@ -23,7 +23,7 @@ import (
 	"github.com/iniwex5/vohive/internal/application/notification"
 	"github.com/iniwex5/vohive/internal/application/operation"
 	"github.com/iniwex5/vohive/internal/application/rawat"
-	"github.com/iniwex5/vohive/internal/application/simcards"
+	"github.com/iniwex5/vohive/internal/application/simprofiles"
 	"github.com/iniwex5/vohive/internal/application/sms"
 	"github.com/iniwex5/vohive/internal/application/vowifi"
 	"github.com/iniwex5/vohive/internal/backend"
@@ -42,7 +42,7 @@ type Config struct {
 	Device                        *device.Service
 	SMS                           *sms.Service
 	ESIM                          *esim.Service
-	SimCards                      *simcards.Service
+	SimProfiles                   *simprofiles.Service
 	Network                       *network.Service
 	Notification                  *notification.Service
 	RawAT                         *rawat.Service
@@ -139,9 +139,8 @@ func (s *Server) Handler() nethttp.Handler {
 	mux.HandleFunc("/api/v1/calls/actions/dial", s.callDial)
 	mux.HandleFunc("/api/v1/calls/actions/reject", s.callReject)
 	mux.HandleFunc("/api/v1/esim/health", s.esimHealth)
-	mux.HandleFunc("/api/v1/esim/notes", s.esimNotes)
-	mux.HandleFunc("/api/v1/simcards", s.simCards)
-	mux.HandleFunc("/api/v1/simcards/", s.simCardByICCID)
+	mux.HandleFunc("/api/v1/sim-profiles", s.simProfiles)
+	mux.HandleFunc("/api/v1/sim-profiles/", s.simProfileByICCID)
 	mux.HandleFunc("/api/v1/operations/", s.operationStatus)
 	mux.HandleFunc("/api/v1/openapi.json", s.openapi)
 	mux.HandleFunc("/api/v1/events/ws", s.websocket)
@@ -423,32 +422,38 @@ func (s *Server) esimNotificationBySequence(w nethttp.ResponseWriter, r *nethttp
 	}
 }
 
-type simCardRequest struct {
-	ICCID  string `json:"iccid"`
-	IMSI   string `json:"imsi"`
-	MSISDN string `json:"msisdn"`
-	Name   string `json:"name"`
-	Notes  string `json:"notes"`
+type simProfileRequest struct {
+	ICCID       string                 `json:"iccid"`
+	IMSI        string                 `json:"imsi"`
+	MSISDN      string                 `json:"msisdn"`
+	Name        string                 `json:"name"`
+	LocalPhone  string                 `json:"local_phone"`
+	Notes       string                 `json:"notes"`
+	Tags        string                 `json:"tags"`
+	ProfileType storage.SimProfileType `json:"profile_type"`
 }
 
-func (s *Server) simCards(w nethttp.ResponseWriter, r *nethttp.Request) {
+func (s *Server) simProfiles(w nethttp.ResponseWriter, r *nethttp.Request) {
 	switch {
 	case r.Method == nethttp.MethodGet:
 		if !s.protected(w, r) {
 			return
 		}
-		cards, err := s.config.SimCards.List(r.Context())
+		profiles, err := s.config.SimProfiles.List(r.Context())
 		if err != nil {
 			writeError(w, err)
 			return
 		}
-		writeJSON(w, nethttp.StatusOK, map[string]any{"cards": cards})
+		writeJSON(w, nethttp.StatusOK, map[string]any{"profiles": profiles})
 	case r.Method == nethttp.MethodPost:
-		var value simCardRequest
+		var value simProfileRequest
 		if !s.commandJSON(w, r, &value) {
 			return
 		}
-		if err := s.config.SimCards.Create(r.Context(), value.ICCID, value.IMSI, value.MSISDN, value.Name, value.Notes); err != nil {
+		if err := s.config.SimProfiles.Create(r.Context(), simprofiles.Profile{
+			ICCID: value.ICCID, IMSI: value.IMSI, MSISDN: value.MSISDN, Name: value.Name,
+			LocalPhone: value.LocalPhone, Notes: value.Notes, Tags: value.Tags, ProfileType: value.ProfileType,
+		}); err != nil {
 			writeError(w, err)
 			return
 		}
@@ -458,19 +463,19 @@ func (s *Server) simCards(w nethttp.ResponseWriter, r *nethttp.Request) {
 	}
 }
 
-func (s *Server) simCardByICCID(w nethttp.ResponseWriter, r *nethttp.Request) {
-	iccid := strings.TrimPrefix(r.URL.Path, "/api/v1/simcards/")
+func (s *Server) simProfileByICCID(w nethttp.ResponseWriter, r *nethttp.Request) {
+	iccid := strings.TrimPrefix(r.URL.Path, "/api/v1/sim-profiles/")
 	switch {
 	case r.Method == nethttp.MethodPut:
 		if !s.requireMethod(w, r, nethttp.MethodPut) || !s.protected(w, r) {
 			return
 		}
-		var value simCardRequest
+		var value simProfileRequest
 		if err := decodeJSON(r, &value); err != nil {
 			writeError(w, derrors.New(derrors.InvalidRequest, "invalid JSON request", false, nil))
 			return
 		}
-		if err := s.config.SimCards.UpdateMeta(r.Context(), iccid, value.Name, value.Notes, value.MSISDN); err != nil {
+		if err := s.config.SimProfiles.UpdateMeta(r.Context(), iccid, value.Name, value.LocalPhone, value.Notes, value.Tags); err != nil {
 			writeError(w, err)
 			return
 		}
@@ -479,7 +484,7 @@ func (s *Server) simCardByICCID(w nethttp.ResponseWriter, r *nethttp.Request) {
 		if !s.protected(w, r) {
 			return
 		}
-		if err := s.config.SimCards.Delete(r.Context(), iccid); err != nil {
+		if err := s.config.SimProfiles.Delete(r.Context(), iccid); err != nil {
 			writeError(w, err)
 			return
 		}
@@ -704,42 +709,6 @@ func (s *Server) esimHealth(w nethttp.ResponseWriter, r *nethttp.Request) {
 		result["message"] = "eSIM card is recognized but no enabled profile was found"
 	}
 	writeJSON(w, nethttp.StatusOK, result)
-}
-
-func (s *Server) esimNotes(w nethttp.ResponseWriter, r *nethttp.Request) {
-	if !s.protected(w, r) || s.config.Extras == nil {
-		if s.config.Extras == nil {
-			writeError(w, fmt.Errorf("profile notes are unavailable"))
-		}
-		return
-	}
-	switch r.Method {
-	case nethttp.MethodGet:
-		value, err := s.config.Extras.Notes(r.Context())
-		if err != nil {
-			writeError(w, err)
-			return
-		}
-		writeJSON(w, nethttp.StatusOK, map[string]any{"notes": value})
-	case nethttp.MethodPut:
-		var request struct {
-			ICCID string `json:"iccid"`
-			Label string `json:"label"`
-			Phone string `json:"phone"`
-			Tags  string `json:"tags"`
-		}
-		if err := decodeJSON(r, &request); err != nil {
-			writeError(w, derrors.New(derrors.InvalidRequest, "invalid JSON request", false, nil))
-			return
-		}
-		if err := s.config.Extras.SaveNote(r.Context(), request.ICCID, extras.ProfileNote{Label: request.Label, Phone: request.Phone, Tags: request.Tags}); err != nil {
-			writeError(w, err)
-			return
-		}
-		writeJSON(w, nethttp.StatusOK, map[string]string{"state": "saved"})
-	default:
-		s.requireMethod(w, r, nethttp.MethodGet)
-	}
 }
 
 type rawATRequest struct {

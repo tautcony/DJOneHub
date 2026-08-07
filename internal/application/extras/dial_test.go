@@ -12,7 +12,7 @@ import (
 // TestDialRejectsInvalidNumbers 验证拨号号码在触达后端前即被字符集与长度校验
 // 拦截, 非法输入一律归类为 InvalidRequest 而不是落入通用 500。
 func TestDialRejectsInvalidNumbers(t *testing.T) {
-	service := NewService(nil, nil, nil, nil)
+	service := NewService(nil, nil, nil)
 	for _, number := range []string{
 		"",
 		"   ",

@@ -2,7 +2,6 @@ package extras
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -54,21 +53,11 @@ type Status struct {
 	LastPollError string       `json:"last_poll_error,omitempty"`
 }
 
-type ProfileNote struct {
-	Label string `json:"label"`
-	Phone string `json:"phone"`
-	Tags  string `json:"tags"`
-}
-
 type Service struct {
 	devices        *device.Service
 	ops            *operation.Manager
 	runtime        *runtime.Runtime
-	store          storage.ValueStore
 	callStore      *storage.SQLiteStore
-	notesMu        sync.Mutex
-	notes          map[string]ProfileNote
-	notesLoaded    bool
 	callMu         sync.RWMutex
 	active         *CallRecord
 	history        []CallRecord
@@ -93,8 +82,8 @@ type Service struct {
 	done   chan struct{}
 }
 
-func NewService(devices *device.Service, ops *operation.Manager, rt *runtime.Runtime, store storage.ValueStore, callStore ...*storage.SQLiteStore) *Service {
-	service := &Service{devices: devices, ops: ops, runtime: rt, store: store, notes: map[string]ProfileNote{}}
+func NewService(devices *device.Service, ops *operation.Manager, rt *runtime.Runtime, callStore ...*storage.SQLiteStore) *Service {
+	service := &Service{devices: devices, ops: ops, runtime: rt}
 	if len(callStore) > 0 && callStore[0] != nil {
 		service.callStore = callStore[0]
 		history, err := service.callStore.ListCalls(100)
@@ -496,62 +485,4 @@ func (s *Service) Dial(ctx context.Context, number string) error {
 	}
 	_, err = raw.RawAT(ctx, "ATD"+number+";")
 	return err
-}
-
-func (s *Service) loadNotes() error {
-	if s.notesLoaded {
-		return nil
-	}
-	if err := s.store.Read(&s.notes); err != nil {
-		return err
-	}
-	s.notesLoaded = true
-	return nil
-}
-func (s *Service) Notes(context.Context) (map[string]ProfileNote, error) {
-	s.notesMu.Lock()
-	defer s.notesMu.Unlock()
-	if err := s.loadNotes(); err != nil {
-		return nil, err
-	}
-	out := make(map[string]ProfileNote, len(s.notes))
-	for key, value := range s.notes {
-		out[key] = value
-	}
-	return out, nil
-}
-func (s *Service) SaveNote(_ context.Context, iccid string, note ProfileNote) error {
-	iccid = strings.TrimSpace(iccid)
-	note.Label, note.Phone, note.Tags = strings.TrimSpace(note.Label), strings.TrimSpace(note.Phone), strings.TrimSpace(note.Tags)
-	// 校验失败分类为 InvalidRequest, 由 HTTP 层映射为显式结构化错误码
-	// (design D15), 而不是落入通用 500。
-	if iccid == "" {
-		return derrors.New(derrors.InvalidRequest, "iccid is required", false, nil)
-	}
-	if len(iccid) > 22 {
-		return derrors.New(derrors.InvalidRequest, "iccid is too long", false, nil)
-	}
-	if len(note.Label) > 80 || len(note.Phone) > 80 || len(note.Tags) > 200 {
-		return derrors.New(derrors.InvalidRequest, "profile note is too long", false, nil)
-	}
-	s.notesMu.Lock()
-	defer s.notesMu.Unlock()
-	if err := s.loadNotes(); err != nil {
-		return err
-	}
-	if note.Label == "" && note.Phone == "" && note.Tags == "" {
-		delete(s.notes, iccid)
-	} else {
-		s.notes[iccid] = note
-	}
-	return s.store.Write(s.notes)
-}
-
-// Marshal helper used by callers that want to persist an extras snapshot.
-func (s *Service) MarshalNotes() ([]byte, error) {
-	notes, err := s.Notes(context.Background())
-	if err != nil {
-		return nil, err
-	}
-	return json.Marshal(notes)
 }

@@ -72,17 +72,29 @@ type TrafficDailyRecord struct {
 	LastSampledAt time.Time
 }
 
-// SimCardRecord 是用户维护的 SIM 卡档案：ICCID 为唯一主键，插卡自动记录
-// first/last_seen_at 作为附属信息，名称/备注/号码由用户维护或自动补录。
-type SimCardRecord struct {
-	ICCID     string
-	IMSI      string
-	MSISDN    string
-	Name      string
-	Notes     string
-	FirstSeen time.Time
-	LastSeen  time.Time
-	UpdatedAt time.Time
+type SimProfileType string
+
+const (
+	SimProfileUnknown  SimProfileType = "unknown"
+	SimProfilePhysical SimProfileType = "physical"
+	SimProfileESIM     SimProfileType = "esim"
+)
+
+// SimProfileRecord is the canonical ICCID-keyed subscription record. IMSI and
+// MSISDN are device observations; Name, LocalPhone, Notes, and Tags are local
+// user metadata and are never overwritten by observation.
+type SimProfileRecord struct {
+	ICCID       string
+	IMSI        string
+	MSISDN      string
+	Name        string
+	LocalPhone  string
+	Notes       string
+	Tags        string
+	ProfileType SimProfileType
+	FirstSeen   time.Time
+	LastSeen    time.Time
+	UpdatedAt   time.Time
 }
 
 // NotificationHistoryState 描述一条 eUICC 通知在其生命周期内的处置状态。
@@ -216,18 +228,22 @@ func (s *SQLiteStore) configure() error {
 		);
 		CREATE INDEX IF NOT EXISTS idx_esim_notification_history_updated
 			ON esim_notification_history(updated_at DESC);
-		CREATE TABLE IF NOT EXISTS sim_cards (
+		CREATE TABLE IF NOT EXISTS sim_profiles (
 			iccid TEXT PRIMARY KEY,
 			imsi TEXT NOT NULL DEFAULT '',
 			msisdn TEXT NOT NULL DEFAULT '',
 			name TEXT NOT NULL DEFAULT '',
+			local_phone TEXT NOT NULL DEFAULT '',
 			notes TEXT NOT NULL DEFAULT '',
+			tags TEXT NOT NULL DEFAULT '',
+			profile_type TEXT NOT NULL DEFAULT 'unknown'
+				CHECK (profile_type IN ('unknown', 'physical', 'esim')),
 			first_seen_at TEXT NOT NULL,
 			last_seen_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		);
-		CREATE INDEX IF NOT EXISTS idx_sim_cards_last_seen
-			ON sim_cards(last_seen_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_sim_profiles_last_seen
+			ON sim_profiles(last_seen_at DESC);
 	`)
 	if err != nil {
 		return fmt.Errorf("migrate sqlite schema: %w", err)
@@ -272,11 +288,22 @@ func (s *SQLiteStore) applyMigrations() error {
 				return err
 			}
 		case 5:
-			// v5: SIM 卡档案表（基线 CREATE TABLE 已包含，幂等）。
-			if err := s.ensureColumn("sim_cards", "notes", "notes TEXT NOT NULL DEFAULT ''"); err != nil {
+			// v5 used the legacy sim_cards table. A fresh database now creates
+			// sim_profiles directly, so only alter the legacy table when present.
+			exists, err := s.tableExists("sim_cards")
+			if err != nil {
 				return err
 			}
+			if exists {
+				if err := s.ensureColumn("sim_cards", "notes", "notes TEXT NOT NULL DEFAULT ''"); err != nil {
+					return err
+				}
+			}
 			if err := s.recordMigration(version); err != nil {
+				return err
+			}
+		case 6:
+			if err := s.migrateSIMProfiles(); err != nil {
 				return err
 			}
 		}
@@ -285,11 +312,137 @@ func (s *SQLiteStore) applyMigrations() error {
 }
 
 // migrationVersion is the newest schema version this binary understands.
-const migrationVersion = 5
+const migrationVersion = 6
 
 func (s *SQLiteStore) recordMigration(version int) error {
 	if _, err := s.db.Exec(`INSERT INTO schema_migrations(version, applied_at) VALUES(?, ?)`, version, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return fmt.Errorf("record sqlite schema migration: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) tableExists(table string) (bool, error) {
+	var exists bool
+	if err := s.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?)`, table).Scan(&exists); err != nil {
+		return false, fmt.Errorf("inspect table %s: %w", table, err)
+	}
+	return exists, nil
+}
+
+type legacyProfileNote struct {
+	Label string `json:"label"`
+	Phone string `json:"phone"`
+	Tags  string `json:"tags"`
+}
+
+// migrateSIMProfiles moves the legacy relational rows and JSON Profile notes
+// into the canonical table in one transaction. The baseline schema creates an
+// empty sim_profiles table before migrations, including after a failed attempt;
+// all data changes and namespace removal still commit atomically here.
+func (s *SQLiteStore) migrateSIMProfiles() error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin sim profiles v6 migration: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var legacyTable bool
+	if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sim_cards')`).Scan(&legacyTable); err != nil {
+		return fmt.Errorf("inspect legacy sim cards table: %w", err)
+	}
+	if legacyTable {
+		if _, err := tx.Exec(`
+			INSERT INTO sim_profiles(
+				iccid, imsi, msisdn, name, local_phone, notes, tags, profile_type,
+				first_seen_at, last_seen_at, updated_at
+			)
+			SELECT iccid, imsi, msisdn, name, '', notes, '', 'unknown',
+				first_seen_at, last_seen_at, updated_at
+			FROM sim_cards
+		`); err != nil {
+			return fmt.Errorf("copy legacy sim cards: %w", err)
+		}
+	}
+
+	var encoded string
+	err = tx.QueryRow(`SELECT value_json FROM app_settings WHERE namespace = 'profile_notes'`).Scan(&encoded)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("read legacy profile notes: %w", err)
+	}
+	if err == nil {
+		var notes map[string]legacyProfileNote
+		if decodeErr := json.Unmarshal([]byte(encoded), &notes); decodeErr != nil {
+			return fmt.Errorf("decode legacy profile notes: %w", decodeErr)
+		}
+		for rawICCID, note := range notes {
+			if err := migrateLegacyProfileNote(tx, rawICCID, note); err != nil {
+				return err
+			}
+		}
+	}
+
+	if legacyTable {
+		if _, err := tx.Exec(`DROP TABLE sim_cards`); err != nil {
+			return fmt.Errorf("drop legacy sim cards: %w", err)
+		}
+	}
+	if _, err := tx.Exec(`DELETE FROM app_settings WHERE namespace = 'profile_notes'`); err != nil {
+		return fmt.Errorf("remove legacy profile notes: %w", err)
+	}
+	if _, err := tx.Exec(`INSERT INTO schema_migrations(version, applied_at) VALUES(6, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		return fmt.Errorf("record sim profiles v6 migration: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit sim profiles v6 migration: %w", err)
+	}
+	return nil
+}
+
+func migrateLegacyProfileNote(tx *sql.Tx, rawICCID string, note legacyProfileNote) error {
+	iccid := strings.TrimSpace(rawICCID)
+	if iccid == "" || len(iccid) > 22 {
+		return fmt.Errorf("invalid ICCID in legacy profile notes")
+	}
+	note.Label = strings.TrimSpace(note.Label)
+	note.Phone = strings.TrimSpace(note.Phone)
+	note.Tags = strings.TrimSpace(note.Tags)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := tx.Exec(`
+		INSERT INTO sim_profiles(
+			iccid, name, local_phone, tags, profile_type, first_seen_at, last_seen_at, updated_at
+		) VALUES(?, ?, ?, ?, 'esim', ?, ?, ?)
+		ON CONFLICT(iccid) DO NOTHING
+	`, iccid, note.Label, note.Phone, note.Tags, now, now, now); err != nil {
+		return fmt.Errorf("insert legacy profile note %s: %w", iccid, err)
+	}
+
+	var name, localPhone, existingNotes, tags string
+	if err := tx.QueryRow(`
+		SELECT name, local_phone, notes, tags FROM sim_profiles WHERE iccid = ?
+	`, iccid).Scan(&name, &localPhone, &existingNotes, &tags); err != nil {
+		return fmt.Errorf("read migrated profile %s: %w", iccid, err)
+	}
+	if name == "" {
+		name = note.Label
+	} else if note.Label != "" && note.Label != name {
+		conflict := "Migrated eSIM label: " + note.Label
+		if existingNotes == "" {
+			existingNotes = conflict
+		} else if !strings.Contains(existingNotes, conflict) {
+			existingNotes += "\n" + conflict
+		}
+	}
+	if localPhone == "" {
+		localPhone = note.Phone
+	}
+	if tags == "" {
+		tags = note.Tags
+	}
+	if _, err := tx.Exec(`
+		UPDATE sim_profiles SET name = ?, local_phone = ?, notes = ?, tags = ?,
+			profile_type = 'esim', updated_at = ? WHERE iccid = ?
+	`, name, localPhone, existingNotes, tags, now, iccid); err != nil {
+		return fmt.Errorf("merge legacy profile note %s: %w", iccid, err)
 	}
 	return nil
 }
@@ -747,37 +900,53 @@ func nullInt(value sql.NullInt64) int {
 	return int(value.Int64)
 }
 
-// UpsertSimCardSeen 记录一次插卡观测：卡片不存在时建档（首次见到），
-// 已存在时更新最近见到时间；imsi/msisdn 仅在非空时覆盖旧值（自动补录，
-// 不覆盖用户已有的编辑结果之外的信息——号码以设备读取为准）。
-func (s *SQLiteStore) UpsertSimCardSeen(record SimCardRecord) error {
+// UpsertSimProfileObserved records a physical SIM or eSIM observation while
+// preserving all local metadata.
+func (s *SQLiteStore) UpsertSimProfileObserved(record SimProfileRecord) error {
 	iccid := strings.TrimSpace(record.ICCID)
-	if iccid == "" {
-		return fmt.Errorf("sim card iccid is required")
+	if iccid == "" || len(iccid) > 22 {
+		return fmt.Errorf("sim profile iccid is invalid")
 	}
+	profileType := normalizeSimProfileType(record.ProfileType)
 	now := time.Now().UTC()
 	_, err := s.db.Exec(`
-		INSERT INTO sim_cards(iccid, imsi, msisdn, name, notes, first_seen_at, last_seen_at, updated_at)
-		VALUES(?, ?, ?, '', '', ?, ?, ?)
+		INSERT INTO sim_profiles(
+			iccid, imsi, msisdn, name, local_phone, notes, tags, profile_type,
+			first_seen_at, last_seen_at, updated_at
+		)
+		VALUES(?, ?, ?, '', '', '', '', ?, ?, ?, ?)
 		ON CONFLICT(iccid) DO UPDATE SET
-			imsi = CASE WHEN excluded.imsi = '' THEN sim_cards.imsi ELSE excluded.imsi END,
-			msisdn = CASE WHEN excluded.msisdn = '' THEN sim_cards.msisdn ELSE excluded.msisdn END,
+			imsi = CASE WHEN excluded.imsi = '' THEN sim_profiles.imsi ELSE excluded.imsi END,
+			msisdn = CASE WHEN excluded.msisdn = '' THEN sim_profiles.msisdn ELSE excluded.msisdn END,
+			profile_type = CASE
+				WHEN excluded.profile_type = 'unknown' THEN sim_profiles.profile_type
+				WHEN sim_profiles.profile_type = 'unknown' THEN excluded.profile_type
+				ELSE sim_profiles.profile_type
+			END,
 			last_seen_at = excluded.last_seen_at,
 			updated_at = excluded.updated_at
-	`, iccid, record.IMSI, record.MSISDN, now.Format(time.RFC3339Nano),
+	`, iccid, strings.TrimSpace(record.IMSI), strings.TrimSpace(record.MSISDN), profileType, now.Format(time.RFC3339Nano),
 		now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
 	if err != nil {
-		return fmt.Errorf("upsert sim card seen: %w", err)
+		return fmt.Errorf("upsert sim profile observation: %w", err)
 	}
 	return nil
 }
 
-// InsertSimCard 手动建档一张卡。ICCID 为主键，已存在时返回错误（应由更新
-// 或"插卡已自动建档"路径处理）。name/notes/msisdn 可空。
-func (s *SQLiteStore) InsertSimCard(record SimCardRecord) error {
+func normalizeSimProfileType(profileType SimProfileType) SimProfileType {
+	switch profileType {
+	case SimProfilePhysical, SimProfileESIM:
+		return profileType
+	default:
+		return SimProfileUnknown
+	}
+}
+
+// InsertSimProfile manually creates one canonical Profile record.
+func (s *SQLiteStore) InsertSimProfile(record SimProfileRecord) error {
 	iccid := strings.TrimSpace(record.ICCID)
-	if iccid == "" {
-		return fmt.Errorf("sim card iccid is required")
+	if iccid == "" || len(iccid) > 22 {
+		return fmt.Errorf("sim profile iccid is invalid")
 	}
 	now := time.Now().UTC()
 	firstSeen := record.FirstSeen
@@ -785,85 +954,93 @@ func (s *SQLiteStore) InsertSimCard(record SimCardRecord) error {
 		firstSeen = now
 	}
 	_, err := s.db.Exec(`
-		INSERT INTO sim_cards(iccid, imsi, msisdn, name, notes, first_seen_at, last_seen_at, updated_at)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?)
-	`, iccid, record.IMSI, record.MSISDN, record.Name, record.Notes,
+		INSERT INTO sim_profiles(
+			iccid, imsi, msisdn, name, local_phone, notes, tags, profile_type,
+			first_seen_at, last_seen_at, updated_at
+		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, iccid, record.IMSI, record.MSISDN, record.Name, record.LocalPhone, record.Notes,
+		record.Tags, normalizeSimProfileType(record.ProfileType),
 		firstSeen.UTC().Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
 	if err != nil {
-		return fmt.Errorf("insert sim card: %w", err)
+		return fmt.Errorf("insert sim profile: %w", err)
 	}
 	return nil
 }
 
-// UpdateSimCardMeta 更新用户维护的卡片元数据（名称/备注/号码）；ICCID 不可变。
-// 号码字段仅在非空时更新，空值保留原值。
-func (s *SQLiteStore) UpdateSimCardMeta(iccid, name, notes, msisdn string) error {
+// UpdateSimProfileMeta updates only user-owned metadata. Empty values clear the
+// corresponding field; observed IMSI/MSISDN remain unchanged.
+func (s *SQLiteStore) UpdateSimProfileMeta(iccid, name, localPhone, notes, tags string) (bool, error) {
 	iccid = strings.TrimSpace(iccid)
-	if iccid == "" {
-		return fmt.Errorf("sim card iccid is required")
+	if iccid == "" || len(iccid) > 22 {
+		return false, fmt.Errorf("sim profile iccid is invalid")
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := s.db.Exec(`
-		UPDATE sim_cards SET
+	result, err := s.db.Exec(`
+		UPDATE sim_profiles SET
 			name = ?,
+			local_phone = ?,
 			notes = ?,
-			msisdn = CASE WHEN ? = '' THEN msisdn ELSE ? END,
+			tags = ?,
 			updated_at = ?
 		WHERE iccid = ?
-	`, name, notes, msisdn, msisdn, now, iccid)
+	`, strings.TrimSpace(name), strings.TrimSpace(localPhone), strings.TrimSpace(notes), strings.TrimSpace(tags), now, iccid)
 	if err != nil {
-		return fmt.Errorf("update sim card meta: %w", err)
-	}
-	return nil
-}
-
-// DeleteSimCard 删除一张卡档案；返回是否实际删除。
-func (s *SQLiteStore) DeleteSimCard(iccid string) (bool, error) {
-	result, err := s.db.Exec(`DELETE FROM sim_cards WHERE iccid = ?`, strings.TrimSpace(iccid))
-	if err != nil {
-		return false, fmt.Errorf("delete sim card: %w", err)
+		return false, fmt.Errorf("update sim profile metadata: %w", err)
 	}
 	affected, err := result.RowsAffected()
 	if err != nil {
-		return false, fmt.Errorf("delete sim card rows: %w", err)
+		return false, fmt.Errorf("update sim profile rows: %w", err)
 	}
 	return affected > 0, nil
 }
 
-// ListSimCards 按最近见到时间倒序返回全部卡档案。
-func (s *SQLiteStore) ListSimCards() ([]SimCardRecord, error) {
+func (s *SQLiteStore) DeleteSimProfile(iccid string) (bool, error) {
+	result, err := s.db.Exec(`DELETE FROM sim_profiles WHERE iccid = ?`, strings.TrimSpace(iccid))
+	if err != nil {
+		return false, fmt.Errorf("delete sim profile: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("delete sim profile rows: %w", err)
+	}
+	return affected > 0, nil
+}
+
+func (s *SQLiteStore) ListSimProfiles() ([]SimProfileRecord, error) {
 	rows, err := s.db.Query(`
-		SELECT iccid, imsi, msisdn, name, notes, first_seen_at, last_seen_at, updated_at
-		FROM sim_cards ORDER BY last_seen_at DESC, iccid ASC
+		SELECT iccid, imsi, msisdn, name, local_phone, notes, tags, profile_type,
+			first_seen_at, last_seen_at, updated_at
+		FROM sim_profiles ORDER BY last_seen_at DESC, iccid ASC
 	`)
 	if err != nil {
-		return nil, fmt.Errorf("list sim cards: %w", err)
+		return nil, fmt.Errorf("list sim profiles: %w", err)
 	}
 	defer rows.Close()
-	var records []SimCardRecord
+	var records []SimProfileRecord
 	for rows.Next() {
-		var record SimCardRecord
+		var record SimProfileRecord
 		var firstSeen, lastSeen, updatedAt string
-		if err := rows.Scan(&record.ICCID, &record.IMSI, &record.MSISDN, &record.Name, &record.Notes,
+		if err := rows.Scan(&record.ICCID, &record.IMSI, &record.MSISDN, &record.Name,
+			&record.LocalPhone, &record.Notes, &record.Tags, &record.ProfileType,
 			&firstSeen, &lastSeen, &updatedAt); err != nil {
-			return nil, fmt.Errorf("scan sim card: %w", err)
+			return nil, fmt.Errorf("scan sim profile: %w", err)
 		}
 		record.FirstSeen, err = time.Parse(time.RFC3339Nano, firstSeen)
 		if err != nil {
-			return nil, fmt.Errorf("parse sim card first_seen_at: %w", err)
+			return nil, fmt.Errorf("parse sim profile first_seen_at: %w", err)
 		}
 		record.LastSeen, err = time.Parse(time.RFC3339Nano, lastSeen)
 		if err != nil {
-			return nil, fmt.Errorf("parse sim card last_seen_at: %w", err)
+			return nil, fmt.Errorf("parse sim profile last_seen_at: %w", err)
 		}
 		record.UpdatedAt, err = time.Parse(time.RFC3339Nano, updatedAt)
 		if err != nil {
-			return nil, fmt.Errorf("parse sim card updated_at: %w", err)
+			return nil, fmt.Errorf("parse sim profile updated_at: %w", err)
 		}
 		records = append(records, record)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate sim cards: %w", err)
+		return nil, fmt.Errorf("iterate sim profiles: %w", err)
 	}
 	return records, nil
 }

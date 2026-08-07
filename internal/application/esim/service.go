@@ -9,6 +9,7 @@ import (
 
 	"github.com/iniwex5/vohive/internal/application/device"
 	"github.com/iniwex5/vohive/internal/application/operation"
+	"github.com/iniwex5/vohive/internal/application/simprofiles"
 	"github.com/iniwex5/vohive/internal/backend"
 	domain "github.com/iniwex5/vohive/internal/domain/device"
 	derrors "github.com/iniwex5/vohive/internal/domain/errors"
@@ -30,11 +31,16 @@ type Service struct {
 	ops     *operation.Manager
 	runtime *runtime.Runtime
 	// store 为 nil 时通知历史不落库（测试/无存储环境）。
-	store *storage.SQLiteStore
+	store    *storage.SQLiteStore
+	profiles *simprofiles.Service
 
 	confirmationMu sync.Mutex
 	// operationID -> 确认码回复 channel；下载结束（成功/失败/取消）时删除。
 	confirmationRequests map[string]chan confirmationReply
+}
+
+func (s *Service) SetProfileRegistry(profiles *simprofiles.Service) {
+	s.profiles = profiles
 }
 
 func NewService(devices *device.Service, ops *operation.Manager, runtime *runtime.Runtime, store ...*storage.SQLiteStore) *Service {
@@ -83,6 +89,11 @@ func (s *Service) Overview(ctx context.Context) (map[string]any, error) {
 	profiles, err := port.Profiles(ctx)
 	if err != nil {
 		return nil, err
+	}
+	if s.profiles != nil {
+		if err := s.profiles.ObserveESIM(profiles); err != nil {
+			log.Printf("observe eSIM profiles: %v", err)
+		}
 	}
 	return map[string]any{"card_type": "euicc", "eid": eid, "profiles": profiles}, nil
 }

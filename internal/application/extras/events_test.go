@@ -21,7 +21,7 @@ type recordedCallEvent struct {
 func collectCallEvents(t *testing.T, count int, fn func(*Service)) []recordedCallEvent {
 	t.Helper()
 	bus := runtime.NewEventBus()
-	service := NewService(nil, operation.NewManager(bus), nil, nil)
+	service := NewService(nil, operation.NewManager(bus), nil)
 	_, events, unsubscribe := bus.Subscribe(32)
 	defer unsubscribe()
 	fn(service)
@@ -142,7 +142,7 @@ func TestApplyCallsArchivesReplacedActiveCall(t *testing.T) {
 // be tracked (and archived as history) without any incoming or missed prompt.
 func TestApplyCallsBaselineSnapshotIsSilent(t *testing.T) {
 	bus := runtime.NewEventBus()
-	service := NewService(nil, operation.NewManager(bus), nil, nil)
+	service := NewService(nil, operation.NewManager(bus), nil)
 	_, events, unsubscribe := bus.Subscribe(32)
 	defer unsubscribe()
 	now := time.Date(2026, 8, 2, 10, 0, 0, 0, time.UTC)
@@ -170,7 +170,7 @@ func TestApplyCallsBaselineSnapshotIsSilent(t *testing.T) {
 // empty CLCC response first and exposes its stale call on the next poll.
 func TestApplyCallsLateBaselineSnapshotIsSilent(t *testing.T) {
 	bus := runtime.NewEventBus()
-	service := NewService(nil, operation.NewManager(bus), nil, nil)
+	service := NewService(nil, operation.NewManager(bus), nil)
 	_, events, unsubscribe := bus.Subscribe(32)
 	defer unsubscribe()
 	now := time.Date(2026, 8, 2, 10, 0, 0, 0, time.UTC)
@@ -194,7 +194,7 @@ func TestApplyCallsLateBaselineSnapshotIsSilent(t *testing.T) {
 // prompt may be published for a call the user was never notified about.
 func TestApplyCallsBaselineCallLifecycleIsSilent(t *testing.T) {
 	bus := runtime.NewEventBus()
-	service := NewService(nil, operation.NewManager(bus), nil, nil)
+	service := NewService(nil, operation.NewManager(bus), nil)
 	_, events, unsubscribe := bus.Subscribe(32)
 	defer unsubscribe()
 	now := time.Date(2026, 8, 2, 10, 0, 0, 0, time.UTC)
@@ -220,7 +220,7 @@ func TestApplyCallsBaselineCallLifecycleIsSilent(t *testing.T) {
 // announced; the replaced leftover ends silently.
 func TestApplyCallsBaselineCallReplacementAnnouncesNewCall(t *testing.T) {
 	bus := runtime.NewEventBus()
-	service := NewService(nil, operation.NewManager(bus), nil, nil)
+	service := NewService(nil, operation.NewManager(bus), nil)
 	_, events, unsubscribe := bus.Subscribe(32)
 	defer unsubscribe()
 	now := time.Date(2026, 8, 2, 10, 0, 0, 0, time.UTC)

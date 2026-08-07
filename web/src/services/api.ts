@@ -14,7 +14,7 @@ import type {
   NotificationPermissionStatus,
   NotificationPreferences,
   NotificationPreferencesResponse,
-  SimCard,
+  SimProfile,
   StartupStatus,
   OperationStatus,
   SMSMessage,
@@ -103,19 +103,19 @@ export const api = {
     }),
   esimRemoveNotification: (sequence: number) =>
     request<{ state: string }>(`/esim/notifications/${sequence}`, { method: 'DELETE' }),
-  simCards: () => request<{ cards: SimCard[] }>('/simcards'),
-  simCardCreate: (iccid: string, imsi: string, msisdn: string, name: string, notes: string) =>
-    request<{ state: string }>('/simcards', {
+  simProfiles: () => request<{ profiles: SimProfile[] }>('/sim-profiles'),
+  simProfileCreate: (profile: Omit<SimProfile, 'first_seen_at' | 'last_seen_at'>) =>
+    request<{ state: string }>('/sim-profiles', {
       method: 'POST',
-      body: JSON.stringify({ iccid, imsi, msisdn, name, notes }),
+      body: JSON.stringify(profile),
     }),
-  simCardUpdate: (iccid: string, name: string, notes: string, msisdn: string) =>
-    request<{ state: string }>(`/simcards/${encodeURIComponent(iccid)}`, {
+  simProfileUpdate: (iccid: string, metadata: Pick<SimProfile, 'name' | 'local_phone' | 'notes' | 'tags'>) =>
+    request<{ state: string }>(`/sim-profiles/${encodeURIComponent(iccid)}`, {
       method: 'PUT',
-      body: JSON.stringify({ name, notes, msisdn }),
+      body: JSON.stringify(metadata),
     }),
-  simCardDelete: (iccid: string) =>
-    request<{ state: string }>(`/simcards/${encodeURIComponent(iccid)}`, { method: 'DELETE' }),
+  simProfileDelete: (iccid: string) =>
+    request<{ state: string }>(`/sim-profiles/${encodeURIComponent(iccid)}`, { method: 'DELETE' }),
   esimConfirmationCode: (operationID: string, code: string, declined: boolean) =>
     request<{ state: string }>(`/esim/operations/${encodeURIComponent(operationID)}/confirmation-code`, {
       method: 'POST',
@@ -205,8 +205,4 @@ export const api = {
     request<{ dialed: boolean }>('/calls/actions/dial', { method: 'POST', body: JSON.stringify({ number }) }),
   rejectCall: () => request<{ rejected: boolean }>('/calls/actions/reject', { method: 'POST' }),
   esimHealth: () => request<EsimHealth>('/esim/health'),
-  esimNotes: () =>
-    request<{ notes: Record<string, { label: string; phone: string; tags: string }> }>('/esim/notes'),
-  saveEsimNote: (iccid: string, note: { label: string; phone: string; tags: string }) =>
-    request<{ state: string }>('/esim/notes', { method: 'PUT', body: JSON.stringify({ iccid, ...note }) }),
 }

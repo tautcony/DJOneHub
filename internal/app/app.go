@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/iniwex5/vohive/internal/apduarbiter"
 	httpapi "github.com/iniwex5/vohive/internal/api/http"
 	"github.com/iniwex5/vohive/internal/application/device"
 	"github.com/iniwex5/vohive/internal/application/esim"
@@ -17,11 +18,10 @@ import (
 	"github.com/iniwex5/vohive/internal/application/network"
 	"github.com/iniwex5/vohive/internal/application/notification"
 	"github.com/iniwex5/vohive/internal/application/operation"
-	"github.com/iniwex5/vohive/internal/application/simcards"
 	"github.com/iniwex5/vohive/internal/application/rawat"
+	"github.com/iniwex5/vohive/internal/application/simprofiles"
 	"github.com/iniwex5/vohive/internal/application/sms"
 	"github.com/iniwex5/vohive/internal/application/vowifi"
-	"github.com/iniwex5/vohive/internal/apduarbiter"
 	"github.com/iniwex5/vohive/internal/backend"
 	domain "github.com/iniwex5/vohive/internal/domain/device"
 	djiesim "github.com/iniwex5/vohive/internal/esim"
@@ -69,6 +69,7 @@ type App struct {
 	Device       *device.Service
 	SMS          *sms.Service
 	ESIM         *esim.Service
+	SimProfiles  *simprofiles.Service
 	Network      *network.Service
 	RawAT        *rawat.Service
 	VoWiFi       *vowifi.Service
@@ -130,14 +131,6 @@ func newApp(r *runtime.Runtime, err error, platformAdapter transport.NetworkCont
 	if err != nil {
 		return nil, err
 	}
-	profileStore := database.Namespace("profile_notes")
-	if exists, _ := profileStore.Exists(); !exists {
-		var notes map[string]extras.ProfileNote
-		legacy := storage.NewJSONStore(filepath.Join(storeDir, "DJOneHub", "profile-notes.json"))
-		if legacy.Read(&notes) == nil && notes != nil {
-			_ = profileStore.Write(&notes)
-		}
-	}
 	notificationPreferencesStore := database.Namespace("notification_preferences")
 	if exists, _ := notificationPreferencesStore.Exists(); !exists {
 		legacy := storage.NewJSONStore(filepath.Join(storeDir, "DJOneHub", "notification-preferences.json"))
@@ -155,8 +148,9 @@ func newApp(r *runtime.Runtime, err error, platformAdapter transport.NetworkCont
 	devices := device.NewService(r)
 	smsService := sms.NewService(devices, ops, r, database)
 	esimService := esim.NewService(devices, ops, r, database)
-	simCardsService := simcards.NewService(database)
-	simCardsService.Attach(devices)
+	simProfilesService := simprofiles.NewService(database)
+	simProfilesService.Attach(devices)
+	esimService.SetProfileRegistry(simProfilesService)
 	networkService := network.NewService(devices, ops, r, platformAdapter, database)
 	rawATService := rawat.NewService(devices, r)
 	firmwareConfig := firmware.ConfigFromEnvironment()
@@ -172,7 +166,7 @@ func newApp(r *runtime.Runtime, err error, platformAdapter transport.NetworkCont
 		platformDependencies.Tunnel = tunnel
 	}
 	vowifiService := vowifi.NewService(devices, ops, r, platformDependencies)
-	extraService := extras.NewService(devices, ops, r, profileStore, database)
+	extraService := extras.NewService(devices, ops, r, database)
 	notificationPreferences := notification.DefaultNotificationPreferences()
 	_ = notificationPreferencesStore.Read(&notificationPreferences)
 	notificationPreferences = notificationPreferences.Normalize()
@@ -212,6 +206,7 @@ func newApp(r *runtime.Runtime, err error, platformAdapter transport.NetworkCont
 		Device:            devices,
 		SMS:               smsService,
 		ESIM:              esimService,
+		SimProfiles:       simProfilesService,
 		Network:           networkService,
 		RawAT:             rawATService,
 		VoWiFi:            vowifiService,
@@ -226,7 +221,7 @@ func newApp(r *runtime.Runtime, err error, platformAdapter transport.NetworkCont
 		Device:                        devices,
 		SMS:                           smsService,
 		ESIM:                          esimService,
-		SimCards:                      simCardsService,
+		SimProfiles:                   simProfilesService,
 		Network:                       networkService,
 		Notification:                  notifications,
 		RawAT:                         rawATService,

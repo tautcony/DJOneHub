@@ -368,7 +368,7 @@ button:disabled {
   align-items: start;
 }
 .view-grid > .esim-panel,
-.view-grid > .simcards-panel,
+.view-grid > .sim-profiles-panel,
 .view-grid > .status-banner,
 .view-grid > .metric-grid {
   grid-column: 1 / -1;
@@ -1902,12 +1902,30 @@ button:disabled {
   font-size: 11px;
 }
 .esim-operation-dock {
+  position: relative;
   margin-top: 0;
-  box-shadow: 0 8px 24px rgb(0 0 0 / 12%);
 }
 .esim-operation-dock .operation-status {
   margin-top: 0;
   overflow: hidden;
+}
+.esim-operation-dock .operation-topline {
+  padding-right: 30px;
+}
+.esim-operation-close {
+  position: absolute !important;
+  z-index: 1;
+  top: 8px;
+  right: 8px;
+  width: 28px !important;
+  min-width: 28px !important;
+  height: 28px;
+  color: var(--ui-text-secondary) !important;
+}
+.esim-operation-close:hover,
+.esim-operation-close:focus-visible {
+  color: var(--ui-text) !important;
+  background: rgb(0 0 0 / 6%) !important;
 }
 .esim-operation-error {
   margin-top: 8px;
@@ -2612,7 +2630,7 @@ button:disabled {
     grid-template-columns: 1fr;
   }
   .view-grid > .esim-panel,
-  .view-grid > .simcards-panel,
+  .view-grid > .sim-profiles-panel,
   .view-grid > .status-banner,
   .view-grid > .metric-grid {
     grid-column: auto;
@@ -3705,63 +3723,64 @@ button:disabled {
   font-weight: 600;
   color: var(--ui-text-secondary);
 }
-.simcard-row {
+.sim-profile-row {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
   padding: 12px 14px;
 }
-.simcard-main {
+.sim-profile-main {
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
 }
-.simcard-main h3 {
-  margin: 0 0 8px;
+.sim-profile-main h3 {
+  margin: 0;
   font-size: 14px;
 }
-.simcard-fields {
+.sim-profile-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.sim-profile-fields {
   display: grid;
   gap: 5px 18px;
   grid-template-columns: minmax(0, 1fr);
 }
-.simcard-fields > div {
+.sim-profile-fields > div {
   display: flex;
   min-width: 0;
   gap: 8px;
   font-size: 12px;
 }
-.simcard-fields span {
+.sim-profile-fields span {
   color: var(--ui-text-tertiary);
   white-space: nowrap;
 }
-.simcard-fields strong,
-.simcard-fields span:last-child {
+.sim-profile-fields strong,
+.sim-profile-fields span:last-child {
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.simcard-actions {
+.sim-profile-actions {
   display: flex;
   flex-shrink: 0;
   align-items: center;
   gap: 6px;
 }
-.simcard-actions .ant-btn {
+.sim-profile-actions .ant-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
 }
-.simcard-actions .ant-btn .anticon {
+.sim-profile-actions .ant-btn .anticon {
   display: inline-flex;
   margin-bottom: 0;
-}
-.simcards-hint {
-  padding: 0 2px 10px;
-  color: var(--ui-text-tertiary);
-  font-size: 12px;
-  line-height: 1.6;
 }

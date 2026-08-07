@@ -6,7 +6,7 @@ import EmptyState from '../components/EmptyState.vue'
 import LoadingState from '../components/LoadingState.vue'
 import StatusLight from '../components/StatusLight.vue'
 import { formatDateTime } from '../utils/date'
-import { simCardLabel, simICCIDs } from '../utils/simcards'
+import { simProfileICCIDs, simProfileLabel } from '../utils/simprofiles'
 import type { OperationStatus } from '../types'
 import { useViewContext } from './context'
 
@@ -22,7 +22,7 @@ const {
   loadedViews,
   maskSensitive,
   resetSMSOperation,
-  simCards,
+  simProfiles,
   selectedSmsPeer,
   selectedSmsThread,
   smsBody,
@@ -46,14 +46,14 @@ const chronologicalMessages = computed(() =>
 )
 const canSend = computed(() => device.has('sms_send') && !!smsTo.value.trim() && !!smsBody.value.trim())
 const simOptions = computed(() =>
-  simICCIDs(
-    simCards.value,
+  simProfileICCIDs(
+    simProfiles.value,
     smsThreads.value.map((thread) => thread.iccid),
-  ).map((iccid) => ({ value: iccid, label: simCardLabel(iccid, simCards.value, maskSensitive) })),
+  ).map((iccid) => ({ value: iccid, label: simProfileLabel(iccid, simProfiles.value, maskSensitive) })),
 )
 const selectedThreadSim = computed(() =>
   selectedSmsThread.value?.iccid
-    ? simCardLabel(selectedSmsThread.value.iccid, simCards.value, maskSensitive)
+    ? simProfileLabel(selectedSmsThread.value.iccid, simProfiles.value, maskSensitive)
     : '',
 )
 
@@ -170,7 +170,7 @@ function threadDate(value?: string) {
             </span>
             <small>{{ thread.latest?.body || t('sms.backendContent') }}</small>
             <span v-if="thread.iccid" class="sms-thread-sim">{{
-              simCardLabel(thread.iccid, simCards, maskSensitive)
+              simProfileLabel(thread.iccid, simProfiles, maskSensitive)
             }}</span>
           </span>
         </button>

@@ -167,6 +167,13 @@ func TestEsimOverviewContractStates(t *testing.T) {
 			if body.CardType != tc.wantType || body.EID != tc.wantEID || len(body.Profiles) != tc.wantCount {
 				t.Fatalf("overview = %#v, want type=%q eid=%q profiles=%d", body, tc.wantType, tc.wantEID, tc.wantCount)
 			}
+			registered, err := server.config.SimProfiles.List(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(registered) != tc.wantCount {
+				t.Fatalf("registered profiles = %+v, want %d", registered, tc.wantCount)
+			}
 		})
 	}
 }

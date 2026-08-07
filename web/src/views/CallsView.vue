@@ -6,7 +6,7 @@ import EmptyState from '../components/EmptyState.vue'
 import LoadingState from '../components/LoadingState.vue'
 import Panel from '../components/Panel.vue'
 import { formatDateTime } from '../utils/date'
-import { simCardLabel, simICCIDs } from '../utils/simcards'
+import { simProfileICCIDs, simProfileLabel } from '../utils/simprofiles'
 import { useViewContext } from './context'
 
 const { t, te } = useI18n()
@@ -23,14 +23,14 @@ const {
   maskSensitive,
   openCallsDial,
   rejectCall,
-  simCards,
+  simProfiles,
 } = useViewContext()
 const simFilter = ref('')
 const simOptions = computed(() =>
-  simICCIDs(simCards.value, [
+  simProfileICCIDs(simProfiles.value, [
     calls.value?.active?.iccid,
     ...(calls.value?.history || []).map((item) => item.iccid),
-  ]).map((iccid) => ({ value: iccid, label: simCardLabel(iccid, simCards.value, maskSensitive) })),
+  ]).map((iccid) => ({ value: iccid, label: simProfileLabel(iccid, simProfiles.value, maskSensitive) })),
 )
 const filteredHistory = computed(() =>
   (calls.value?.history || []).filter((item) => !simFilter.value || item.iccid === simFilter.value),
@@ -91,7 +91,7 @@ function callDirection(direction: string) {
           <span class="active-call-state">{{ callState(calls.active.state) }}</span
           ><strong class="active-call-number">{{ displayNumber(calls.active.number) }}</strong
           ><span v-if="calls.active.iccid" class="active-call-sim">{{
-            simCardLabel(calls.active.iccid, simCards, maskSensitive)
+            simProfileLabel(calls.active.iccid, simProfiles, maskSensitive)
           }}</span
           ><time>{{ formatDateTime(calls.active.started_at) }}</time>
         </div>
@@ -140,7 +140,7 @@ function callDirection(direction: string) {
                 }}</a-tag>
                 <span>{{ callDirection(item.direction) }}</span>
                 <span v-if="item.iccid" class="call-history-sim">{{
-                  simCardLabel(item.iccid, simCards, maskSensitive)
+                  simProfileLabel(item.iccid, simProfiles, maskSensitive)
                 }}</span>
               </div>
             </div>

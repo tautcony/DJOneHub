@@ -8,8 +8,9 @@ import type {
   EsimNotificationHistory,
   EsimOverview,
   OperationStatus,
+  SimProfile,
 } from '../types'
-import type { ProfileNote } from '../views/context'
+import { useSimProfilesStore } from './simprofiles'
 
 export type EsimWorkspace = 'profiles' | 'notifications'
 export type NotificationMode = 'pending' | 'history'
@@ -27,9 +28,10 @@ export type EsimDownloadPhase = 'input' | 'progress' | 'terminal'
 // 不会把用户输入转换成设备请求。
 export const useEsimStore = defineStore('esim', () => {
   const device = useDeviceStore()
+  const simProfiles = useSimProfilesStore()
   const overview = ref<EsimOverview | null>(null)
   const overviewError = ref('')
-  const notesError = ref('')
+  const metadataError = ref('')
   const healthError = ref('')
   const notificationsError = ref('')
   const notificationsLoading = ref(false)
@@ -54,12 +56,7 @@ export const useEsimStore = defineStore('esim', () => {
   const operationID = ref('')
   const operationType = ref('')
   const reloadedOperationID = ref('')
-  const notes = ref<Record<string, { label: string; phone: string; tags: string }>>({})
   const health = ref<EsimHealth | null>(null)
-  const noteICCID = ref('')
-  const noteLabel = ref('')
-  const notePhone = ref('')
-  const noteTags = ref('')
   const notifications = ref<EsimNotification[]>([])
   const notificationHistory = ref<EsimNotificationHistory[]>([])
   const notificationActionState = ref<Record<number, NotificationActionState>>({})
@@ -70,16 +67,18 @@ export const useEsimStore = defineStore('esim', () => {
 
   const operation = computed<OperationStatus | undefined>(() => {
     if (!operationID.value) return undefined
-    return device.operations[operationID.value] || {
-      operation_id: operationID.value,
-      type: operationType.value || 'esim.operation',
-      state: 'pending',
-      progress: 0,
-      message: '',
-    }
+    return (
+      device.operations[operationID.value] || {
+        operation_id: operationID.value,
+        type: operationType.value || 'esim.operation',
+        state: 'pending',
+        progress: 0,
+        message: '',
+      }
+    )
   })
-  const operationActive = computed(() =>
-    !!operation.value && ['pending', 'running'].includes(operation.value.state),
+  const operationActive = computed(
+    () => !!operation.value && ['pending', 'running'].includes(operation.value.state),
   )
   const notificationBusy = computed(() =>
     Object.values(notificationActionState.value).some((state) => state.busy),
@@ -91,14 +90,15 @@ export const useEsimStore = defineStore('esim', () => {
       const state = profile.state === 'enabled' || profile.state === 'disabled' ? profile.state : 'unknown'
       if (profileStateFilter.value !== 'all' && state !== profileStateFilter.value) return false
       if (!query) return true
-      const note = profile.iccid ? notes.value[profile.iccid] : undefined
+      const localProfile = simProfiles.find(profile.iccid)
       return [
         profile.label,
         profile.service_provider_name,
         profile.iccid,
-        note?.label,
-        note?.phone,
-        note?.tags,
+        localProfile?.name,
+        localProfile?.local_phone,
+        localProfile?.tags,
+        localProfile?.notes,
       ]
         .filter(Boolean)
         .some((value) => String(value).toLocaleLowerCase().includes(query))
@@ -123,7 +123,8 @@ export const useEsimStore = defineStore('esim', () => {
       history &&
       notificationStateFilter.value &&
       (item as EsimNotificationHistory).state !== notificationStateFilter.value
-    ) return false
+    )
+      return false
     if (!query) return true
     const historyFields = history
       ? [(item as EsimNotificationHistory).aid, (item as EsimNotificationHistory).state]
@@ -140,43 +141,31 @@ export const useEsimStore = defineStore('esim', () => {
     notificationHistory.value.filter((item) => matchesNotification(item, true)),
   )
 
-  function localProfileNote(iccid?: string): ProfileNote | undefined {
-    return iccid ? notes.value[iccid] : undefined
+  function localSimProfile(iccid?: string): SimProfile | undefined {
+    return simProfiles.find(iccid)
   }
 
-  function noteSummary(note?: ProfileNote) {
-    return note ? [note.label, note.phone, note.tags || note.profile_class].filter(Boolean).join(' · ') : ''
-  }
-
-  function syncSelectedNote() {
-    const note = localProfileNote(noteICCID.value)
-    noteLabel.value = note?.label || ''
-    notePhone.value = note?.phone || ''
-    noteTags.value = note?.tags || ''
+  function simProfileSummary(profile?: SimProfile) {
+    return profile ? [profile.name, profile.local_phone, profile.tags].filter(Boolean).join(' · ') : ''
   }
 
   async function load(): Promise<void> {
     overviewError.value = ''
     const result = await api.esim()
     overview.value = { ...result, profiles: Array.isArray(result.profiles) ? result.profiles : [] }
-    if (!noteICCID.value) noteICCID.value = overview.value.profiles[0]?.iccid || ''
     if (!focusedICCID.value) focusedICCID.value = overview.value.profiles[0]?.iccid || ''
-    syncSelectedNote()
     for (const profile of overview.value.profiles) {
-      if (profile.iccid && labels.value[profile.iccid] === undefined) labels.value[profile.iccid] = profile.label || ''
+      if (profile.iccid && labels.value[profile.iccid] === undefined)
+        labels.value[profile.iccid] = profile.label || ''
     }
 
-    notesError.value = ''
-    void api.esimNotes()
-      .then((result) => {
-        notes.value = result.notes || {}
-        syncSelectedNote()
-      })
-      .catch(() => {
-        notesError.value = 'esim.unableNote'
-      })
+    metadataError.value = ''
+    void simProfiles.load().catch(() => {
+      metadataError.value = 'esim.unableMetadata'
+    })
     healthError.value = ''
-    void api.esimHealth()
+    void api
+      .esimHealth()
       .then((result) => {
         health.value = result
       })
@@ -210,9 +199,7 @@ export const useEsimStore = defineStore('esim', () => {
   function openSettings(iccid?: string) {
     if (!iccid) return
     settingsICCID.value = iccid
-    noteICCID.value = iccid
     focusedICCID.value = iccid
-    syncSelectedNote()
     settingsOpen.value = true
   }
 
@@ -268,12 +255,16 @@ export const useEsimStore = defineStore('esim', () => {
       ])
       const errors: string[] = []
       if (pendingResult.status === 'fulfilled') {
-        notifications.value = Array.isArray(pendingResult.value.notifications) ? pendingResult.value.notifications : []
+        notifications.value = Array.isArray(pendingResult.value.notifications)
+          ? pendingResult.value.notifications
+          : []
       } else {
         errors.push('pending')
       }
       if (historyResult.status === 'fulfilled') {
-        notificationHistory.value = Array.isArray(historyResult.value.history) ? historyResult.value.history : []
+        notificationHistory.value = Array.isArray(historyResult.value.history)
+          ? historyResult.value.history
+          : []
       } else {
         errors.push('history')
       }
@@ -369,21 +360,13 @@ export const useEsimStore = defineStore('esim', () => {
     return result
   }
 
-  async function saveNote(): Promise<void> {
-    if (!noteICCID.value) return
-    const profile = overview.value?.profiles.find((item) => item.iccid === noteICCID.value)
-    const label = (labels.value[noteICCID.value] || '').trim()
-    if (label && label !== profile?.label) await api.esimRename(noteICCID.value, label)
-    await api.saveEsimNote(noteICCID.value, {
-      label: noteLabel.value.trim(),
-      phone: notePhone.value.trim(),
-      tags: noteTags.value.trim(),
-    })
-    notes.value[noteICCID.value] = {
-      label: noteLabel.value.trim(),
-      phone: notePhone.value.trim(),
-      tags: noteTags.value.trim(),
-    }
+  async function saveProfileName(): Promise<void> {
+    if (!settingsICCID.value) return
+    const profile = overview.value?.profiles.find((item) => item.iccid === settingsICCID.value)
+    const label = (labels.value[settingsICCID.value] || '').trim()
+    if (!label || label === profile?.label) return
+    await api.esimRename(settingsICCID.value, label)
+    if (profile) profile.label = label
   }
 
   async function refreshAfterOperation(): Promise<void> {
@@ -396,19 +379,71 @@ export const useEsimStore = defineStore('esim', () => {
   })
 
   return {
-    overview, overviewError, notesError, healthError, notificationsError, notificationsLoading,
-    activeWorkspace, notificationMode, profileQuery, profileStateFilter, notificationQuery,
-    notificationEventFilter, notificationProfileFilter, notificationStateFilter, focusedICCID,
-    downloadOpen, downloadPhase, settingsOpen, settingsICCID, activationCode, confirmationCode,
-    matchingID, labels, operationID, operationType, reloadedOperationID, notes, health, noteICCID, noteLabel,
-    notePhone, noteTags, notifications, notificationHistory, notificationActionState,
-    confirmationOpen, confirmationOperationID, confirmationInput, confirmationBusy, operation,
-    operationActive, notificationBusy, filteredProfiles, filteredNotifications,
-    filteredNotificationHistory, notificationEvents, profileNotificationFilter, localProfileNote,
-    noteSummary, load, refreshSnapshots, refreshAfterOperation, openDownload, closeDownload,
-    resetDownloadForRetry, openSettings, closeSettings, showWorkspace, showProfileNotifications,
-    showNotificationProfile, clearNotificationProfileFilter, enable, disable, remove, download,
-    saveNote, loadNotifications, processNotification, removeNotification, submitConfirmationCode,
+    overview,
+    overviewError,
+    metadataError,
+    healthError,
+    notificationsError,
+    notificationsLoading,
+    activeWorkspace,
+    notificationMode,
+    profileQuery,
+    profileStateFilter,
+    notificationQuery,
+    notificationEventFilter,
+    notificationProfileFilter,
+    notificationStateFilter,
+    focusedICCID,
+    downloadOpen,
+    downloadPhase,
+    settingsOpen,
+    settingsICCID,
+    activationCode,
+    confirmationCode,
+    matchingID,
+    labels,
+    operationID,
+    operationType,
+    reloadedOperationID,
+    health,
+    notifications,
+    notificationHistory,
+    notificationActionState,
+    confirmationOpen,
+    confirmationOperationID,
+    confirmationInput,
+    confirmationBusy,
+    operation,
+    operationActive,
+    notificationBusy,
+    filteredProfiles,
+    filteredNotifications,
+    filteredNotificationHistory,
+    notificationEvents,
+    profileNotificationFilter,
+    localSimProfile,
+    simProfileSummary,
+    load,
+    refreshSnapshots,
+    refreshAfterOperation,
+    openDownload,
+    closeDownload,
+    resetDownloadForRetry,
+    openSettings,
+    closeSettings,
+    showWorkspace,
+    showProfileNotifications,
+    showNotificationProfile,
+    clearNotificationProfileFilter,
+    enable,
+    disable,
+    remove,
+    download,
+    saveProfileName,
+    loadNotifications,
+    processNotification,
+    removeNotification,
+    submitConfirmationCode,
     declineConfirmationCode,
   }
 })

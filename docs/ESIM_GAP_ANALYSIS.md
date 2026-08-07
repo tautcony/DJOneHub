@@ -41,7 +41,7 @@
 - Profile 卡片显示状态、掩码 ICCID、SPN、Profile Class 和 DJOneHub 本地元数据；启用/停用是主状态操作，删除只对停用 Profile 提供并要求确认。
 - Notifications 将卡片待处理队列和本地 history 分开，继续使用单项 process/remove API，并支持本地过滤和 Profile 双向定位。
 - 下载流程统一手动激活码、二维码文件/剪贴板/拖放、确认码、matchingID、operation 进度和终态重试；二维码输入通过 `web/src/services/esimQr.ts` 共用解码路径。
-- API 契约保持不变：`GET /api/v1/esim`、`POST .../actions/{download,enable,disable,rename,delete}`、`GET /health`、`GET|PUT /notes`、通知和 operation 端点继续复用。
+- eSIM 设备操作继续使用 `GET /api/v1/esim`、`POST .../actions/{download,enable,disable,rename,delete}`、`GET /health`、通知和 operation 端点；本地 Profile 信息统一使用 `/api/v1/sim-profiles`。
 
 ### 1.4 Workbench redesign（2026-08-07）
 

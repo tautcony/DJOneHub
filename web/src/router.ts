@@ -1,11 +1,11 @@
-import { createRouter, createWebHistory } from 'vue-router'
+import { createRouter, createWebHistory, type RouteComponent } from 'vue-router'
 
 export type ViewID =
   | 'overview'
   | 'calls'
   | 'sms'
   | 'esim'
-  | 'simcards'
+  | 'sim-profiles'
   | 'network'
   | 'raw-at'
   | 'vowifi'
@@ -18,13 +18,27 @@ export const viewPaths: Record<ViewID, string> = {
   calls: '/calls',
   sms: '/sms',
   esim: '/esim',
-  simcards: '/simcards',
+  'sim-profiles': '/sim-profiles',
   network: '/network',
   'raw-at': '/raw-at',
   vowifi: '/vowifi',
   notifications: '/notifications',
   settings: '/settings',
   firmware: '/firmware',
+}
+
+const viewComponents: Record<ViewID, RouteComponent> = {
+  overview: () => import('./views/OverviewView.vue'),
+  calls: () => import('./views/CallsView.vue'),
+  sms: () => import('./views/SmsView.vue'),
+  esim: () => import('./views/EsimView.vue'),
+  'sim-profiles': () => import('./views/SimProfilesView.vue'),
+  network: () => import('./views/NetworkView.vue'),
+  'raw-at': () => import('./views/RawAtView.vue'),
+  vowifi: () => import('./views/VowifiView.vue'),
+  notifications: () => import('./views/NotificationsView.vue'),
+  settings: () => import('./views/SettingsView.vue'),
+  firmware: () => import('./views/FirmwareView.vue'),
 }
 
 export function viewFromRoute(value: unknown): ViewID {
@@ -38,8 +52,7 @@ export const router = createRouter({
     ...Object.entries(viewPaths).map(([name, path]) => ({
       path,
       name,
-      component: () =>
-        import(`./views/${name === 'raw-at' ? 'RawAt' : name[0].toUpperCase() + name.slice(1)}View.vue`),
+      component: viewComponents[name as ViewID],
     })),
     { path: '/:pathMatch(.*)*', redirect: viewPaths.overview },
   ],

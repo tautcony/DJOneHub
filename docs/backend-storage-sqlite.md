@@ -35,8 +35,7 @@ editing an existing table in place.
 Startup migration order:
 
 1. Open the database and create the schema.
-2. Import `profile-notes.json` into the `profile_notes` settings namespace when
-   that namespace does not exist.
+2. Import legacy `profile-notes.json` when upgrading an older installation.
 3. Import `notification-preferences.json` into the
    `notification_preferences` namespace when absent.
 4. Import `sms-sent-history.json` as outbound rows. Inserts are deduplicated by
@@ -65,12 +64,35 @@ ownership boundary; services do not read or write another service's namespace.
 
 Current namespaces:
 
-- `profile_notes`: device profile notes keyed by profile/device identifier.
 - `notification_preferences`: notification mode, sound, and related policy
   settings.
 
 Writes use an SQLite upsert, so a settings update is atomic for the complete
 document.
+
+### `sim_profiles`
+
+This table is the canonical ICCID-keyed registry for physical SIMs and eSIM
+Profiles. Device observations and user-maintained metadata are stored in
+separate columns so a refresh cannot overwrite local edits.
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `iccid` | `TEXT` | Primary key. |
+| `imsi` | `TEXT` | Device-observed IMSI. |
+| `msisdn` | `TEXT` | Device-observed phone number. |
+| `name` | `TEXT` | User-maintained name. |
+| `local_phone` | `TEXT` | User-maintained phone number. |
+| `notes` | `TEXT` | User-maintained notes. |
+| `tags` | `TEXT` | User-maintained tags. |
+| `profile_type` | `TEXT` | `physical`, `esim`, or `unknown`. |
+| `first_seen_at` | `TEXT` | First observation time in UTC. |
+| `last_seen_at` | `TEXT` | Latest observation time in UTC. |
+| `updated_at` | `TEXT` | Latest local or observed update time in UTC. |
+
+Schema migration v6 transactionally imports the former `sim_cards` rows and
+the legacy `app_settings.profile_notes` document into `sim_profiles`. The old
+settings namespace is removed only after a successful commit.
 
 ### `sms_messages`
 
@@ -132,4 +154,3 @@ mechanism. Copy the database together with its `-wal` and `-shm` files when the
 process is running. The old JSON files are retained after migration as a
 fallback source. Restoring a database requires preserving file permissions
 (`0700` for the directory and `0600` for the database where supported).
-

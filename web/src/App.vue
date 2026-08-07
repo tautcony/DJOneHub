@@ -13,7 +13,7 @@ import { useDeviceStore } from './stores/device'
 import { useEsimStore } from './stores/esim'
 import { useNetworkStore } from './stores/network'
 import { useSmsStore } from './stores/sms'
-import { useSimCardsStore } from './stores/simcards'
+import { useSimProfilesStore } from './stores/simprofiles'
 import { useVowifiStore } from './stores/vowifi'
 import type {
   CallStatus,
@@ -25,6 +25,7 @@ import type {
   NotificationPreferences,
   OperationStatus,
   StartupStatus,
+  SimProfile,
 } from './types'
 import AppShell, { type ShellNavGroup } from './components/AppShell.vue'
 import PageHeader from './components/PageHeader.vue'
@@ -87,7 +88,7 @@ const esimStore = useEsimStore()
 const {
   overview: esim,
   overviewError: esimOverviewError,
-  notesError: esimNotesError,
+  metadataError: esimMetadataError,
   healthError: esimHealthError,
   notificationsError: esimNotificationsError,
   notificationsLoading: esimNotificationsLoading,
@@ -124,10 +125,6 @@ const {
   confirmationOperationID: esimConfirmationOperationID,
   confirmationInput: esimConfirmationInput,
   confirmationBusy: esimConfirmationBusy,
-  noteICCID,
-  noteLabel,
-  notePhone,
-  noteTags,
 } = storeToRefs(esimStore)
 
 const networkStore = useNetworkStore()
@@ -141,8 +138,8 @@ const {
 } = storeToRefs(networkStore)
 type TrafficRange = 'day' | 'week' | 'month'
 
-const simCardsStore = useSimCardsStore()
-const { cards: simCards, busy: simCardsBusy } = storeToRefs(simCardsStore)
+const simProfilesStore = useSimProfilesStore()
+const { profiles: simProfiles, busy: simProfilesBusy } = storeToRefs(simProfilesStore)
 
 const vowifiStore = useVowifiStore()
 const { status: vowifi, operation: vowifiOperation } = storeToRefs(vowifiStore)
@@ -210,7 +207,7 @@ const navGroups = computed<ShellNavGroup[]>(() => [
       { id: 'raw-at', label: t('nav.rawAt'), capability: 'raw_at' },
       { id: 'firmware', label: t('nav.firmware'), capability: 'raw_at' },
       ...(showNotificationDebug.value ? [{ id: 'notifications', label: t('nav.notifications') }] : []),
-      { id: 'simcards', label: t('nav.simcards') },
+      { id: 'sim-profiles', label: t('nav.simProfiles') },
       { id: 'settings', label: t('nav.settings') },
     ],
   },
@@ -420,47 +417,41 @@ async function loadEsim() {
   }
 }
 
-async function loadSimCards() {
+async function loadSimProfiles() {
   try {
-    await simCardsStore.load()
+    await simProfilesStore.load()
     viewError.value = ''
   } catch (error) {
-    viewError.value = errorText(error, 'simcards.unableLoad')
+    viewError.value = errorText(error, 'simProfiles.unableLoad')
   } finally {
-    markViewLoaded('simcards')
+    markViewLoaded('sim-profiles')
   }
 }
 
-async function createSimCard(input: {
-  iccid: string
-  imsi: string
-  msisdn: string
-  name: string
-  notes: string
-}) {
+async function createSimProfile(input: Parameters<typeof simProfilesStore.create>[0]) {
   try {
-    await simCardsStore.create(input)
-    notifySuccess(t('simcards.saved'))
+    await simProfilesStore.create(input)
+    notifySuccess(t('simProfiles.saved'))
   } catch (error) {
-    notifyError('view', errorText(error, 'simcards.unableSave'))
+    notifyError('view', errorText(error, 'simProfiles.unableSave'))
   }
 }
 
-async function updateSimCard(iccid: string, input: { name: string; notes: string; msisdn: string }) {
+async function updateSimProfile(iccid: string, input: Parameters<typeof simProfilesStore.update>[1]) {
   try {
-    await simCardsStore.update(iccid, input)
-    notifySuccess(t('simcards.saved'))
+    await simProfilesStore.update(iccid, input)
+    notifySuccess(t('simProfiles.saved'))
   } catch (error) {
-    notifyError('view', errorText(error, 'simcards.unableSave'))
+    notifyError('view', errorText(error, 'simProfiles.unableSave'))
   }
 }
 
-async function deleteSimCard(iccid: string) {
+async function deleteSimProfile(iccid: string) {
   try {
-    await simCardsStore.remove(iccid)
-    notifySuccess(t('simcards.deleted'))
+    await simProfilesStore.remove(iccid)
+    notifySuccess(t('simProfiles.deleted'))
   } catch (error) {
-    notifyError('view', errorText(error, 'simcards.unableDelete'))
+    notifyError('view', errorText(error, 'simProfiles.unableDelete'))
   }
 }
 
@@ -529,11 +520,11 @@ watch(calls, (status) => {
     closeCallsDial()
   }
 })
-function localProfileNote(iccid?: string) {
-  return esimStore.localProfileNote(iccid)
+function localSimProfile(iccid?: string) {
+  return simProfilesStore.find(iccid)
 }
-function noteSummary(note?: { label?: string; phone?: string; tags?: string; profile_class?: string }) {
-  return esimStore.noteSummary(note)
+function simProfileSummary(profile?: SimProfile) {
+  return profile ? [profile.name, profile.local_phone, profile.tags].filter(Boolean).join(' · ') : ''
 }
 function openEsimSettings(iccid?: string) {
   esimStore.openSettings(iccid)
@@ -541,14 +532,13 @@ function openEsimSettings(iccid?: string) {
 function closeEsimSettings() {
   esimStore.closeSettings()
 }
-async function saveProfileNote() {
-  if (!noteICCID.value) return
+async function saveEsimProfileName() {
   try {
-    await esimStore.saveNote()
-    notifySuccess(t('esim.noteSaved'))
+    await esimStore.saveProfileName()
+    notifySuccess(t('esim.profileSaved'))
     closeEsimSettings()
   } catch (error) {
-    notifyError('view', errorText(error, 'esim.unableNote'))
+    notifyError('view', errorText(error, 'esim.unableRename'))
   }
 }
 function isActiveView(view: ViewID) {
@@ -1080,10 +1070,10 @@ const viewLoaders: Partial<Record<ViewID, () => Promise<void>>> = {
   overview: async () => {
     await Promise.all([device.refresh(), loadOverviewNetwork(), loadOverviewTraffic(), loadEsim()])
   },
-  calls: async () => Promise.all([loadCalls(), simCardsStore.load()]).then(() => undefined),
-  sms: async () => Promise.all([loadSMS(), simCardsStore.load()]).then(() => undefined),
+  calls: async () => Promise.all([loadCalls(), simProfilesStore.load()]).then(() => undefined),
+  sms: async () => Promise.all([loadSMS(), simProfilesStore.load()]).then(() => undefined),
   esim: loadEsim,
-  simcards: loadSimCards,
+  'sim-profiles': loadSimProfiles,
   network: loadNetwork,
   vowifi: loadVowifi,
   firmware: loadFirmware,
@@ -1286,7 +1276,7 @@ provide(viewContextKey, {
   enableEsim,
   esim,
   esimOverviewError,
-  esimNotesError,
+  esimMetadataError,
   esimHealthError,
   esimNotificationsError,
   esimNotificationsLoading,
@@ -1323,20 +1313,17 @@ provide(viewContextKey, {
   esimNotificationBusy,
   esimNotificationActionState,
   esimHealth,
-  simCards,
-  simCardsBusy,
-  createSimCard,
-  updateSimCard,
-  deleteSimCard,
+  simProfiles,
+  simProfilesBusy,
+  createSimProfile,
+  updateSimProfile,
+  deleteSimProfile,
   esimConfirmationOpen,
   esimConfirmationOperationID,
   esimConfirmationInput,
   esimConfirmationBusy,
-  localProfileNote,
-  noteLabel,
-  notePhone,
-  noteTags,
-  noteSummary,
+  localSimProfile,
+  simProfileSummary,
   openEsimDownload,
   resetEsimDownloadForRetry: esimStore.resetDownloadForRetry,
   openEsimSettings,
@@ -1346,7 +1333,7 @@ provide(viewContextKey, {
   clearEsimNotificationProfileFilter: esimStore.clearNotificationProfileFilter,
   refreshEsimSnapshots: esimStore.refreshSnapshots,
   refreshEsimAfterOperation: esimStore.refreshAfterOperation,
-  saveProfileNote,
+  saveEsimProfileName,
   checkNetwork,
   loadNetwork,
   network,
