@@ -6,9 +6,12 @@ import "context"
 // 能力声明（Capabilities）依赖该接口的类型断言，漏实现任一方法都会导致
 // 运行期 eSIM 能力静默消失（capability_not_supported / 422）。
 var (
-	_ ESIMPort = (*ATBackend)(nil)
-	_ ESIMPort = (*CommandBackend)(nil)
-	_ ESIMPort = (*BusinessAdapter)(nil)
+	_ ESIMPort        = (*ATBackend)(nil)
+	_ ESIMPort        = (*CommandBackend)(nil)
+	_ ESIMPort        = (*BusinessAdapter)(nil)
+	_ ESIMStoragePort = (*ATBackend)(nil)
+	_ ESIMStoragePort = (*CommandBackend)(nil)
+	_ ESIMStoragePort = (*BusinessAdapter)(nil)
 )
 
 type Profile struct {
@@ -28,7 +31,7 @@ type Profile struct {
 // ConfirmationCodeRequest 是双向请求：SM-DP+ 要求确认码时阻塞等待用户输入，
 // canceled 为 true 表示用户拒绝或超时，调用方应按取消处理。
 type ESIMDownloadOptions struct {
-	Progress               func(step string, pct int, msg string)
+	Progress                func(step string, pct int, msg string)
 	ConfirmationCodeRequest func() (code string, canceled bool, err error)
 }
 
@@ -52,6 +55,17 @@ type ESIMPort interface {
 	ListNotifications(context.Context) ([]NotificationItem, error)
 	ProcessNotification(context.Context, int64) error
 	RemoveNotification(context.Context, int64) error
+}
+
+// ESIMStorageInfo reports the writable storage remaining on the eUICC. It is
+// optional so backends without an EUICCInfo implementation retain eSIM support.
+type ESIMStorageInfo struct {
+	FreeNvramBytes int32  `json:"free_nvram_bytes"`
+	FreeNvram      string `json:"free_nvram"`
+}
+
+type ESIMStoragePort interface {
+	ESIMStorage(context.Context) (ESIMStorageInfo, error)
 }
 
 type NetworkPort interface {

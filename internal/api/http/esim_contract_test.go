@@ -107,6 +107,10 @@ func (b *overviewContractBackend) Profiles(context.Context) ([]backend.Profile, 
 	return b.profiles, nil
 }
 
+func (b *overviewContractBackend) ESIMStorage(context.Context) (backend.ESIMStorageInfo, error) {
+	return backend.ESIMStorageInfo{FreeNvramBytes: 220160, FreeNvram: "215.00 KB"}, nil
+}
+
 func (b *overviewContractBackend) Radio(context.Context) (backend.RadioState, error) {
 	if b.radioErr != nil {
 		return backend.RadioState{}, b.radioErr
@@ -121,6 +125,7 @@ func TestEsimOverviewContractStates(t *testing.T) {
 		wantType  string
 		wantEID   string
 		wantCount int
+		wantFree  string
 	}{
 		{
 			name: "readable euicc with profiles",
@@ -128,7 +133,7 @@ func TestEsimOverviewContractStates(t *testing.T) {
 				contractBackend: &contractBackend{caps: allContractCapabilities()},
 				profiles:        []backend.Profile{{ICCID: "8901000000000000000", State: "enabled"}},
 			},
-			wantType: "euicc", wantEID: "89049032000000000000000000000000", wantCount: 1,
+			wantType: "euicc", wantEID: "89049032000000000000000000000000", wantCount: 1, wantFree: "215.00 KB",
 		},
 		{
 			name: "readable euicc with no profiles",
@@ -136,7 +141,7 @@ func TestEsimOverviewContractStates(t *testing.T) {
 				contractBackend: &contractBackend{caps: allContractCapabilities()},
 				profiles:        []backend.Profile{},
 			},
-			wantType: "euicc", wantEID: "89049032000000000000000000000000", wantCount: 0,
+			wantType: "euicc", wantEID: "89049032000000000000000000000000", wantCount: 0, wantFree: "215.00 KB",
 		},
 		{
 			name: "unreadable euicc",
@@ -159,6 +164,7 @@ func TestEsimOverviewContractStates(t *testing.T) {
 			var body struct {
 				CardType string            `json:"card_type"`
 				EID      string            `json:"eid"`
+				Free     string            `json:"free_nvram"`
 				Profiles []backend.Profile `json:"profiles"`
 			}
 			if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
@@ -166,6 +172,9 @@ func TestEsimOverviewContractStates(t *testing.T) {
 			}
 			if body.CardType != tc.wantType || body.EID != tc.wantEID || len(body.Profiles) != tc.wantCount {
 				t.Fatalf("overview = %#v, want type=%q eid=%q profiles=%d", body, tc.wantType, tc.wantEID, tc.wantCount)
+			}
+			if body.Free != tc.wantFree {
+				t.Fatalf("free_nvram = %q, want %q", body.Free, tc.wantFree)
 			}
 			registered, err := server.config.SimProfiles.List(context.Background())
 			if err != nil {

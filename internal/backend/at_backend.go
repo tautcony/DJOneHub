@@ -72,6 +72,14 @@ func (a *ATBackend) Profiles(ctx context.Context) ([]Profile, error) {
 	return a.esimPort.Profiles(ctx)
 }
 
+func (a *ATBackend) ESIMStorage(ctx context.Context) (ESIMStorageInfo, error) {
+	port, ok := a.esimPort.(ESIMStoragePort)
+	if !ok {
+		return ESIMStorageInfo{}, commandUnsupported("esim", "esim_storage")
+	}
+	return port.ESIMStorage(ctx)
+}
+
 func (a *ATBackend) Download(ctx context.Context, activationCode, confirmationCode, matchingID string, opts *ESIMDownloadOptions) error {
 	if a.esimPort == nil {
 		return commandUnsupported("esim", "esim_download")

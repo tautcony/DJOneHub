@@ -108,6 +108,23 @@ func (p *esimPort) Profiles(ctx context.Context) ([]backend.Profile, error) {
 	return profiles, nil
 }
 
+func (p *esimPort) ESIMStorage(ctx context.Context) (backend.ESIMStorageInfo, error) {
+	if p == nil || p.manager == nil {
+		return backend.ESIMStorageInfo{}, fmt.Errorf("eSIM manager is unavailable")
+	}
+	info, err := p.manager.GetEUICCChipInfo(ctx, false)
+	if err != nil {
+		return backend.ESIMStorageInfo{}, err
+	}
+	if info == nil || len(info.EIDs) == 0 {
+		return backend.ESIMStorageInfo{}, fmt.Errorf("eUICC storage information is unavailable")
+	}
+	return backend.ESIMStorageInfo{
+		FreeNvramBytes: info.EIDs[0].FreeNvramBytes,
+		FreeNvram:      info.EIDs[0].FreeNvram,
+	}, nil
+}
+
 func (p *esimPort) Download(ctx context.Context, activationCode, confirmationCode, matchingID string, opts *backend.ESIMDownloadOptions) error {
 	if p == nil || p.manager == nil {
 		return fmt.Errorf("eSIM manager is unavailable")

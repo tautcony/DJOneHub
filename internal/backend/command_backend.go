@@ -335,6 +335,14 @@ func (b *CommandBackend) Profiles(ctx context.Context) ([]Profile, error) {
 	return b.esimPort.Profiles(ctx)
 }
 
+func (b *CommandBackend) ESIMStorage(ctx context.Context) (ESIMStorageInfo, error) {
+	port, ok := b.esimPort.(ESIMStoragePort)
+	if !ok {
+		return ESIMStorageInfo{}, commandUnsupported("esim", "esim_storage")
+	}
+	return port.ESIMStorage(ctx)
+}
+
 func (b *CommandBackend) Download(ctx context.Context, activationCode, confirmationCode, matchingID string, opts *ESIMDownloadOptions) error {
 	if b.esimPort == nil {
 		return commandUnsupported("esim", "esim_download")

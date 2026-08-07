@@ -95,7 +95,14 @@ func (s *Service) Overview(ctx context.Context) (map[string]any, error) {
 			log.Printf("observe eSIM profiles: %v", err)
 		}
 	}
-	return map[string]any{"card_type": "euicc", "eid": eid, "profiles": profiles}, nil
+	result := map[string]any{"card_type": "euicc", "eid": eid, "profiles": profiles}
+	if storagePort, ok := port.(backend.ESIMStoragePort); ok {
+		if storage, storageErr := storagePort.ESIMStorage(ctx); storageErr == nil {
+			result["free_nvram_bytes"] = storage.FreeNvramBytes
+			result["free_nvram"] = storage.FreeNvram
+		}
+	}
+	return result, nil
 }
 
 func isEUICCUnavailableProbeError(err error) bool {

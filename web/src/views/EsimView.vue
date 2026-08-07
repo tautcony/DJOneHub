@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   CheckOutlined,
@@ -85,11 +85,13 @@ const {
 
 const qrInput = ref<HTMLInputElement | null>(null)
 const qrError = ref('')
+const qrPreviewURL = ref('')
+const qrPreviewName = ref('')
 const dismissedOperationID = ref('')
 
 const activeProfile = computed(() => esim.value?.profiles.find((profile) => profile.state === 'enabled'))
-const showOperationDock = computed(() =>
-  !!esimOperation.value && esimOperation.value.operation_id !== dismissedOperationID.value,
+const showOperationDock = computed(
+  () => !!esimOperation.value && esimOperation.value.operation_id !== dismissedOperationID.value,
 )
 const healthLabel = computed(() => {
   if (esimHealthError.value) return t('esim.healthUnavailable')
@@ -125,8 +127,15 @@ function dismissOperationDock() {
   dismissedOperationID.value = esimOperation.value?.operation_id || ''
 }
 
+function setQRPreview(file: File) {
+  if (qrPreviewURL.value) URL.revokeObjectURL(qrPreviewURL.value)
+  qrPreviewURL.value = URL.createObjectURL(file)
+  qrPreviewName.value = file.name || t('esim.pastedQRImage')
+}
+
 async function decodeQRFromFile(file: File) {
   qrError.value = ''
+  setQRPreview(file)
   const result = await decodeEsimActivationImage(file)
   if (result) {
     esimActivationCode.value = result
@@ -134,6 +143,10 @@ async function decodeQRFromFile(file: File) {
     qrError.value = t('esim.qrDecodeFailed')
   }
 }
+
+onBeforeUnmount(() => {
+  if (qrPreviewURL.value) URL.revokeObjectURL(qrPreviewURL.value)
+})
 
 function pickQRImage() {
   qrError.value = ''
@@ -234,6 +247,10 @@ function notificationProfile(item: EsimNotification | EsimNotificationHistory) {
           <div class="esim-summary-item">
             <span>{{ t('esim.pendingCount') }}</span
             ><strong>{{ esimNotifications.length }}</strong>
+          </div>
+          <div class="esim-summary-item">
+            <span>{{ t('esim.freeCardSpace') }}</span
+            ><strong>{{ esim.free_nvram || t('esim.spaceUnavailable') }}</strong>
           </div>
         </div>
         <a-alert
@@ -600,10 +617,18 @@ function notificationProfile(item: EsimNotification | EsimNotificationHistory) {
             /><a-button size="small" @click="pickQRImage">{{ t('esim.scanQR') }}</a-button
             ><span>{{ t('esim.dropQR') }}</span>
           </div>
+          <figure v-if="qrPreviewURL" class="qr-preview">
+            <img :src="qrPreviewURL" :alt="t('esim.qrPreview')" />
+            <figcaption>{{ qrPreviewName }}</figcaption>
+          </figure>
           <p v-if="qrError" class="qr-error">{{ qrError }}</p>
           <a-form-item :label="t('esim.confirmationCode')"
-            ><a-input v-model:value="esimConfirmationCode" /></a-form-item
-          ><a-form-item :label="t('esim.matchingId')"><a-input v-model:value="esimMatchingID" /></a-form-item>
+            ><a-input
+              v-model:value="esimConfirmationCode"
+              :placeholder="t('esim.confirmationCodePlaceholder')" /></a-form-item
+          ><a-form-item :label="t('esim.matchingId')"
+            ><a-input v-model:value="esimMatchingID" :placeholder="t('esim.matchingIdPlaceholder')"
+          /></a-form-item>
           <div class="modal-actions">
             <a-button @click="closeEsimDownload">{{ t('common.cancel') }}</a-button
             ><a-button

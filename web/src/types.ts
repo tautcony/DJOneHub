@@ -60,6 +60,8 @@ export interface SMSMessage {
 export interface EsimOverview {
   card_type?: 'physical_sim' | 'euicc' | 'unknown'
   eid?: string
+  free_nvram_bytes?: number
+  free_nvram?: string
   probe_error?: string
   message?: string
   profiles: Array<{

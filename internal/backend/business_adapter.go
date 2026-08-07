@@ -325,6 +325,14 @@ func (a *BusinessAdapter) Profiles(ctx context.Context) ([]Profile, error) {
 	return port.Profiles(ctx)
 }
 
+func (a *BusinessAdapter) ESIMStorage(ctx context.Context) (ESIMStorageInfo, error) {
+	port, ok := a.legacy.(ESIMStoragePort)
+	if !ok {
+		return ESIMStorageInfo{}, unsupported("esim", "esim_storage")
+	}
+	return port.ESIMStorage(ctx)
+}
+
 func (a *BusinessAdapter) Download(ctx context.Context, activationCode, confirmationCode, matchingID string, opts *ESIMDownloadOptions) error {
 	port, ok := a.legacy.(ESIMPort)
 	if !ok {

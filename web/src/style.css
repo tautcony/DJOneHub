@@ -1748,7 +1748,7 @@ button:disabled {
 }
 .esim-summary-grid {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 1px;
   margin-top: 22px;
   overflow: hidden;
@@ -1953,6 +1953,34 @@ button:disabled {
 .qr-file-input {
   display: none;
 }
+.qr-preview {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 12px;
+  margin: -4px 0 14px;
+  padding: 10px;
+  border: 1px solid var(--ui-border);
+  border-radius: 6px;
+  background: var(--ui-surface-muted);
+}
+.qr-preview img {
+  width: 72px;
+  height: 72px;
+  flex: 0 0 72px;
+  border: 1px solid var(--ui-border);
+  border-radius: 4px;
+  object-fit: contain;
+  background: #fff;
+}
+.qr-preview figcaption {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ui-text-secondary);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .qr-error {
   margin: -6px 0 12px;
   color: var(--ui-danger);
@@ -2000,9 +2028,6 @@ button:disabled {
   }
   .esim-summary-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-  .esim-summary-item:last-child {
-    grid-column: 1 / -1;
   }
   .esim-filter-row,
   .notification-filters {
