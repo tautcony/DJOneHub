@@ -283,6 +283,9 @@ type Manager struct {
 	probeMu                 sync.Mutex
 	probeICCID              string
 	probeEUICC              *bool
+	scanFailureICCID        string
+	scanFailureErr          error
+	scanFailureUntil        time.Time
 
 	// clearChannels 是在首轮 AID 扫描前清理逐辑通道的回调（可选）
 	clearChannels func()
@@ -320,10 +323,6 @@ type Manager struct {
 	// 从而允许 BPP 安装阶段的长时延迟得到正确处理而不被默认超时中断。
 	downloadCtx atomic.Pointer[context.Context]
 }
-
-// ErrNonEUICC means the current card was readable but its EF_DIR contained no
-// supported ISD-R application. It is distinct from a transport/not-ready error.
-var ErrNonEUICC = errors.New("current card is not an eUICC")
 
 // ErrOperationInProgress 表示当前有写操作（下载/切换/删除）正在进行中
 // 读操作（GetProfiles / GetEsimOverview）在检测到此情况时立即降级，不进入 SIM 卡通道
@@ -585,11 +584,7 @@ func (m *Manager) probeCard(ctx context.Context) error {
 	}
 	m.probeMu.Lock()
 	if m.probeEUICC != nil && iccid != "" && iccid == m.probeICCID {
-		isEUICC := *m.probeEUICC
 		m.probeMu.Unlock()
-		if !isEUICC {
-			return ErrNonEUICC
-		}
 		return nil
 	}
 	m.probeMu.Unlock()
@@ -603,10 +598,52 @@ func (m *Manager) probeCard(ctx context.Context) error {
 	m.probeEUICC = &isEUICC
 	m.probeMu.Unlock()
 	if !isEUICC {
-		logger.Info("当前 SIM 已确认不是 eUICC", "device", m.deviceID)
-		return ErrNonEUICC
+		logger.Debug("EF_DIR 未列出 ISD-R，结果不足以排除可插拔 eUICC", "device", m.deviceID)
 	}
 	return nil
+}
+
+const aidScanFailureCooldown = 15 * time.Second
+
+func (m *Manager) currentProbeICCID(ctx context.Context) string {
+	if m == nil || m.iccidProvider == nil {
+		return ""
+	}
+	iccid, _ := m.iccidProvider(ctx)
+	return strings.TrimSpace(iccid)
+}
+
+func (m *Manager) cachedAIDScanFailure(ctx context.Context) error {
+	iccid := m.currentProbeICCID(ctx)
+	if iccid == "" {
+		return nil
+	}
+	m.probeMu.Lock()
+	defer m.probeMu.Unlock()
+	if iccid == m.scanFailureICCID && time.Now().Before(m.scanFailureUntil) {
+		return m.scanFailureErr
+	}
+	return nil
+}
+
+func (m *Manager) rememberAIDScanFailure(ctx context.Context, err error) {
+	iccid := m.currentProbeICCID(ctx)
+	if iccid == "" || err == nil {
+		return
+	}
+	m.probeMu.Lock()
+	m.scanFailureICCID = iccid
+	m.scanFailureErr = err
+	m.scanFailureUntil = time.Now().Add(aidScanFailureCooldown)
+	m.probeMu.Unlock()
+}
+
+func (m *Manager) clearAIDScanFailure() {
+	m.probeMu.Lock()
+	m.scanFailureICCID = ""
+	m.scanFailureErr = nil
+	m.scanFailureUntil = time.Time{}
+	m.probeMu.Unlock()
 }
 
 func (m *Manager) SetSmartCardChannelFactory(factory func() (driver.SmartCardChannel, error)) {
@@ -935,6 +972,10 @@ func (m *Manager) forEachEUICC(ctx context.Context, fn func(client *lpa.Client, 
 	if err := m.probeCard(ctx); err != nil {
 		return err
 	}
+	if err := m.cachedAIDScanFailure(ctx); err != nil {
+		logger.Debug("复用当前 ICCID 的 eUICC 探测失败结果", "device", m.deviceID)
+		return err
+	}
 
 	m.preCleanChannels()
 
@@ -960,6 +1001,7 @@ func (m *Manager) forEachEUICC(ctx context.Context, fn func(client *lpa.Client, 
 		"candidate_aids", aidHexesForLog(aids))
 	outcome := m.doForEachEUICC(ctx, aids, fn)
 	if outcome.foundAny {
+		m.clearAIDScanFailure()
 		logScanComplete(outcome)
 		return outcome.lastErr
 	}
@@ -979,6 +1021,7 @@ func (m *Manager) forEachEUICC(ctx context.Context, fn func(client *lpa.Client, 
 		aids = plan.CloneAIDs()
 		outcome = m.doForEachEUICC(ctx, aids, fn)
 		if outcome.foundAny {
+			m.clearAIDScanFailure()
 			logScanComplete(outcome)
 			return outcome.lastErr
 		}
@@ -998,7 +1041,9 @@ func (m *Manager) forEachEUICC(ctx context.Context, fn func(client *lpa.Client, 
 		"fallback", fallbackUsed,
 		"elapsed_ms", time.Since(scanStarted).Milliseconds(),
 		"err", msg)
-	return errors.New(msg)
+	err := errors.New(msg)
+	m.rememberAIDScanFailure(ctx, err)
+	return err
 }
 
 // waitForWriteCompletion 等待当前写操作完成：先订阅完成通知 channel 再尝试

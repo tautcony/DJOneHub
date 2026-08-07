@@ -2,7 +2,6 @@ package esim
 
 import (
 	"context"
-	"errors"
 	"log"
 	"strings"
 	"sync"
@@ -14,7 +13,6 @@ import (
 	"github.com/iniwex5/vohive/internal/backend"
 	domain "github.com/iniwex5/vohive/internal/domain/device"
 	derrors "github.com/iniwex5/vohive/internal/domain/errors"
-	coreesim "github.com/iniwex5/vohive/internal/esim"
 	"github.com/iniwex5/vohive/internal/runtime"
 	"github.com/iniwex5/vohive/internal/storage"
 )
@@ -78,13 +76,6 @@ func (s *Service) Overview(ctx context.Context) (map[string]any, error) {
 	}
 	eid, err := port.EID(ctx)
 	if err != nil {
-		if errors.Is(err, coreesim.ErrNonEUICC) {
-			return map[string]any{
-				"card_type": "physical",
-				"profiles":  []backend.Profile{},
-				"message":   "当前 SIM 卡不是 eUICC",
-			}, nil
-		}
 		if isEUICCUnavailableProbeError(err) {
 			return map[string]any{
 				"card_type":   "unknown",
@@ -119,7 +110,7 @@ func isEUICCUnavailableProbeError(err error) bool {
 		return false
 	}
 	message := strings.ToLower(err.Error())
-	return errors.Is(err, coreesim.ErrNonEUICC) || strings.Contains(message, "no euicc") ||
+	return strings.Contains(message, "no euicc") ||
 		(strings.Contains(message, "未发现任何 euicc") && strings.Contains(message, "at+ccho"))
 }
 

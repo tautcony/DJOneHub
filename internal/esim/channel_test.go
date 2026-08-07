@@ -2,7 +2,6 @@ package esim
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -11,7 +10,7 @@ import (
 	"github.com/iniwex5/vohive/internal/apduarbiter"
 )
 
-func TestATPortPhysicalSIMProbeSkipsAIDScanAndCachesByICCID(t *testing.T) {
+func TestATPortEFDirWithoutISDRFallsBackAndCachesScanFailure(t *testing.T) {
 	responses := []string{
 		`+CSIM: 4,"9000"`,
 		`+CSIM: 58,"621482054221000A018002000A83022F008A01058B032F06019000"`,
@@ -21,7 +20,7 @@ func TestATPortPhysicalSIMProbeSkipsAIDScanAndCachesByICCID(t *testing.T) {
 	command := func(cmd string, _ time.Duration) (string, error) {
 		commands = append(commands, cmd)
 		if strings.HasPrefix(cmd, "AT+CCHO=") {
-			t.Fatalf("physical SIM probe must not fall through to AID scan: %s", cmd)
+			return "", fmt.Errorf("AID not present")
 		}
 		if len(responses) == 0 {
 			return "", fmt.Errorf("unexpected command: %s", cmd)
@@ -38,12 +37,24 @@ func TestATPortPhysicalSIMProbeSkipsAIDScanAndCachesByICCID(t *testing.T) {
 	}
 	for i := 0; i < 2; i++ {
 		_, err = port.EID(context.Background())
-		if !errors.Is(err, ErrNonEUICC) {
-			t.Fatalf("EID() error = %v, want ErrNonEUICC", err)
+		if err == nil || !strings.Contains(err.Error(), "未发现任何 eUICC") {
+			t.Fatalf("EID() error = %v, want no-eUICC scan result", err)
 		}
 	}
-	if len(commands) != 3 {
-		t.Fatalf("commands = %v, want one three-command EF_DIR probe", commands)
+	if len(commands) != 13 {
+		t.Fatalf("commands = %v, want one EF_DIR probe plus one full AID scan", commands)
+	}
+}
+
+func TestEFDirWithoutISDRDoesNotRejectEUICC(t *testing.T) {
+	mgr := &Manager{
+		cardProbe: func(context.Context) (bool, error) { return false, nil },
+		iccidProvider: func(context.Context) (string, error) {
+			return "8986000000000000001", nil
+		},
+	}
+	if err := mgr.probeCard(context.Background()); err != nil {
+		t.Fatalf("probeCard() error = %v; EF_DIR absence is not proof of a physical SIM", err)
 	}
 }
 
