@@ -30,13 +30,13 @@ DJOneHub 的 macOS 用户发行入口只有 DMG。DMG 包含一个带原生 UI �
 Apple Silicon DMG：
 
 ```sh
-./scripts/build-macos.sh arm64 v0.1.5-preview
+./scripts/build-macos.sh arm64 v0.2.0
 ```
 
 Intel + Apple Silicon 通用 DMG：
 
 ```sh
-./scripts/build-macos.sh universal v0.1.5-preview
+./scripts/build-macos.sh universal v0.2.0
 ```
 
 构建结果：

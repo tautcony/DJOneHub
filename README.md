@@ -177,13 +177,13 @@ npm --prefix web run build
 构建 Apple Silicon DMG：
 
 ```sh
-./scripts/build-macos.sh arm64 v0.1.0-preview
+./scripts/build-macos.sh arm64 v0.2.0
 ```
 
 构建 Intel + Apple Silicon 通用 DMG：
 
 ```sh
-./scripts/build-macos.sh universal v0.1.0-preview
+./scripts/build-macos.sh universal v0.2.0
 ```
 
 libusb 源码包会缓存到 `dist/cache/libusb/`。需要强制重新下载时，在命令末尾添加 `--redownload`。
