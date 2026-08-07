@@ -188,6 +188,7 @@ const (
 	euiccSpecGuessSGP22Compat   = "sgp22_compatible"
 	euiccSpecConfidenceInferred = "inferred"
 	aidScanPolicyFullStatic     = aidScanPolicy("full_static")
+	aidScanPolicyDiscovered     = aidScanPolicy("discovered")
 )
 
 type aidScanPolicy string
@@ -288,6 +289,7 @@ type Manager struct {
 	opDone                      chan struct{}  // 写操作完成通知（替代 TryLock+Sleep 轮询）
 	chipInfoCache               *EUICCChipInfo // 芯片信息缓存（硬件信息基本不变）
 	overviewCache               *EsimOverview  // eSIM 总览缓存（跟随 Manager / Worker 实例）
+	profileSnapshotCache        *EsimOverview  // 公共 Profile 读取使用的轻量快照，不含富芯片信息
 	overviewLastErr             error
 	overviewReloading           bool
 	overviewGeneration          uint64
@@ -579,6 +581,34 @@ func (m *Manager) SeedDiscoveredEUICCs(infos []EUICCInfo) {
 }
 
 func (m *Manager) getEffectiveAIDPlan() aidScanPlan {
+	if m == nil {
+		return fullStaticAIDPlan()
+	}
+	m.cacheMu.RLock()
+	discovered := cloneEUICCInfoList(m.discoveredEUICCs)
+	m.cacheMu.RUnlock()
+
+	aids := make([][]byte, 0, len(discovered))
+	seen := make(map[string]struct{}, len(discovered))
+	for _, info := range discovered {
+		normalized, ok := normalizeEUICCInfo(info)
+		if !ok || len(normalized.AID) == 0 {
+			continue
+		}
+		key := strings.ToUpper(hex.EncodeToString(normalized.AID))
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		aids = append(aids, append([]byte(nil), normalized.AID...))
+	}
+	if len(aids) == 0 {
+		return fullStaticAIDPlan()
+	}
+	return aidScanPlan{Policy: aidScanPolicyDiscovered, AIDs: aids}
+}
+
+func fullStaticAIDPlan() aidScanPlan {
 	return aidScanPlan{Policy: aidScanPolicyFullStatic, AIDs: cloneAIDList(AIDs)}
 }
 
@@ -865,6 +895,19 @@ func (m *Manager) forEachEUICC(ctx context.Context, fn func(client *lpa.Client, 
 
 	plan := m.getEffectiveAIDPlan()
 	aids := plan.CloneAIDs()
+	scanStarted := time.Now()
+	initialPolicy := plan.Policy
+	fallbackUsed := false
+	logScanComplete := func(outcome aidScanOutcome) {
+		logger.Info("eUICC AID 扫描完成",
+			"device", m.deviceID,
+			"policy", initialPolicy,
+			"fallback", fallbackUsed,
+			"candidate_count", len(aids),
+			"channels_opened", outcome.channelsOpened,
+			"eid_read_ok", outcome.eidReadOK,
+			"elapsed_ms", time.Since(scanStarted).Milliseconds())
+	}
 	logger.Debug("准备执行 eUICC AID 扫描",
 		"device", m.deviceID,
 		"policy", plan.Policy,
@@ -872,7 +915,28 @@ func (m *Manager) forEachEUICC(ctx context.Context, fn func(client *lpa.Client, 
 		"candidate_aids", aidHexesForLog(aids))
 	outcome := m.doForEachEUICC(ctx, aids, fn)
 	if outcome.foundAny {
+		logScanComplete(outcome)
 		return outcome.lastErr
+	}
+	if plan.Policy == aidScanPolicyDiscovered {
+		fallbackUsed = true
+		logger.Info("已发现 eUICC AID 失效，回退全量扫描",
+			"device", m.deviceID,
+			"candidate_count", len(aids))
+		m.cacheMu.Lock()
+		m.discoveredEUICCs = nil
+		m.cacheMu.Unlock()
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		m.preCleanChannels()
+		plan = fullStaticAIDPlan()
+		aids = plan.CloneAIDs()
+		outcome = m.doForEachEUICC(ctx, aids, fn)
+		if outcome.foundAny {
+			logScanComplete(outcome)
+			return outcome.lastErr
+		}
 	}
 
 	// channelsOpened/eidReadOK 区分两类失败: 通道打不开通常是模组不支持
@@ -886,6 +950,8 @@ func (m *Manager) forEachEUICC(ctx context.Context, fn func(client *lpa.Client, 
 		"triedCount", len(aids),
 		"channelsOpened", outcome.channelsOpened,
 		"eidReadOK", outcome.eidReadOK,
+		"fallback", fallbackUsed,
+		"elapsed_ms", time.Since(scanStarted).Milliseconds(),
 		"err", msg)
 	return errors.New(msg)
 }
@@ -1453,6 +1519,7 @@ func (m *Manager) setOverviewCache(overview *EsimOverview, err error, generation
 	m.overviewLastErr = err
 	if overview != nil {
 		m.chipInfoCache = cloneChipInfo(overview.ChipInfo)
+		m.profileSnapshotCache = lightweightOverview(overview.Profiles)
 	}
 }
 
@@ -1463,6 +1530,7 @@ func (m *Manager) invalidateOverviewCache(reason string) {
 	m.cacheMu.Lock()
 	m.overviewGeneration++
 	m.overviewCache = nil
+	m.profileSnapshotCache = nil
 	m.overviewLastErr = nil
 	m.chipInfoCache = nil
 	m.cacheMu.Unlock()
@@ -1474,6 +1542,7 @@ func (m *Manager) invalidateOverviewCache(reason string) {
 func (m *Manager) clearHardwareDiscoveryCachesLocked() {
 	m.overviewGeneration++
 	m.overviewCache = nil
+	m.profileSnapshotCache = nil
 	m.overviewLastErr = nil
 	m.chipInfoCache = nil
 	m.discoveredEUICCs = nil
@@ -1551,7 +1620,16 @@ func (m *Manager) patchCachedActiveProfile(targetICCID string, aidHex string) bo
 	}
 	m.cacheMu.Lock()
 	defer m.cacheMu.Unlock()
-	if m.overviewCache == nil {
+	patchedOverview := patchOverviewActiveProfile(m.overviewCache, targetICCID, aidHex)
+	patchedSnapshot := patchOverviewActiveProfile(m.profileSnapshotCache, targetICCID, aidHex)
+	if patchedOverview {
+		m.overviewLastErr = nil
+	}
+	return patchedOverview || patchedSnapshot
+}
+
+func patchOverviewActiveProfile(overview *EsimOverview, targetICCID string, aidHex string) bool {
+	if overview == nil {
 		return false
 	}
 	target := normalizeICCIDValue(targetICCID)
@@ -1560,8 +1638,8 @@ func (m *Manager) patchCachedActiveProfile(targetICCID string, aidHex string) bo
 	}
 	groupKey := strings.ToUpper(strings.TrimSpace(aidHex))
 	targetGroupIndex := -1
-	for gi := range m.overviewCache.Profiles {
-		group := &m.overviewCache.Profiles[gi]
+	for gi := range overview.Profiles {
+		group := &overview.Profiles[gi]
 		if groupKey != "" && strings.ToUpper(strings.TrimSpace(group.AIDHex)) != groupKey {
 			continue
 		}
@@ -1576,8 +1654,8 @@ func (m *Manager) patchCachedActiveProfile(targetICCID string, aidHex string) bo
 		}
 	}
 	if targetGroupIndex < 0 {
-		for gi := range m.overviewCache.Profiles {
-			group := &m.overviewCache.Profiles[gi]
+		for gi := range overview.Profiles {
+			group := &overview.Profiles[gi]
 			for pi := range group.Profiles {
 				if isTargetICCIDActive(target, group.Profiles[pi].ICCID) {
 					targetGroupIndex = gi
@@ -1594,8 +1672,8 @@ func (m *Manager) patchCachedActiveProfile(targetICCID string, aidHex string) bo
 	}
 
 	patched := false
-	for gi := range m.overviewCache.Profiles {
-		group := &m.overviewCache.Profiles[gi]
+	for gi := range overview.Profiles {
+		group := &overview.Profiles[gi]
 		for pi := range group.Profiles {
 			isTarget := isTargetICCIDActive(target, group.Profiles[pi].ICCID)
 			if isTarget {
@@ -1607,9 +1685,6 @@ func (m *Manager) patchCachedActiveProfile(targetICCID string, aidHex string) bo
 				group.Profiles[pi].StateKnown = true
 			}
 		}
-	}
-	if patched {
-		m.overviewLastErr = nil
 	}
 	return patched
 }
@@ -1749,6 +1824,74 @@ func (m *Manager) loadProfilesFresh(ctx context.Context) ([]EUICCProfiles, error
 	return profileGroups, nil
 }
 
+func lightweightOverview(groups []EUICCProfiles) *EsimOverview {
+	info := &EUICCChipInfo{EIDs: make([]EUICCInfo, 0, len(groups))}
+	for _, group := range groups {
+		aid, _ := hex.DecodeString(strings.TrimSpace(group.AIDHex))
+		info.EIDs = append(info.EIDs, buildDiscoveredEUICCInfo(aid, group.EID))
+	}
+	return &EsimOverview{ChipInfo: info, Profiles: cloneProfiles(groups)}
+}
+
+func (m *Manager) cachedProfileSnapshot() *EsimOverview {
+	m.cacheMu.RLock()
+	defer m.cacheMu.RUnlock()
+	return cloneOverview(m.profileSnapshotCache)
+}
+
+// GetProfileOverview returns the EID and basic Profile fields required by the
+// public API without running EUICCInfo or product-AID enrichment.
+func (m *Manager) GetProfileOverview(ctx context.Context) (*EsimOverview, error) {
+	if cached := m.cachedProfileSnapshot(); cached != nil {
+		return cached, nil
+	}
+	m.cacheMu.RLock()
+	generation := m.overviewGeneration
+	m.cacheMu.RUnlock()
+	key := fmt.Sprintf("GetProfileOverview:%d", generation)
+	v, err, _ := m.sf.Do(key, func() (interface{}, error) {
+		if cached := m.cachedProfileSnapshot(); cached != nil {
+			return cached, nil
+		}
+		loader := m.profilesLoader
+		if loader == nil {
+			loader = m.loadProfilesFresh
+		}
+		started := time.Now()
+		policy := m.getEffectiveAIDPlan().Policy
+		groups, loadErr := loader(ctx)
+		if loadErr != nil {
+			logger.Warn("eSIM 轻量 Profile 快照读取失败",
+				"device", m.deviceID,
+				"policy", policy,
+				"elapsed_ms", time.Since(started).Milliseconds(),
+				"err", loadErr)
+			return nil, loadErr
+		}
+		snapshot := lightweightOverview(groups)
+		m.cacheMu.Lock()
+		if generation == m.overviewGeneration {
+			m.profileSnapshotCache = cloneOverview(snapshot)
+		}
+		m.cacheMu.Unlock()
+		profileCount := 0
+		for _, group := range groups {
+			profileCount += len(group.Profiles)
+		}
+		logger.Info("eSIM 轻量 Profile 快照读取完成",
+			"device", m.deviceID,
+			"policy", policy,
+			"euicc_count", len(groups),
+			"profile_count", profileCount,
+			"elapsed_ms", time.Since(started).Milliseconds())
+		return snapshot, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return cloneOverview(v.(*EsimOverview)), nil
+}
+
 func (m *Manager) loadOverviewFresh(ctx context.Context) (*EsimOverview, error) {
 	info := &EUICCChipInfo{}
 	var profileGroups []EUICCProfiles
@@ -1877,6 +2020,7 @@ func (m *Manager) RefreshProfiles(ctx context.Context) error {
 	}
 	m.cacheMu.Lock()
 	defer m.cacheMu.Unlock()
+	m.profileSnapshotCache = lightweightOverview(profiles)
 	if m.overviewCache == nil {
 		m.overviewCache = &EsimOverview{}
 	}
@@ -1908,6 +2052,7 @@ func (m *Manager) RefreshOverview(ctx context.Context) error {
 	m.cacheMu.Lock()
 	m.overviewGeneration++
 	m.overviewCache = nil
+	m.profileSnapshotCache = nil
 	m.overviewLastErr = nil
 	m.discoveredEUICCs = nil
 	if !hasReusableChipProductInfo(m.chipInfoCache) {
@@ -2996,30 +3141,38 @@ func (m *Manager) resolveNotificationAID(aidHex string) ([]byte, error) {
 	return nil, nil
 }
 
-func (m *Manager) notificationCandidateAIDs() [][]byte {
-	aids := m.getEffectiveAIDs()
-	candidates := make([][]byte, 0, len(aids))
-	for _, aid := range aids {
-		candidates = append(candidates, append([]byte(nil), aid...))
+func (m *Manager) notificationCandidateAIDs(ctx context.Context) ([][]byte, error) {
+	plan := m.getEffectiveAIDPlan()
+	if plan.Policy != aidScanPolicyDiscovered {
+		if err := m.forEachEUICC(ctx, func(*lpa.Client, []byte, string) error { return nil }); err != nil {
+			return nil, err
+		}
+		plan = m.getEffectiveAIDPlan()
 	}
-	return candidates
+	if plan.Policy != aidScanPolicyDiscovered || len(plan.AIDs) == 0 {
+		return nil, fmt.Errorf("未发现可用于通知读取的 eUICC AID")
+	}
+	return plan.CloneAIDs(), nil
 }
 
-func (m *Manager) listNotificationsForCurrentCard() ([]NotificationItem, error) {
+func (m *Manager) listNotificationsForAIDs(ctx context.Context, aids [][]byte) ([]NotificationItem, int, error) {
 	unlock, err := m.lockOperation("list_notifications_current_card")
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer unlock()
-	if err := m.waitForAPDUIdleForRead(context.Background()); err != nil {
-		return nil, err
+	if err := m.waitForAPDUIdleForRead(ctx); err != nil {
+		return nil, 0, err
 	}
 	m.preCleanChannels()
 
 	items := make([]NotificationItem, 0)
 	var lastErr error
 	var successCount int
-	for _, aid := range m.notificationCandidateAIDs() {
+	for _, aid := range aids {
+		if err := ctx.Err(); err != nil {
+			return nil, successCount, err
+		}
 		client, err := m.createLPAWithAID(aid)
 		if err != nil {
 			lastErr = err
@@ -3039,31 +3192,75 @@ func (m *Manager) listNotificationsForCurrentCard() ([]NotificationItem, error) 
 		sort.SliceStable(items, func(i, j int) bool {
 			return items[i].SequenceNumber > items[j].SequenceNumber
 		})
-		return items, nil
+		return items, successCount, nil
 	}
 	if successCount > 0 {
-		return []NotificationItem{}, nil
+		return []NotificationItem{}, successCount, nil
 	}
 	if lastErr != nil {
-		return nil, NewNotificationError(NotificationErrorInternal, fmt.Sprintf("获取通知列表失败: %v", lastErr), lastErr)
+		return nil, 0, NewNotificationError(NotificationErrorInternal, fmt.Sprintf("获取通知列表失败: %v", lastErr), lastErr)
 	}
-	return []NotificationItem{}, nil
+	return []NotificationItem{}, 0, nil
+}
+
+func (m *Manager) listNotificationsForCurrentCard(ctx context.Context) ([]NotificationItem, error) {
+	aids, err := m.notificationCandidateAIDs(ctx)
+	if err != nil {
+		return nil, NewNotificationError(NotificationErrorInternal, fmt.Sprintf("发现通知 eUICC 失败: %v", err), err)
+	}
+	items, successCount, listErr := m.listNotificationsForAIDs(ctx, aids)
+	if successCount > 0 {
+		return items, listErr
+	}
+
+	m.cacheMu.Lock()
+	m.discoveredEUICCs = nil
+	m.cacheMu.Unlock()
+	logger.Info("通知读取目标失效，重新发现 eUICC",
+		"device", m.deviceID,
+		"failed_target_count", len(aids))
+	recoveredAIDs, discoveryErr := m.notificationCandidateAIDs(ctx)
+	if discoveryErr != nil {
+		if listErr != nil {
+			return nil, listErr
+		}
+		return nil, NewNotificationError(NotificationErrorInternal, fmt.Sprintf("重新发现通知 eUICC 失败: %v", discoveryErr), discoveryErr)
+	}
+	items, _, retryErr := m.listNotificationsForAIDs(ctx, recoveredAIDs)
+	return items, retryErr
 }
 
 func (m *Manager) ListNotifications(aidHex string) ([]NotificationItem, error) {
+	return m.ListNotificationsContext(context.Background(), aidHex)
+}
+
+func (m *Manager) ListNotificationsContext(ctx context.Context, aidHex string) (items []NotificationItem, err error) {
+	started := time.Now()
+	policy := string(m.getEffectiveAIDPlan().Policy)
+	if strings.TrimSpace(aidHex) != "" {
+		policy = "explicit"
+	}
+	defer func() {
+		logger.Info("eSIM 通知读取完成",
+			"device", m.deviceID,
+			"policy", policy,
+			"notification_count", len(items),
+			"success", err == nil,
+			"elapsed_ms", time.Since(started).Milliseconds())
+	}()
 	targetAID, err := m.resolveNotificationAID(aidHex)
 	if err != nil {
 		return nil, err
 	}
 	if len(targetAID) == 0 {
-		return m.listNotificationsForCurrentCard()
+		return m.listNotificationsForCurrentCard(ctx)
 	}
 	unlock, err := m.lockOperation("list_notifications")
 	if err != nil {
 		return nil, err
 	}
 	defer unlock()
-	if err := m.waitForAPDUIdleForRead(context.Background()); err != nil {
+	if err := m.waitForAPDUIdleForRead(ctx); err != nil {
 		return nil, err
 	}
 	m.preCleanChannels()
@@ -3071,7 +3268,7 @@ func (m *Manager) ListNotifications(aidHex string) ([]NotificationItem, error) {
 	if err != nil {
 		return nil, NewNotificationError(NotificationErrorInternal, fmt.Sprintf("创建 LPA client 失败: %v", err), err)
 	}
-	items, err := m.listNotificationItemsWithCleanup(client, strings.ToUpper(hex.EncodeToString(targetAID)))
+	items, err = m.listNotificationItemsWithCleanup(client, strings.ToUpper(hex.EncodeToString(targetAID)))
 	if closeErr := m.closeLPAClientForOperation("list_notifications", client); closeErr != nil && err == nil {
 		err = closeErr
 	}

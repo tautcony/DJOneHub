@@ -279,6 +279,11 @@ function enterEDL() {
   if (window.confirm(t('firmware.mode.edlConfirm'))) void runFirmwareAction('edl', selectedADBSerial.value)
 }
 
+function toggleADBMode(action: 'enable' | 'disable') {
+  if (busy.value) return
+  if (window.confirm(t('firmware.mode.adbModeConfirm'))) void runFirmwareAction(action)
+}
+
 async function openShell() {
   if (!selectedADBOnline.value || busy.value) return
   shellOpen.value = true
@@ -489,10 +494,10 @@ onBeforeUnmount(() => {
           <a-button type="primary" :loading="busy" :disabled="!device.has('raw_at') || busy" @click="runFirmwareAction('unlock')">
             <LockOutlined />{{ t('firmware.unlock') }}
           </a-button>
-          <a-button :loading="busy" :disabled="!device.has('raw_at') || busy" @click="runFirmwareAction('enable')">
+          <a-button :loading="busy" :disabled="!device.has('raw_at') || busy" @click="toggleADBMode('enable')">
             {{ t('firmware.enableADB') }}
           </a-button>
-          <a-button danger :loading="busy" :disabled="!device.has('raw_at') || busy" @click="runFirmwareAction('disable')">
+          <a-button danger :loading="busy" :disabled="!device.has('raw_at') || busy" @click="toggleADBMode('disable')">
             {{ t('firmware.disableADB') }}
           </a-button>
         </div>

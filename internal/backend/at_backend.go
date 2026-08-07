@@ -182,6 +182,10 @@ func (a *ATBackend) Events(ctx context.Context) (<-chan BackendEvent, error) {
 						// loop; count the drop instead of blocking.
 						a.eventsDropped.Add(1)
 					}
+					// RDY 订阅是一次性的: 触发后 channel 被关闭, 已关闭的
+					// channel 会让 select 空转 (忙循环) 并漏报后续重启。
+					// 每次收到后重新订阅, 保证周期性模组重启都能上报。
+					ready = a.modem.SubscribeRDY()
 				}
 			}
 		}()

@@ -61,6 +61,13 @@ export type ViewContext = {
 
   // calls
   calls: Ref<CallStatus | null>
+  callsDialOpen: Ref<boolean>
+  dialNumber: Ref<string>
+  dialCall: () => Promise<void>
+  dialCallBusy: Ref<boolean>
+  dialWaiting: Ref<boolean>
+  openCallsDial: () => void
+  closeCallsDial: () => void
   rejectCall: () => Promise<void>
 
   // SMS
@@ -75,6 +82,8 @@ export type ViewContext = {
   smsBody: Ref<string>
   smsOperation: ComputedRef<OperationStatus | undefined>
   smsQuery: Ref<string>
+  smsSimFilter: Ref<string>
+  smsThreads: ComputedRef<SmsThread[]>
   smsTo: Ref<string>
   startNewSMS: () => void
 
@@ -118,7 +127,13 @@ export type ViewContext = {
   // SIM cards
   simCards: Ref<SimCard[]>
   simCardsBusy: Ref<boolean>
-  createSimCard: (input: { iccid: string; imsi: string; msisdn: string; name: string; notes: string }) => Promise<void>
+  createSimCard: (input: {
+    iccid: string
+    imsi: string
+    msisdn: string
+    name: string
+    notes: string
+  }) => Promise<void>
   updateSimCard: (iccid: string, input: { name: string; notes: string; msisdn: string }) => Promise<void>
   deleteSimCard: (iccid: string) => Promise<void>
 
@@ -185,6 +200,7 @@ export type ViewContext = {
 export interface SmsThread {
   key: string
   peer: string
+  iccid: string
   items: SMSMessage[]
   latest?: SMSMessage
 }

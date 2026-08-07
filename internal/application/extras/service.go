@@ -480,6 +480,24 @@ func (s *Service) Reject(ctx context.Context) error {
 	return err
 }
 
+// dialNumberPattern 限定拨号字符集, 防止将任意内容拼入 ATD 指令。
+var dialNumberPattern = regexp.MustCompile(`^[0-9+*#]{1,32}$`)
+
+// Dial 发起语音外呼 (ATD<number>;)。号码经字符集与长度校验,
+// 非法输入分类为 InvalidRequest 而非落入通用 500。
+func (s *Service) Dial(ctx context.Context, number string) error {
+	number = strings.TrimSpace(number)
+	if !dialNumberPattern.MatchString(number) {
+		return derrors.New(derrors.InvalidRequest, "number must be 1-32 characters of digits, +, * or #", false, nil)
+	}
+	raw, err := s.raw(ctx, domain.CapabilityCallMonitor, "call_dial")
+	if err != nil {
+		return err
+	}
+	_, err = raw.RawAT(ctx, "ATD"+number+";")
+	return err
+}
+
 func (s *Service) loadNotes() error {
 	if s.notesLoaded {
 		return nil

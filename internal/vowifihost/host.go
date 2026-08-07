@@ -220,6 +220,14 @@ func (h *Host) Recover(ctx context.Context) error {
 // arriving within the debounce window collapse into the one scheduled run, so
 // a flapping network cannot spawn unbounded concurrent recovery goroutines.
 func (h *Host) TriggerRecovery() {
+	// 未启用过 VoWiFi 时恢复没有意义: 每次模组事件都会启动一个空转的
+	// vowifi.recover operation (Recover 同样立即返回), 只在日志中制造噪音。
+	h.mu.RLock()
+	desired := h.desired
+	h.mu.RUnlock()
+	if !desired {
+		return
+	}
 	delay := h.recoverDelay
 	if delay <= 0 {
 		delay = recoveryDebounce

@@ -322,7 +322,11 @@ func (s *Service) StartADBMode(ctx context.Context, enabled bool) (string, error
 		if _, err := s.at.Execute(ctx, command); err != nil {
 			return err
 		}
-		report(100, label)
+		report(70, "restarting modem")
+		if err := s.restartModem(ctx); err != nil {
+			return err
+		}
+		report(100, label+"; reconnect required")
 		return nil
 	})
 }
@@ -553,7 +557,11 @@ func (s *Service) unlock(ctx context.Context, report func(int, string)) error {
 	if _, err := s.at.Execute(ctx, command); err != nil {
 		return err
 	}
-	report(100, "ADB unlocked")
+	report(90, "restarting modem")
+	if err := s.restartModem(ctx); err != nil {
+		return err
+	}
+	report(100, "ADB unlocked; reconnect required")
 	return nil
 }
 
@@ -589,12 +597,20 @@ func (s *Service) StartUSBID(ctx context.Context, request USBIDRequest) (string,
 			return err
 		}
 		report(70, "restarting modem")
-		if _, err := s.at.Execute(ctx, "AT+CFUN=1,1"); err != nil {
+		if err := s.restartModem(ctx); err != nil {
 			return err
 		}
 		report(100, "USB ID updated; reconnect required")
 		return nil
 	})
+}
+
+// restartModem resets the modem via AT+CFUN=1,1 so a newly written USB
+// composition re-enumerates over USB. The AT channel drops briefly while the
+// module comes back.
+func (s *Service) restartModem(ctx context.Context) error {
+	_, err := s.at.Execute(ctx, "AT+CFUN=1,1")
+	return err
 }
 
 type usbConfig struct {

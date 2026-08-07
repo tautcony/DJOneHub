@@ -32,10 +32,14 @@ func (e *Error) Error() string {
 	if e == nil {
 		return "<nil>"
 	}
-	if e.Cause == nil {
-		return fmt.Sprintf("%s: %s", e.Code, e.Message)
+	text := fmt.Sprintf("%s: %s", e.Code, e.Message)
+	if len(e.Details) > 0 {
+		text = fmt.Sprintf("%s details=%v", text, e.Details)
 	}
-	return fmt.Sprintf("%s: %s: %v", e.Code, e.Message, e.Cause)
+	if e.Cause == nil {
+		return text
+	}
+	return fmt.Sprintf("%s: %v", text, e.Cause)
 }
 
 func (e *Error) Unwrap() error { return e.Cause }

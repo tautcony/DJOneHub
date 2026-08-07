@@ -310,18 +310,18 @@ func TestGetEffectiveAIDPlanUsesFullStaticWithoutKnownAIDs(t *testing.T) {
 	}
 }
 
-func TestGetEffectiveAIDPlanIgnoresSeededAIDs(t *testing.T) {
+func TestGetEffectiveAIDPlanUsesSeededAIDs(t *testing.T) {
 	seeded := mustHexAIDs(t, "A0000005591010FFFFFFFF8900000101")
 	mgr := newManagerWithChannelFactory("dev-esim", nil, nil, nil, nil)
 	mgr.SeedDiscoveredEUICCs([]EUICCInfo{{AID: seeded[0], EID: "eid-1", Spec: EUICCSpecSGP22}})
 
 	plan := mgr.getEffectiveAIDPlan()
 
-	if plan.Policy != aidScanPolicyFullStatic {
-		t.Fatalf("Policy=%q want %q", plan.Policy, aidScanPolicyFullStatic)
+	if plan.Policy != aidScanPolicyDiscovered {
+		t.Fatalf("Policy=%q want %q", plan.Policy, aidScanPolicyDiscovered)
 	}
-	if got, want := aidHexList(plan.AIDs), aidHexList(AIDs); !reflect.DeepEqual(got, want) {
-		t.Fatalf("plan AIDs=%v want full static AIDs %v", got, want)
+	if got, want := aidHexList(plan.AIDs), aidHexList(seeded); !reflect.DeepEqual(got, want) {
+		t.Fatalf("plan AIDs=%v want discovered AIDs %v", got, want)
 	}
 }
 
@@ -336,22 +336,22 @@ func TestGetEffectiveAIDsClonesPlanAIDs(t *testing.T) {
 	}
 }
 
-func TestSeedDiscoveredEUICCsDoesNotChangeScanPlan(t *testing.T) {
+func TestSeedDiscoveredEUICCsChangesScanPlan(t *testing.T) {
 	aid := mustHexAIDs(t, "A0000005591010FFFFFFFF8900000199")[0]
 	mgr := newManagerWithChannelFactory("dev-esim", nil, nil, nil, nil)
 
 	mgr.SeedDiscoveredEUICCs([]EUICCInfo{{AID: aid, EID: "eid-1", Spec: EUICCSpecSGP22}})
 
 	plan := mgr.getEffectiveAIDPlan()
-	if plan.Policy != aidScanPolicyFullStatic {
-		t.Fatalf("Policy=%q want %q after seeding discovered eUICC", plan.Policy, aidScanPolicyFullStatic)
+	if plan.Policy != aidScanPolicyDiscovered {
+		t.Fatalf("Policy=%q want %q after seeding discovered eUICC", plan.Policy, aidScanPolicyDiscovered)
 	}
-	if got, want := aidHexList(plan.AIDs), aidHexList(AIDs); !reflect.DeepEqual(got, want) {
-		t.Fatalf("plan AIDs=%v want full static AIDs %v", got, want)
+	if got, want := aidHexList(plan.AIDs), aidHexList([][]byte{aid}); !reflect.DeepEqual(got, want) {
+		t.Fatalf("plan AIDs=%v want discovered AID %v", got, want)
 	}
 }
 
-func TestGetEIDsScansHardwareEvenWhenSeededDiscoveryExists(t *testing.T) {
+func TestGetEIDsFallsBackWhenSeededDiscoveryIsStale(t *testing.T) {
 	seededAID := mustHexAIDs(t, "A0000005591010FFFFFFFF8900000199")[0]
 	targetAID := AIDs[2]
 	targetAIDHex := strings.ToUpper(hex.EncodeToString(targetAID))
@@ -422,7 +422,7 @@ func TestGetEsimOverviewSeedsDiscoveredEIDForLaterGetEIDs(t *testing.T) {
 	}
 }
 
-func TestForEachEUICCAlwaysUsesFullStaticScan(t *testing.T) {
+func TestForEachEUICCReusesDiscoveredAIDOnSecondScan(t *testing.T) {
 	targetAID := cloneAIDList([][]byte{AIDs[3]})[0]
 	targetHex := strings.ToUpper(hex.EncodeToString(targetAID))
 	attempts := make(map[string]int)
@@ -471,11 +471,118 @@ func TestForEachEUICCAlwaysUsesFullStaticScan(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second forEachEUICC() error=%v, attempts=%v", err, seenAttempts)
 	}
-	if wantAttempts := aidHexList(AIDs[:4]); !reflect.DeepEqual(seenAttempts, wantAttempts) {
-		t.Fatalf("second attempted AIDs=%v want fresh full scan %v", seenAttempts, wantAttempts)
+	if wantAttempts := []string{targetHex}; !reflect.DeepEqual(seenAttempts, wantAttempts) {
+		t.Fatalf("second attempted AIDs=%v want discovered fast path %v", seenAttempts, wantAttempts)
 	}
 	if callbackAID != targetHex {
 		t.Fatalf("second callback AID=%s want %s", callbackAID, targetHex)
+	}
+}
+
+func TestGetProfileOverviewUsesIndependentLightweightCache(t *testing.T) {
+	var profileCalls atomic.Int32
+	var richCalls atomic.Int32
+	mgr := newTestManagerWithOverviewLoader(func(context.Context) (*EsimOverview, error) {
+		richCalls.Add(1)
+		return &EsimOverview{ChipInfo: &EUICCChipInfo{SkuName: "rich-only"}}, nil
+	})
+	mgr.profilesLoader = func(context.Context) ([]EUICCProfiles, error) {
+		profileCalls.Add(1)
+		return []EUICCProfiles{{
+			EID:    testfixtures.EID,
+			AIDHex: strings.ToUpper(hex.EncodeToString(AIDs[2])),
+			Profiles: []ProfileItem{{
+				ICCID:      testfixtures.ICCID19,
+				State:      int(sgp22.ProfileDisabled),
+				StateKnown: true,
+			}},
+		}}, nil
+	}
+
+	first, err := mgr.GetProfileOverview(context.Background())
+	if err != nil {
+		t.Fatalf("GetProfileOverview() error=%v", err)
+	}
+	second, err := mgr.GetProfileOverview(context.Background())
+	if err != nil {
+		t.Fatalf("GetProfileOverview() cached error=%v", err)
+	}
+	if profileCalls.Load() != 1 {
+		t.Fatalf("profile loader calls=%d want 1", profileCalls.Load())
+	}
+	if richCalls.Load() != 0 {
+		t.Fatalf("rich loader calls=%d want 0", richCalls.Load())
+	}
+	if first.ChipInfo == nil || len(first.ChipInfo.EIDs) != 1 || first.ChipInfo.SkuName != "" {
+		t.Fatalf("first lightweight overview=%#v", first)
+	}
+	second.Profiles[0].Profiles[0].ICCID = "mutated"
+	third, err := mgr.GetProfileOverview(context.Background())
+	if err != nil || third.Profiles[0].Profiles[0].ICCID != testfixtures.ICCID19 {
+		t.Fatalf("cached snapshot was not cloned: overview=%#v err=%v", third, err)
+	}
+}
+
+func TestGetProfileOverviewInvalidatesAndHonorsCancellation(t *testing.T) {
+	var calls atomic.Int32
+	mgr := newTestManagerWithOverviewLoader(nil)
+	mgr.profilesLoader = func(ctx context.Context) ([]EUICCProfiles, error) {
+		calls.Add(1)
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		return []EUICCProfiles{{EID: testfixtures.EID, AIDHex: strings.ToUpper(hex.EncodeToString(AIDs[2]))}}, nil
+	}
+	if _, err := mgr.GetProfileOverview(context.Background()); err != nil {
+		t.Fatalf("GetProfileOverview() error=%v", err)
+	}
+	mgr.invalidateOverviewCache("test")
+	if _, err := mgr.GetProfileOverview(context.Background()); err != nil {
+		t.Fatalf("GetProfileOverview() after invalidation error=%v", err)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("profile loader calls=%d want 2 after invalidation", calls.Load())
+	}
+
+	mgr.invalidateOverviewCache("cancel")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := mgr.GetProfileOverview(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("GetProfileOverview() error=%v want context.Canceled", err)
+	}
+}
+
+func TestESIMPortEIDAndProfilesShareLightweightSnapshot(t *testing.T) {
+	var calls atomic.Int32
+	mgr := newTestManagerWithOverviewLoader(func(context.Context) (*EsimOverview, error) {
+		t.Fatal("public port must not load rich overview")
+		return nil, nil
+	})
+	mgr.profilesLoader = func(context.Context) ([]EUICCProfiles, error) {
+		calls.Add(1)
+		return []EUICCProfiles{{
+			EID:    testfixtures.EID,
+			AIDHex: strings.ToUpper(hex.EncodeToString(AIDs[2])),
+			Profiles: []ProfileItem{{
+				ICCID:      testfixtures.ICCID19,
+				State:      int(sgp22.ProfileDisabled),
+				StateKnown: true,
+			}},
+		}}, nil
+	}
+	mgr.iccidProvider = func(context.Context) (string, error) { return testfixtures.ICCID19, nil }
+	port := &esimPort{manager: mgr}
+
+	eid, err := port.EID(context.Background())
+	if err != nil || eid != testfixtures.EID {
+		t.Fatalf("EID()=%q err=%v", eid, err)
+	}
+	profiles, err := port.Profiles(context.Background())
+	if err != nil || len(profiles) != 1 || profiles[0].State != "enabled" {
+		t.Fatalf("Profiles()=%#v err=%v", profiles, err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("profile loader calls=%d want shared snapshot call", calls.Load())
 	}
 }
 
@@ -2846,6 +2953,60 @@ func TestListNotificationsAutoCleansEnableDisableNotifications(t *testing.T) {
 	}
 }
 
+func TestListNotificationsWithoutAIDReadsOneDiscoveredTarget(t *testing.T) {
+	seenAIDs := make([]string, 0, 1)
+	mgr := newManagerWithChannelFactory("dev-esim", func(aid []byte) (*lpa.Client, error) {
+		seenAIDs = append(seenAIDs, strings.ToUpper(hex.EncodeToString(aid)))
+		client, _ := newTestNotificationClient(nil, nil, nil, nil)
+		return client, nil
+	}, nil, nil, nil)
+	mgr.SeedDiscoveredEUICCs([]EUICCInfo{buildDiscoveredEUICCInfo(AIDs[2], testfixtures.EID)})
+
+	items, err := mgr.ListNotifications("")
+	if err != nil {
+		t.Fatalf("ListNotifications() error=%v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("items=%#v want empty", items)
+	}
+	if got, want := seenAIDs, aidHexList(AIDs[2:3]); !reflect.DeepEqual(got, want) {
+		t.Fatalf("seenAIDs=%v want one discovered target %v", got, want)
+	}
+}
+
+func TestListNotificationsWithoutAIDRecoversFromStaleTarget(t *testing.T) {
+	staleAID := mustDecodeHex(t, "A0000005591010FFFFFFFF8900000199")
+	validHex := strings.ToUpper(hex.EncodeToString(AIDs[0]))
+	var validCalls atomic.Int32
+	seenAIDs := make([]string, 0, 4)
+	mgr := newManagerWithChannelFactory("dev-esim", func(aid []byte) (*lpa.Client, error) {
+		aidHex := strings.ToUpper(hex.EncodeToString(aid))
+		seenAIDs = append(seenAIDs, aidHex)
+		if aidHex != validHex {
+			return nil, fmt.Errorf("unsupported AID %s", aidHex)
+		}
+		if validCalls.Add(1) == 1 {
+			return &lpa.Client{APDU: fakeProfileOperationTransmitter{eid: mustDecodeHex(t, testfixtures.EID)}}, nil
+		}
+		client, _ := newTestNotificationClient(nil, nil, nil, nil)
+		return client, nil
+	}, nil, nil, nil)
+	mgr.closeClient = func(*lpa.Client) error { return nil }
+	mgr.SeedDiscoveredEUICCs([]EUICCInfo{buildDiscoveredEUICCInfo(staleAID, testfixtures.EIDAlt)})
+
+	items, err := mgr.ListNotifications("")
+	if err != nil {
+		t.Fatalf("ListNotifications() error=%v attempts=%v", err, seenAIDs)
+	}
+	if len(items) != 0 || validCalls.Load() != 2 {
+		t.Fatalf("items=%#v validCalls=%d want recovered empty snapshot after discovery+list", items, validCalls.Load())
+	}
+	plan := mgr.getEffectiveAIDPlan()
+	if plan.Policy != aidScanPolicyDiscovered || !reflect.DeepEqual(aidHexList(plan.AIDs), []string{validHex}) {
+		t.Fatalf("recovered plan=%q AIDs=%v", plan.Policy, aidHexList(plan.AIDs))
+	}
+}
+
 func TestListNotificationsKeepsVisibleItemsWhenAutoCleanupFails(t *testing.T) {
 	iccid, err := sgp22.NewICCID(testfixtures.ICCID19)
 	if err != nil {
@@ -2889,7 +3050,7 @@ func TestListNotificationsKeepsVisibleItemsWhenAutoCleanupFails(t *testing.T) {
 	}
 }
 
-func TestListNotificationsWithoutAIDReadsStaticAIDsUnderReadArbitration(t *testing.T) {
+func TestListNotificationsWithoutAIDReadsDiscoveredTargetsUnderReadArbitration(t *testing.T) {
 	iccid, err := sgp22.NewICCID(testfixtures.ICCID19)
 	if err != nil {
 		t.Fatalf("NewICCID() error=%v", err)
@@ -2920,6 +3081,10 @@ func TestListNotificationsWithoutAIDReadsStaticAIDsUnderReadArbitration(t *testi
 			return nil, fmt.Errorf("unsupported AID %s", got)
 		}
 	}, nil, nil, nil)
+	mgr.SeedDiscoveredEUICCs([]EUICCInfo{
+		buildDiscoveredEUICCInfo(AIDs[0], testfixtures.EID),
+		buildDiscoveredEUICCInfo(AIDs[1], testfixtures.EIDAlt),
+	})
 	var waitCalled atomic.Int32
 	mgr.apduArbiter = fakeAPDUIdleWaiter{wait: func(ctx context.Context) error {
 		waitCalled.Add(1)
@@ -2934,8 +3099,8 @@ func TestListNotificationsWithoutAIDReadsStaticAIDsUnderReadArbitration(t *testi
 	if waitCalled.Load() != 1 {
 		t.Fatalf("WaitIdle calls=%d want 1", waitCalled.Load())
 	}
-	if got, want := seenAIDs, aidHexList(AIDs); !reflect.DeepEqual(got, want) {
-		t.Fatalf("seenAIDs=%v want full static AIDs in order %v", got, want)
+	if got, want := seenAIDs, aidHexList(AIDs[:2]); !reflect.DeepEqual(got, want) {
+		t.Fatalf("seenAIDs=%v want discovered AIDs in order %v", got, want)
 	}
 	if len(items) != 2 {
 		t.Fatalf("len(items)=%d want 2", len(items))
@@ -2948,7 +3113,7 @@ func TestListNotificationsWithoutAIDReadsStaticAIDsUnderReadArbitration(t *testi
 	}
 }
 
-func TestListNotificationsWithoutAIDAutoCleansStaticAIDNotifications(t *testing.T) {
+func TestListNotificationsWithoutAIDAutoCleansDiscoveredAIDNotifications(t *testing.T) {
 	iccid, err := sgp22.NewICCID(testfixtures.ICCID19)
 	if err != nil {
 		t.Fatalf("NewICCID() error=%v", err)
@@ -2989,6 +3154,10 @@ func TestListNotificationsWithoutAIDAutoCleansStaticAIDNotifications(t *testing.
 			return nil, fmt.Errorf("unsupported AID %s", got)
 		}
 	}, nil, nil, nil)
+	mgr.SeedDiscoveredEUICCs([]EUICCInfo{
+		buildDiscoveredEUICCInfo(AIDs[0], testfixtures.EID),
+		buildDiscoveredEUICCInfo(AIDs[1], testfixtures.EIDAlt),
+	})
 	mgr.readQueueWaitTimeout = 200 * time.Millisecond
 
 	items, err := mgr.ListNotifications("")

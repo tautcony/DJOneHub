@@ -116,10 +116,10 @@ export const api = {
   simCardDelete: (iccid: string) =>
     request<{ state: string }>(`/simcards/${encodeURIComponent(iccid)}`, { method: 'DELETE' }),
   esimConfirmationCode: (operationID: string, code: string, declined: boolean) =>
-    request<{ state: string }>(
-      `/esim/operations/${encodeURIComponent(operationID)}/confirmation-code`,
-      { method: 'POST', body: JSON.stringify({ code, declined }) },
-    ),
+    request<{ state: string }>(`/esim/operations/${encodeURIComponent(operationID)}/confirmation-code`, {
+      method: 'POST',
+      body: JSON.stringify({ code, declined }),
+    }),
   network: () => request<NetworkStatus>('/network'),
   networkTrafficDaily: (date?: string) =>
     request<NetworkTrafficDaily>(`/network/traffic/daily${date ? `?date=${encodeURIComponent(date)}` : ''}`),
@@ -200,6 +200,8 @@ export const api = {
     }),
   operation: (id: string) => request<OperationStatus>(`/operations/${encodeURIComponent(id)}`),
   calls: () => request<CallStatus>('/calls'),
+  dialCall: (number: string) =>
+    request<{ dialed: boolean }>('/calls/actions/dial', { method: 'POST', body: JSON.stringify({ number }) }),
   rejectCall: () => request<{ rejected: boolean }>('/calls/actions/reject', { method: 'POST' }),
   esimHealth: () => request<Record<string, unknown>>('/esim/health'),
   esimNotes: () =>

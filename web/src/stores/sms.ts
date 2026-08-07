@@ -1,4 +1,4 @@
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { defineStore } from 'pinia'
 import { useI18n } from 'vue-i18n'
 import { api } from '../services/api'
@@ -13,6 +13,7 @@ export const useSmsStore = defineStore('sms', () => {
   const items = ref<SMSMessage[]>([])
   const sentItems = ref<SMSMessage[]>([])
   const query = ref('')
+  const simFilter = ref('')
   const selectedPeer = ref('')
   const composeNew = ref(false)
   const to = ref('')
@@ -28,7 +29,7 @@ export const useSmsStore = defineStore('sms', () => {
   }
 
   function threadKey(item: SMSMessage) {
-    return item.sender || item.recipient || 'unknown'
+    return `${item.iccid || ''}\u0000${item.sender || item.recipient || 'unknown'}`
   }
 
   // orderingKey resolves the ordering key of a message. The backend sorts by
@@ -42,10 +43,10 @@ export const useSmsStore = defineStore('sms', () => {
   }
 
   const threads = computed(() => {
-    const groups = new Map<string, { key: string; peer: string; items: SMSMessage[]; latest?: SMSMessage }>()
+    const groups = new Map<string, SmsThread>()
     for (const item of [...items.value, ...sentItems.value]) {
       const key = threadKey(item)
-      const group = groups.get(key) || { key, peer: peer(item), items: [] }
+      const group = groups.get(key) || { key, peer: peer(item), iccid: item.iccid || '', items: [] }
       group.items.push(item)
       if (!group.latest || orderingKey(item) > orderingKey(group.latest)) group.latest = item
       groups.set(key, group)
@@ -57,17 +58,26 @@ export const useSmsStore = defineStore('sms', () => {
 
   const filteredThreads = computed(() => {
     const term = query.value.trim().toLowerCase()
-    if (!term) return threads.value
     return threads.value.filter(
       (thread) =>
-        thread.peer.toLowerCase().includes(term) ||
-        thread.items.some((item) => item.body.toLowerCase().includes(term)),
+        (!simFilter.value || thread.iccid === simFilter.value) &&
+        (!term ||
+          thread.peer.toLowerCase().includes(term) ||
+          thread.items.some((item) => item.body.toLowerCase().includes(term))),
     )
   })
 
   const selectedThread = computed(() =>
-    composeNew.value ? undefined : threads.value.find((thread) => thread.key === selectedPeer.value) || threads.value[0],
+    composeNew.value
+      ? undefined
+      : filteredThreads.value.find((thread) => thread.key === selectedPeer.value) || filteredThreads.value[0],
   )
+
+  watch(selectedThread, (thread) => {
+    if (composeNew.value) return
+    selectedPeer.value = thread?.key || ''
+    to.value = thread?.peer || ''
+  })
 
   function reconcileSent(itemsNow: SMSMessage[]) {
     sentItems.value = sentItems.value.filter((local) => {
@@ -76,6 +86,7 @@ export const useSmsStore = defineStore('sms', () => {
         if (!remote.recipient || remote.recipient !== local.recipient || remote.body !== local.body) {
           return false
         }
+        if (local.iccid && remote.iccid && local.iccid !== remote.iccid) return false
         const remoteTime = remote.received_at ? Date.parse(remote.received_at) : NaN
         return Number.isFinite(localTime) && Number.isFinite(remoteTime)
           ? Math.abs(remoteTime - localTime) < 60_000
@@ -86,7 +97,7 @@ export const useSmsStore = defineStore('sms', () => {
 
   function syncSelection() {
     if (composeNew.value) return
-    const thread = threads.value.find((item) => item.key === selectedPeer.value) || threads.value[0]
+    const thread = filteredThreads.value.find((item) => item.key === selectedPeer.value) || filteredThreads.value[0]
     if (!thread) {
       selectedPeer.value = ''
       to.value = ''
@@ -126,17 +137,18 @@ export const useSmsStore = defineStore('sms', () => {
     if (!recipient || !message) throw new Error('sms.requireRecipientAndBody')
     const result = await api.sendSMS(recipient, message)
     operationID.value = result.operation_id
-    sentItems.value = [
-      ...sentItems.value,
-      {
-        index: -Date.now(),
-        recipient,
-        body: message,
-        received_at: new Date().toISOString(),
-        recorded_at: new Date().toISOString(),
-      },
-    ]
-    selectedPeer.value = recipient
+    const now = new Date().toISOString()
+    const sent = {
+      index: -Date.now(),
+      recipient,
+      body: message,
+      iccid: device.status?.identity.iccid || device.status?.sim.iccid,
+      received_at: now,
+      recorded_at: now,
+    }
+    sentItems.value = [...sentItems.value, sent]
+    simFilter.value = sent.iccid || ''
+    selectedPeer.value = threadKey(sent)
     composeNew.value = false
     body.value = ''
     return result
@@ -146,6 +158,7 @@ export const useSmsStore = defineStore('sms', () => {
     items,
     sentItems,
     query,
+    simFilter,
     selectedPeer,
     composeNew,
     to,

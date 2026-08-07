@@ -53,12 +53,6 @@ export const useEsimStore = defineStore('esim', () => {
   async function load(): Promise<void> {
     const result = await api.esim()
     overview.value = { ...result, profiles: Array.isArray(result.profiles) ? result.profiles : [] }
-    const [notesResult, healthResult] = await Promise.all([
-      api.esimNotes().catch(() => ({ notes: {} })),
-      api.esimHealth().catch(() => null),
-    ])
-    notes.value = notesResult.notes
-    health.value = healthResult
     if (!noteICCID.value) noteICCID.value = overview.value.profiles[0]?.iccid || ''
     syncSelectedNote()
     for (const profile of overview.value.profiles) {
@@ -66,6 +60,22 @@ export const useEsimStore = defineStore('esim', () => {
         labels.value[profile.iccid] = profile.label || ''
       }
     }
+
+    void api
+      .esimNotes()
+      .then((result) => {
+        notes.value = result.notes
+        syncSelectedNote()
+      })
+      .catch(() => undefined)
+    void api
+      .esimHealth()
+      .then((result) => {
+        health.value = result
+      })
+      .catch(() => {
+        health.value = null
+      })
   }
 
   function openDownload() {

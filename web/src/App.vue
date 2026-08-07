@@ -35,6 +35,8 @@ type NavGroupID = 'main' | 'voice' | 'tools'
 
 const VIEW_REFRESH_MIN_INTERVAL_MS = 500
 const OVERVIEW_REFRESH_MIN_INTERVAL_MS = 2000
+// 拨号后等待轮询器确认通话建立的窗口: 覆盖一次前端 15s 视图轮询周期。
+const DIAL_WAIT_TIMEOUT_MS = 20000
 const ACTIVE_VIEW_FALLBACK_INTERVALS: Partial<Record<ViewID, number>> = {
   calls: 15000,
   sms: 30000,
@@ -51,6 +53,13 @@ const active = computed<ViewID>(() => viewFromRoute(route.path))
 const viewError = ref('')
 const loadedViews = ref<Partial<Record<ViewID, boolean>>>({})
 const calls = ref<CallStatus | null>(null)
+const callsDialOpen = ref(false)
+const dialNumber = ref('')
+const dialCallBusy = ref(false)
+// dialWaiting 表示 ATD 已被模块接受但轮询器尚未确认通话建立; 确认后由
+// watch(calls) 关闭弹窗, 超时则给出提示, 避免「点了拨号没反应」的观感。
+const dialWaiting = ref(false)
+let dialWaitTimer: number | undefined
 const pageVisible = ref(document.visibilityState === 'visible')
 const pendingViewRefreshes = new Map<ViewID, { timer: number; dueAt: number }>()
 const viewLoadInFlight = new Map<ViewID, Promise<void>>()
@@ -63,11 +72,13 @@ let activeFallbackTimer: number | undefined
 const sms = useSmsStore()
 const {
   query: smsQuery,
+  simFilter: smsSimFilter,
   selectedPeer: selectedSmsPeer,
   composeNew: smsComposeNew,
   to: smsTo,
   body: smsBody,
   operation: smsOperation,
+  threads: smsThreads,
   filteredThreads: filteredSmsThreads,
   selectedThread: selectedSmsThread,
 } = storeToRefs(sms)
@@ -378,7 +389,7 @@ function resetSMSOperation() {
 async function loadEsim() {
   try {
     await esimStore.load()
-    await esimStore.loadNotifications()
+    void esimStore.loadNotifications()
     viewError.value = ''
   } catch (error) {
     viewError.value = errorText(error, 'esim.unableLoad')
@@ -450,6 +461,52 @@ async function rejectCall() {
     viewError.value = errorText(error, 'calls.unableReject')
   }
 }
+function openCallsDial() {
+  dialNumber.value = ''
+  callsDialOpen.value = true
+}
+function clearDialWait() {
+  dialWaiting.value = false
+  if (dialWaitTimer !== undefined) {
+    window.clearTimeout(dialWaitTimer)
+    dialWaitTimer = undefined
+  }
+}
+function closeCallsDial() {
+  clearDialWait()
+  callsDialOpen.value = false
+}
+async function dialCall() {
+  const number = dialNumber.value.trim()
+  if (!number) {
+    viewError.value = t('calls.dialEmpty')
+    return
+  }
+  if (dialCallBusy.value || dialWaiting.value) return
+  dialCallBusy.value = true
+  try {
+    await api.dialCall(number)
+    // ATD 返回 OK 只代表指令被接受; 通话真正出现要等轮询器在 AT+CLCC
+    // 里发现, 弹窗保持打开并在确认后由 watch(calls) 关闭。
+    dialWaiting.value = true
+    dialWaitTimer = window.setTimeout(() => {
+      clearDialWait()
+      closeCallsDial()
+      viewError.value = t('calls.dialTimeout')
+    }, DIAL_WAIT_TIMEOUT_MS)
+  } catch (error) {
+    viewError.value = errorText(error, 'calls.unableDial')
+  } finally {
+    dialCallBusy.value = false
+  }
+}
+// 轮询器确认通话建立 (calls.active 出现) 后关闭拨号弹窗, 让位给活动通话面板。
+watch(calls, (status) => {
+  if (dialWaiting.value && status?.active) {
+    clearDialWait()
+    closeCallsDial()
+  }
+})
 function localProfileNote(iccid?: string) {
   return esimStore.localProfileNote(iccid)
 }
@@ -791,7 +848,12 @@ async function updateFirmwareUSBID(vid: string, pid: string) {
   }
 }
 
-async function backupFirmware(outputPath: string, loaderPath: string, edlPath: string, edlRunner: 'python' | 'uv') {
+async function backupFirmware(
+  outputPath: string,
+  loaderPath: string,
+  edlPath: string,
+  edlRunner: 'python' | 'uv',
+) {
   try {
     const result = await api.firmwareBackup(outputPath, loaderPath, edlPath, edlRunner)
     firmwareOperationID.value = result.operation_id
@@ -996,8 +1058,8 @@ const viewLoaders: Partial<Record<ViewID, () => Promise<void>>> = {
   overview: async () => {
     await Promise.all([device.refresh(), loadOverviewNetwork(), loadOverviewTraffic(), loadEsim()])
   },
-  calls: loadCalls,
-  sms: loadSMS,
+  calls: async () => Promise.all([loadCalls(), simCardsStore.load()]).then(() => undefined),
+  sms: async () => Promise.all([loadSMS(), simCardsStore.load()]).then(() => undefined),
   esim: loadEsim,
   simcards: loadSimCards,
   network: loadNetwork,
@@ -1170,6 +1232,13 @@ provide(viewContextKey, {
   stateLabel,
   stateTone,
   calls,
+  callsDialOpen,
+  dialNumber,
+  dialCall,
+  dialCallBusy,
+  dialWaiting,
+  openCallsDial,
+  closeCallsDial,
   rejectCall,
   maskSensitive,
   clearModuleSMS,
@@ -1183,6 +1252,8 @@ provide(viewContextKey, {
   smsBody,
   smsOperation,
   smsQuery,
+  smsSimFilter,
+  smsThreads,
   smsTo,
   startNewSMS,
   closeEsimDownload,

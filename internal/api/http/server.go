@@ -19,7 +19,6 @@ import (
 	"github.com/iniwex5/vohive/internal/application/esim"
 	"github.com/iniwex5/vohive/internal/application/extras"
 	"github.com/iniwex5/vohive/internal/application/firmware"
-	"github.com/iniwex5/vohive/internal/storage"
 	"github.com/iniwex5/vohive/internal/application/network"
 	"github.com/iniwex5/vohive/internal/application/notification"
 	"github.com/iniwex5/vohive/internal/application/operation"
@@ -31,6 +30,7 @@ import (
 	derrors "github.com/iniwex5/vohive/internal/domain/errors"
 	"github.com/iniwex5/vohive/internal/platform/startup"
 	"github.com/iniwex5/vohive/internal/runtime"
+	"github.com/iniwex5/vohive/internal/storage"
 )
 
 type Authenticator interface{ Authenticate(*nethttp.Request) bool }
@@ -136,6 +136,7 @@ func (s *Server) Handler() nethttp.Handler {
 	mux.HandleFunc("/api/v1/notifications/preferences", s.notificationPreferences)
 	mux.HandleFunc("/api/v1/settings/startup", s.startupSettings)
 	mux.HandleFunc("/api/v1/calls", s.calls)
+	mux.HandleFunc("/api/v1/calls/actions/dial", s.callDial)
 	mux.HandleFunc("/api/v1/calls/actions/reject", s.callReject)
 	mux.HandleFunc("/api/v1/esim/health", s.esimHealth)
 	mux.HandleFunc("/api/v1/esim/notes", s.esimNotes)
@@ -632,6 +633,30 @@ func (s *Server) calls(w nethttp.ResponseWriter, r *nethttp.Request) {
 		return
 	}
 	writeJSON(w, nethttp.StatusOK, s.config.Extras.Calls(r.Context()))
+}
+
+type dialRequest struct {
+	Number string `json:"number"`
+}
+
+func (s *Server) callDial(w nethttp.ResponseWriter, r *nethttp.Request) {
+	if !s.commandOnly(w, r) {
+		return
+	}
+	if s.config.Extras == nil {
+		writeError(w, fmt.Errorf("call monitoring is unavailable"))
+		return
+	}
+	var request dialRequest
+	if err := decodeJSON(r, &request); err != nil {
+		writeError(w, derrors.New(derrors.InvalidRequest, "number is required", false, nil))
+		return
+	}
+	if err := s.config.Extras.Dial(r.Context(), request.Number); err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, nethttp.StatusOK, map[string]bool{"dialed": true})
 }
 func (s *Server) callReject(w nethttp.ResponseWriter, r *nethttp.Request) {
 	if !s.commandOnly(w, r) {

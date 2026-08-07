@@ -6,12 +6,69 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/electricbubble/gadb"
 	"github.com/iniwex5/vohive/internal/application/operation"
 )
+
+// recordingATExecutor answers a fixed USB composition and records every
+// command issued by the service.
+type recordingATExecutor struct {
+	mu        sync.Mutex
+	calls     []string
+	restarted chan struct{}
+}
+
+func (e *recordingATExecutor) Execute(_ context.Context, command string) (string, error) {
+	e.mu.Lock()
+	e.calls = append(e.calls, command)
+	e.mu.Unlock()
+	if command == "AT+CFUN=1,1" {
+		select {
+		case e.restarted <- struct{}{}:
+		default:
+		}
+	}
+	if strings.HasPrefix(command, `AT+QCFG="usbcfg"?`) {
+		return `+QCFG: "usbcfg",0x2C7C,0x0125,1,1,1,1,1,0,0` + "\r\nOK\r\n", nil
+	}
+	return "OK\r\n", nil
+}
+
+func (e *recordingATExecutor) snapshot() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return slices.Clone(e.calls)
+}
+
+func TestStartADBModeRestartsModemAfterUSBComposition(t *testing.T) {
+	for _, enabled := range []bool{true, false} {
+		executor := &recordingATExecutor{restarted: make(chan struct{}, 1)}
+		service := NewService(executor, operation.NewManager(nil), nil, Config{})
+		if id, err := service.StartADBMode(context.Background(), enabled); err != nil || id == "" {
+			t.Fatalf("StartADBMode(%v) = %q, %v", enabled, id, err)
+		}
+		select {
+		case <-executor.restarted:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("StartADBMode(%v) did not restart the modem; calls = %q", enabled, executor.snapshot())
+		}
+		calls := executor.snapshot()
+		writeAt := slices.IndexFunc(calls, func(call string) bool {
+			return strings.HasPrefix(call, `AT+QCFG="usbcfg",`)
+		})
+		if writeAt == -1 {
+			t.Fatalf("StartADBMode(%v) calls = %q, want a USB composition write", enabled, calls)
+		}
+		if !slices.Contains(calls[writeAt+1:], "AT+CFUN=1,1") {
+			t.Fatalf("StartADBMode(%v) calls = %q, want the restart after the composition write", enabled, calls)
+		}
+	}
+}
 
 type rebootADBDevice struct {
 	mode chan string

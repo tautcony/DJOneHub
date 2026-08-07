@@ -6,6 +6,7 @@ import EmptyState from '../components/EmptyState.vue'
 import LoadingState from '../components/LoadingState.vue'
 import StatusLight from '../components/StatusLight.vue'
 import { formatDateTime } from '../utils/date'
+import { simCardLabel, simICCIDs } from '../utils/simcards'
 import type { OperationStatus } from '../types'
 import { useViewContext } from './context'
 
@@ -19,13 +20,17 @@ const {
   device,
   filteredSmsThreads,
   loadedViews,
+  maskSensitive,
   resetSMSOperation,
+  simCards,
   selectedSmsPeer,
   selectedSmsThread,
   smsBody,
   smsComposeNew,
   smsOperation,
   smsQuery,
+  smsSimFilter,
+  smsThreads,
   smsTo,
   sendSMS,
 } = useViewContext()
@@ -40,6 +45,17 @@ const chronologicalMessages = computed(() =>
   selectedSmsThread.value ? [...selectedSmsThread.value.items].reverse() : [],
 )
 const canSend = computed(() => device.has('sms_send') && !!smsTo.value.trim() && !!smsBody.value.trim())
+const simOptions = computed(() =>
+  simICCIDs(
+    simCards.value,
+    smsThreads.value.map((thread) => thread.iccid),
+  ).map((iccid) => ({ value: iccid, label: simCardLabel(iccid, simCards.value, maskSensitive) })),
+)
+const selectedThreadSim = computed(() =>
+  selectedSmsThread.value?.iccid
+    ? simCardLabel(selectedSmsThread.value.iccid, simCards.value, maskSensitive)
+    : '',
+)
 
 // threadListLazy 报告会话数是否超过惰性阈值; visibleThreads 只挂载前 N 行。
 const threadListLazy = computed(() => filteredSmsThreads.value.length > SMS_THREAD_LAZY_THRESHOLD)
@@ -128,6 +144,13 @@ function threadDate(value?: string) {
         :placeholder="t('sms.search')"
       />
 
+      <a-select
+        v-model:value="smsSimFilter"
+        class="sms-sim-filter"
+        :aria-label="t('sms.simFilter')"
+        :options="[{ value: '', label: t('sms.allSimCards') }, ...simOptions]"
+      />
+
       <LoadingState v-if="!loadedViews.sms" />
       <div v-else class="sms-thread-list">
         <div v-if="offline" class="sms-offline-banner">{{ t('sms.offlineHint') }}</div>
@@ -146,6 +169,9 @@ function threadDate(value?: string) {
               <time>{{ threadDate(thread.latest?.received_at) }}</time>
             </span>
             <small>{{ thread.latest?.body || t('sms.backendContent') }}</small>
+            <span v-if="thread.iccid" class="sms-thread-sim">{{
+              simCardLabel(thread.iccid, simCards, maskSensitive)
+            }}</span>
           </span>
         </button>
 
@@ -178,7 +204,10 @@ function threadDate(value?: string) {
           <span class="sms-avatar sms-avatar-large">{{ initials(selectedPeer) }}</span>
           <div>
             <h2>{{ selectedPeer }}</h2>
-            <p>{{ selectedSmsThread.items.length }} {{ t('sms.messagesCount') }}</p>
+            <p>
+              {{ selectedSmsThread.items.length }} {{ t('sms.messagesCount') }}
+              <template v-if="selectedThreadSim"> · {{ selectedThreadSim }}</template>
+            </p>
           </div>
         </div>
         <div v-else class="sms-chat-identity">

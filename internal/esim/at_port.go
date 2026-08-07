@@ -45,7 +45,7 @@ func (p *esimPort) Overview(ctx context.Context) (*EsimOverview, error) {
 	if p == nil || p.manager == nil {
 		return nil, fmt.Errorf("eSIM manager is unavailable")
 	}
-	return p.manager.GetEsimOverview(ctx)
+	return p.manager.GetProfileOverview(ctx)
 }
 
 func (p *esimPort) EID(ctx context.Context) (string, error) {
@@ -144,7 +144,7 @@ func (p *esimPort) ListNotifications(ctx context.Context) ([]backend.Notificatio
 	if p == nil || p.manager == nil {
 		return nil, fmt.Errorf("eSIM manager is unavailable")
 	}
-	items, err := p.manager.ListNotifications("")
+	items, err := p.manager.ListNotificationsContext(ctx, "")
 	if err != nil {
 		return nil, err
 	}
