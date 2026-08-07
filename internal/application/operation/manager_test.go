@@ -13,7 +13,7 @@ func TestManagerPublishesProgressAndCompletion(t *testing.T) {
 	manager := NewManager(nil)
 	_, events, unsubscribe := manager.bus.Subscribe(16)
 	defer unsubscribe()
-	id, err := manager.Start(context.Background(), "test", func(_ context.Context, progress func(int, string)) error { progress(50, "halfway"); return nil })
+	id, err := manager.Start(context.Background(), "test", func(_ context.Context, _ string, progress func(int, string)) error { progress(50, "halfway"); return nil })
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -38,7 +38,7 @@ func TestManagerPublishesProgressAndCompletion(t *testing.T) {
 func TestManagerCancellation(t *testing.T) {
 	manager := NewManager(nil)
 	ctx := context.Background()
-	id, err := manager.Start(ctx, "cancel", func(ctx context.Context, _ func(int, string)) error { <-ctx.Done(); return ctx.Err() })
+	id, err := manager.Start(ctx, "cancel", func(ctx context.Context, _ string, _ func(int, string)) error { <-ctx.Done(); return ctx.Err() })
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestManagerCancellation(t *testing.T) {
 
 func TestManagerPreservesStructuredErrors(t *testing.T) {
 	manager := NewManager(nil)
-	id, err := manager.Start(context.Background(), "error", func(context.Context, func(int, string)) error {
+	id, err := manager.Start(context.Background(), "error", func(context.Context, string, func(int, string)) error {
 		return derrors.New(derrors.CapabilityNotSupported, "unsupported", false, map[string]any{"capability": "raw_at"})
 	})
 	if err != nil {
@@ -85,7 +85,7 @@ func TestStartAfterShutdownReturnsStructuredError(t *testing.T) {
 	if err := manager.Shutdown(ctx); err != nil {
 		t.Fatalf("shutdown: %v", err)
 	}
-	id, err := manager.Start(ctx, "late", func(context.Context, func(int, string)) error { return nil })
+	id, err := manager.Start(ctx, "late", func(context.Context, string, func(int, string)) error { return nil })
 	if err == nil {
 		t.Fatalf("Start after shutdown must fail, got id %q", id)
 	}
@@ -99,7 +99,7 @@ func TestStartAfterShutdownReturnsStructuredError(t *testing.T) {
 
 func TestShutdownCancelsRunningOperations(t *testing.T) {
 	manager := NewManager(nil)
-	id, err := manager.Start(context.Background(), "flash", func(ctx context.Context, _ func(int, string)) error {
+	id, err := manager.Start(context.Background(), "flash", func(ctx context.Context, _ string, _ func(int, string)) error {
 		<-ctx.Done()
 		return ctx.Err()
 	})
@@ -130,7 +130,7 @@ func TestShutdownIsIdempotentAndTimeoutDoesNotPoisonLaterCallers(t *testing.T) {
 	manager := NewManager(nil)
 	// A long-running worker that ignores cancellation for a while.
 	started := make(chan struct{})
-	id, err := manager.Start(context.Background(), "slow", func(ctx context.Context, _ func(int, string)) error {
+	id, err := manager.Start(context.Background(), "slow", func(ctx context.Context, _ string, _ func(int, string)) error {
 		close(started)
 		select {
 		case <-ctx.Done():

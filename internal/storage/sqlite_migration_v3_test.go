@@ -75,8 +75,8 @@ func TestSQLiteMigratesV2ToV3PreservesRowsAndIDs(t *testing.T) {
 	if err := store.db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 3 {
-		t.Fatalf("schema version = %d, want 3", version)
+	if version != migrationVersion {
+		t.Fatalf("schema version = %d, want %d", version, migrationVersion)
 	}
 
 	records, err := store.ListSMS("inbound", 0, 0)

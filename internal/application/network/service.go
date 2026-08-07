@@ -396,7 +396,7 @@ func (s *Service) SetMode(ctx context.Context, mode string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return s.ops.Start(ctx, "network.set_mode", func(taskCtx context.Context, progress func(int, string)) error {
+	return s.ops.Start(ctx, "network.set_mode", func(taskCtx context.Context, _ string, progress func(int, string)) error {
 		release, err := s.runtime.Acquire(taskCtx, runtime.ResourceNetwork)
 		if err != nil {
 			return err

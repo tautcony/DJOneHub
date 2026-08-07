@@ -27,13 +27,18 @@ func (p *stubESIMPort) Profiles(context.Context) ([]Profile, error) {
 	return p.profiles, p.err
 }
 
-func (p *stubESIMPort) Download(context.Context, string, string, string) error {
+func (p *stubESIMPort) Download(context.Context, string, string, string, *ESIMDownloadOptions) error {
 	p.calls = append(p.calls, "download")
 	return p.err
 }
 
 func (p *stubESIMPort) Enable(context.Context, string) error {
 	p.calls = append(p.calls, "enable")
+	return p.err
+}
+
+func (p *stubESIMPort) Disable(context.Context, string) error {
+	p.calls = append(p.calls, "disable")
 	return p.err
 }
 
@@ -44,6 +49,21 @@ func (p *stubESIMPort) Rename(context.Context, string, string) error {
 
 func (p *stubESIMPort) Delete(context.Context, string) error {
 	p.calls = append(p.calls, "delete")
+	return p.err
+}
+
+func (p *stubESIMPort) ListNotifications(context.Context) ([]NotificationItem, error) {
+	p.calls = append(p.calls, "list_notifications")
+	return nil, p.err
+}
+
+func (p *stubESIMPort) ProcessNotification(context.Context, int64) error {
+	p.calls = append(p.calls, "process_notification")
+	return p.err
+}
+
+func (p *stubESIMPort) RemoveNotification(context.Context, int64) error {
+	p.calls = append(p.calls, "remove_notification")
 	return p.err
 }
 
@@ -67,7 +87,7 @@ func TestATBackendESIMUnavailableWithoutPort(t *testing.T) {
 	_, err = at.Profiles(context.Background())
 	assertUnsupported("esim_profiles", err)
 
-	err = at.Download(context.Background(), "LPA:1$smdp.example.com", "", "")
+	err = at.Download(context.Background(), "LPA:1$smdp.example.com", "", "", nil)
 	assertUnsupported("esim_download", err)
 
 	err = at.Enable(context.Background(), "8986012001000000000")
@@ -78,6 +98,18 @@ func TestATBackendESIMUnavailableWithoutPort(t *testing.T) {
 
 	err = at.Delete(context.Background(), "8986012001000000000")
 	assertUnsupported("esim_delete", err)
+
+	err = at.Disable(context.Background(), "8986012001000000000")
+	assertUnsupported("esim_disable", err)
+
+	_, err = at.ListNotifications(context.Background())
+	assertUnsupported("esim_notifications", err)
+
+	err = at.ProcessNotification(context.Background(), 1)
+	assertUnsupported("esim_notifications", err)
+
+	err = at.RemoveNotification(context.Background(), 1)
+	assertUnsupported("esim_notifications", err)
 }
 
 func TestATBackendESIMForwardsToPort(t *testing.T) {
@@ -98,7 +130,7 @@ func TestATBackendESIMForwardsToPort(t *testing.T) {
 		t.Fatalf("Profiles = %+v, %v", profiles, err)
 	}
 
-	if err := at.Download(context.Background(), "LPA:1$smdp.example.com", "", ""); err != nil {
+	if err := at.Download(context.Background(), "LPA:1$smdp.example.com", "", "", nil); err != nil {
 		t.Fatalf("Download: %v", err)
 	}
 	if err := at.Enable(context.Background(), "8986012001000000000"); err != nil {
@@ -110,8 +142,23 @@ func TestATBackendESIMForwardsToPort(t *testing.T) {
 	if err := at.Delete(context.Background(), "8986012001000000000"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
+	if err := at.Disable(context.Background(), "8986012001000000000"); err != nil {
+		t.Fatalf("Disable: %v", err)
+	}
+	if _, err := at.ListNotifications(context.Background()); err != nil {
+		t.Fatalf("ListNotifications: %v", err)
+	}
+	if err := at.ProcessNotification(context.Background(), 1); err != nil {
+		t.Fatalf("ProcessNotification: %v", err)
+	}
+	if err := at.RemoveNotification(context.Background(), 1); err != nil {
+		t.Fatalf("RemoveNotification: %v", err)
+	}
 
-	wantCalls := []string{"eid", "profiles", "download", "enable", "rename", "delete"}
+	wantCalls := []string{
+		"eid", "profiles", "download", "enable", "rename", "delete", "disable",
+		"list_notifications", "process_notification", "remove_notification",
+	}
 	if !reflect.DeepEqual(port.calls, wantCalls) {
 		t.Fatalf("calls = %v, want %v", port.calls, wantCalls)
 	}

@@ -108,11 +108,21 @@ func (p *esimPort) Profiles(ctx context.Context) ([]backend.Profile, error) {
 	return profiles, nil
 }
 
-func (p *esimPort) Download(ctx context.Context, activationCode, confirmationCode, matchingID string) error {
+func (p *esimPort) Download(ctx context.Context, activationCode, confirmationCode, matchingID string, opts *backend.ESIMDownloadOptions) error {
 	if p == nil || p.manager == nil {
 		return fmt.Errorf("eSIM manager is unavailable")
 	}
-	_, err := p.manager.DownloadProfile(ctx, "", activationCode, matchingID, confirmationCode, "", nil)
+	var interact *DownloadInteraction
+	if opts != nil && opts.ConfirmationCodeRequest != nil {
+		interact = &DownloadInteraction{OnConfirmationCodeRequest: opts.ConfirmationCodeRequest}
+	}
+	var progressFn DownloadProgressFn
+	if opts != nil && opts.Progress != nil {
+		progressFn = func(event DownloadProgressEvent) {
+			opts.Progress(event.Step, event.Pct, event.Msg)
+		}
+	}
+	_, err := p.manager.DownloadProfile(ctx, "", activationCode, matchingID, confirmationCode, "", progressFn, interact)
 	return err
 }
 
@@ -121,6 +131,48 @@ func (p *esimPort) Enable(ctx context.Context, iccid string) error {
 		return fmt.Errorf("eSIM manager is unavailable")
 	}
 	return p.manager.SwitchProfile(ctx, strings.TrimSpace(iccid), "")
+}
+
+func (p *esimPort) Disable(ctx context.Context, iccid string) error {
+	if p == nil || p.manager == nil {
+		return fmt.Errorf("eSIM manager is unavailable")
+	}
+	return p.manager.DisableProfile(ctx, strings.TrimSpace(iccid), "")
+}
+
+func (p *esimPort) ListNotifications(ctx context.Context) ([]backend.NotificationItem, error) {
+	if p == nil || p.manager == nil {
+		return nil, fmt.Errorf("eSIM manager is unavailable")
+	}
+	items, err := p.manager.ListNotifications("")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]backend.NotificationItem, 0, len(items))
+	for _, item := range items {
+		out = append(out, backend.NotificationItem{
+			SequenceNumber: item.SequenceNumber,
+			Event:          item.Event,
+			ICCID:          item.ICCID,
+			Address:        item.Address,
+			CanRetry:       item.CanRetry,
+		})
+	}
+	return out, nil
+}
+
+func (p *esimPort) ProcessNotification(ctx context.Context, sequenceNumber int64) error {
+	if p == nil || p.manager == nil {
+		return fmt.Errorf("eSIM manager is unavailable")
+	}
+	return p.manager.RetryNotification(sequenceNumber, "")
+}
+
+func (p *esimPort) RemoveNotification(ctx context.Context, sequenceNumber int64) error {
+	if p == nil || p.manager == nil {
+		return fmt.Errorf("eSIM manager is unavailable")
+	}
+	return p.manager.RemoveNotification(sequenceNumber, "")
 }
 
 func (p *esimPort) Rename(ctx context.Context, iccid, label string) error {

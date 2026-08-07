@@ -325,12 +325,12 @@ func (a *BusinessAdapter) Profiles(ctx context.Context) ([]Profile, error) {
 	return port.Profiles(ctx)
 }
 
-func (a *BusinessAdapter) Download(ctx context.Context, activationCode, confirmationCode, matchingID string) error {
+func (a *BusinessAdapter) Download(ctx context.Context, activationCode, confirmationCode, matchingID string, opts *ESIMDownloadOptions) error {
 	port, ok := a.legacy.(ESIMPort)
 	if !ok {
 		return unsupported("esim", "esim_download")
 	}
-	return port.Download(ctx, activationCode, confirmationCode, matchingID)
+	return port.Download(ctx, activationCode, confirmationCode, matchingID, opts)
 }
 
 func (a *BusinessAdapter) Enable(ctx context.Context, iccid string) error {
@@ -339,6 +339,14 @@ func (a *BusinessAdapter) Enable(ctx context.Context, iccid string) error {
 		return unsupported("esim", "esim_enable")
 	}
 	return port.Enable(ctx, iccid)
+}
+
+func (a *BusinessAdapter) Disable(ctx context.Context, iccid string) error {
+	port, ok := a.legacy.(ESIMPort)
+	if !ok {
+		return unsupported("esim", "esim_disable")
+	}
+	return port.Disable(ctx, iccid)
 }
 
 func (a *BusinessAdapter) Rename(ctx context.Context, iccid, label string) error {
@@ -355,6 +363,30 @@ func (a *BusinessAdapter) Delete(ctx context.Context, iccid string) error {
 		return unsupported("esim", "esim_delete")
 	}
 	return port.Delete(ctx, iccid)
+}
+
+func (a *BusinessAdapter) ListNotifications(ctx context.Context) ([]NotificationItem, error) {
+	port, ok := a.legacy.(ESIMPort)
+	if !ok {
+		return nil, unsupported("esim", "esim_notifications")
+	}
+	return port.ListNotifications(ctx)
+}
+
+func (a *BusinessAdapter) ProcessNotification(ctx context.Context, sequenceNumber int64) error {
+	port, ok := a.legacy.(ESIMPort)
+	if !ok {
+		return unsupported("esim", "esim_notifications")
+	}
+	return port.ProcessNotification(ctx, sequenceNumber)
+}
+
+func (a *BusinessAdapter) RemoveNotification(ctx context.Context, sequenceNumber int64) error {
+	port, ok := a.legacy.(ESIMPort)
+	if !ok {
+		return unsupported("esim", "esim_notifications")
+	}
+	return port.RemoveNotification(ctx, sequenceNumber)
 }
 
 func (a *BusinessAdapter) Status(ctx context.Context) (map[string]any, error) {

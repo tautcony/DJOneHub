@@ -24,6 +24,7 @@ import (
 	sgp22 "github.com/damonto/euicc-go/v2"
 	"github.com/iniwex5/vohive/internal/apduarbiter"
 	backendpkg "github.com/iniwex5/vohive/internal/backend"
+	derrors "github.com/iniwex5/vohive/internal/domain/errors"
 	"github.com/iniwex5/vohive/internal/modem"
 	"github.com/iniwex5/vohive/pkg/logger"
 )
@@ -3124,6 +3125,38 @@ func (m *Manager) RetryNotification(sequenceNumber int64, aidHex string) error {
 	return nil
 }
 
+// RemoveNotification 从 eUICC 通知列表删除指定序号的待处理通知（不发送）。
+// 签名与 RetryNotification 镜像，sequenceNumber <= 0 或通知不存在时返回结构化错误。
+func (m *Manager) RemoveNotification(sequenceNumber int64, aidHex string) error {
+	m.opMu.Lock()
+	writeStarted := time.Now()
+	defer func() {
+		m.logWriteOperationHold("remove_notification", writeStarted)
+		m.opMu.Unlock()
+		m.notifyWriteDone()
+	}()
+	if sequenceNumber <= 0 {
+		return NewNotificationError(NotificationErrorInvalidSequence, fmt.Sprintf("无效的通知序号 %d", sequenceNumber), nil)
+	}
+	targetAID, err := m.resolveNotificationAID(aidHex)
+	if err != nil {
+		return err
+	}
+	client, err := m.createLPAWithAID(targetAID)
+	if err != nil {
+		return NewNotificationError(NotificationErrorInternal, fmt.Sprintf("创建 LPA client 失败: %v", err), err)
+	}
+	defer m.closeLPAClientForOperation("remove_notification", client)
+	seq := sgp22.SequenceNumber(sequenceNumber)
+	if err := client.RemoveNotificationFromList(seq); err != nil {
+		if errors.Is(err, sgp22.ErrUndefined) {
+			return NewNotificationError(NotificationErrorNotFound, fmt.Sprintf("通知 %d 不存在", sequenceNumber), err)
+		}
+		return NewNotificationError(NotificationErrorInternal, fmt.Sprintf("删除通知 %d 失败: %v", sequenceNumber, err), err)
+	}
+	return nil
+}
+
 // DownloadProfile 下载 eSIM profile 到指定 SE
 // aidHex 为目标 AID（hex 字符串），为空则使用第一个可用 AID
 // digestMatchingID 计算 matchingID 的 SHA-256 摘要前 8 位十六进制,
@@ -3139,12 +3172,20 @@ func digestMatchingID(matchingID string) string {
 // smdp 为 SM-DP+ 服务器地址，matchingID 和 confirmationCode 可选
 // downloadIMEI 为可选的前端指定 IMEI；为空时使用设备真实 IMEI
 // progressFn 为可选进度回调，为 nil 时静默执行
-func (m *Manager) DownloadProfile(ctx context.Context, aidHex, smdp, matchingID, confirmationCode, downloadIMEI string, progressFn DownloadProgressFn) (DownloadProfileResult, error) {
+// DownloadInteraction 携带下载过程中的双向交互回调。
+type DownloadInteraction struct {
+	// OnConfirmationCodeRequest 在 SM-DP+ 要求确认码且未随激活码提供时被调用；
+	// 返回确认码、是否取消与错误。阻塞等待用户输入，canceled 为 true 时下载按取消处理。
+	OnConfirmationCodeRequest func() (code string, canceled bool, err error)
+}
+
+func (m *Manager) DownloadProfile(ctx context.Context, aidHex, smdp, matchingID, confirmationCode, downloadIMEI string, progressFn DownloadProgressFn, interact *DownloadInteraction) (DownloadProfileResult, error) {
 	report := func(step, msg string, pct int) {
 		if progressFn != nil {
 			progressFn(DownloadProgressEvent{Step: step, Msg: msg, Pct: pct})
 		}
 	}
+	confirmationCanceled := false
 	result := DownloadProfileResult{}
 	m.opMu.Lock()
 	writeStarted := time.Now()
@@ -3249,9 +3290,29 @@ func (m *Manager) DownloadProfile(ctx context.Context, aidHex, smdp, matchingID,
 				report("install", "正在将 Profile 写入 eUICC...", 80)
 			}
 		},
+		// Profile 元数据确认由用户发起的下载动作隐含同意，不做额外确认 UI。
+		OnConfirm: func(metadata *sgp22.ProfileInfo) bool { return true },
+		OnEnterConfirmationCode: func() string {
+			if interact == nil || interact.OnConfirmationCodeRequest == nil {
+				return ""
+			}
+			code, canceled, err := interact.OnConfirmationCodeRequest()
+			if err != nil || canceled {
+				confirmationCanceled = true
+				return ""
+			}
+			return code
+		},
 	}
 	downloadResult, err := client.DownloadProfile(ctx, activationCode, opts)
 	if err != nil {
+		if confirmationCanceled {
+			// 用户拒绝确认码请求或超时未回复：按显式取消处理，不误报为一般失败。
+			logger.Info("下载 eSIM profile 被用户取消（确认码未提供）",
+				"device", m.deviceID,
+				"smdp", parsedURL.Host)
+			return DownloadProfileResult{}, derrors.New(derrors.OperationCancelled, "确认码未提供，下载已取消", false, nil)
+		}
 		downloadErr := NewDownloadProfileError(err)
 		logger.Warn("下载 eSIM profile 失败",
 			"device", m.deviceID,

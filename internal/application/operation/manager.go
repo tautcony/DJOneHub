@@ -39,7 +39,9 @@ type Log struct {
 	Message     string `json:"message"`
 }
 
-type Task func(context.Context, func(int, string)) error
+// Task 执行异步操作。第二个参数是 operation_id，任务内需要发布带 operation
+// 身份的事件（如下载确认码请求）时使用；第一个参数是操作上下文。
+type Task func(context.Context, string, func(int, string)) error
 
 // ErrShutdown is returned by Start once shutdown admission has closed; no
 // operation is launched and no ID is returned.
@@ -127,7 +129,7 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 func (m *Manager) run(ctx context.Context, status *Status, task Task) {
 	defer m.runWG.Done()
 	m.update(status.ID, func(s *Status) { s.State = Running; s.StartedAt = time.Now().UTC() })
-	err := task(ctx, func(progress int, message string) {
+	err := task(ctx, status.ID, func(progress int, message string) {
 		if progress < 0 {
 			progress = 0
 		}

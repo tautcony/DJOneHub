@@ -72,6 +72,47 @@ type TrafficDailyRecord struct {
 	LastSampledAt time.Time
 }
 
+// SimCardRecord 是用户维护的 SIM 卡档案：ICCID 为唯一主键，插卡自动记录
+// first/last_seen_at 作为附属信息，名称/备注/号码由用户维护或自动补录。
+type SimCardRecord struct {
+	ICCID     string
+	IMSI      string
+	MSISDN    string
+	Name      string
+	Notes     string
+	FirstSeen time.Time
+	LastSeen  time.Time
+	UpdatedAt time.Time
+}
+
+// NotificationHistoryState 描述一条 eUICC 通知在其生命周期内的处置状态。
+type NotificationHistoryState string
+
+const (
+	// NotificationStatePending 是首次在卡片上观察到但尚未处置。
+	NotificationStatePending NotificationHistoryState = "pending"
+	// NotificationStateProcessed 是已成功上报给 SM-DP+（自动清理或手动重发）。
+	NotificationStateProcessed NotificationHistoryState = "processed"
+	// NotificationStateFailed 是上报失败，仍保留在卡内。
+	NotificationStateFailed NotificationHistoryState = "failed"
+	// NotificationStateRemoved 是用户手动从卡片删除、未上报。
+	NotificationStateRemoved NotificationHistoryState = "removed"
+)
+
+// NotificationHistoryRecord 是 eUICC 通知的历史记录。卡片上的通知被清理后
+// 记录仍保留在本地库中，供用户查看处置轨迹。SequenceNumber 按卡片作用域递增，
+// 去重键为 (sequence_number, iccid, event)，避免跨卡片混淆。
+type NotificationHistoryRecord struct {
+	SequenceNumber int64
+	Event          string
+	ICCID          string
+	Address        string
+	AID            string
+	State          NotificationHistoryState
+	ObservedAt     time.Time
+	UpdatedAt      time.Time
+}
+
 // OpenSQLite creates or opens the single local application database and
 // applies all schema migrations before returning it.
 func OpenSQLite(path string) (*SQLiteStore, error) {
@@ -162,6 +203,31 @@ func (s *SQLiteStore) configure() error {
 		);
 		CREATE INDEX IF NOT EXISTS idx_traffic_daily_date
 			ON traffic_daily(usage_date DESC);
+		CREATE TABLE IF NOT EXISTS esim_notification_history (
+			sequence_number INTEGER NOT NULL,
+			event TEXT NOT NULL,
+			iccid TEXT NOT NULL DEFAULT '',
+			address TEXT NOT NULL DEFAULT '',
+			aid TEXT NOT NULL DEFAULT '',
+			state TEXT NOT NULL DEFAULT 'pending',
+			observed_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			UNIQUE (sequence_number, iccid, event)
+		);
+		CREATE INDEX IF NOT EXISTS idx_esim_notification_history_updated
+			ON esim_notification_history(updated_at DESC);
+		CREATE TABLE IF NOT EXISTS sim_cards (
+			iccid TEXT PRIMARY KEY,
+			imsi TEXT NOT NULL DEFAULT '',
+			msisdn TEXT NOT NULL DEFAULT '',
+			name TEXT NOT NULL DEFAULT '',
+			notes TEXT NOT NULL DEFAULT '',
+			first_seen_at TEXT NOT NULL,
+			last_seen_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_sim_cards_last_seen
+			ON sim_cards(last_seen_at DESC);
 	`)
 	if err != nil {
 		return fmt.Errorf("migrate sqlite schema: %w", err)
@@ -197,13 +263,29 @@ func (s *SQLiteStore) applyMigrations() error {
 			if err := s.migrateSMSUniquenessWithIdentity(); err != nil {
 				return err
 			}
+		case 4:
+			// v4: eUICC 通知历史表（基线 CREATE TABLE 已包含，幂等）。
+			if err := s.ensureColumn("esim_notification_history", "state", "state TEXT NOT NULL DEFAULT 'pending'"); err != nil {
+				return err
+			}
+			if err := s.recordMigration(version); err != nil {
+				return err
+			}
+		case 5:
+			// v5: SIM 卡档案表（基线 CREATE TABLE 已包含，幂等）。
+			if err := s.ensureColumn("sim_cards", "notes", "notes TEXT NOT NULL DEFAULT ''"); err != nil {
+				return err
+			}
+			if err := s.recordMigration(version); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
 }
 
 // migrationVersion is the newest schema version this binary understands.
-const migrationVersion = 3
+const migrationVersion = 5
 
 func (s *SQLiteStore) recordMigration(version int) error {
 	if _, err := s.db.Exec(`INSERT INTO schema_migrations(version, applied_at) VALUES(?, ?)`, version, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
@@ -663,6 +745,256 @@ func nullInt(value sql.NullInt64) int {
 		return 0
 	}
 	return int(value.Int64)
+}
+
+// UpsertSimCardSeen 记录一次插卡观测：卡片不存在时建档（首次见到），
+// 已存在时更新最近见到时间；imsi/msisdn 仅在非空时覆盖旧值（自动补录，
+// 不覆盖用户已有的编辑结果之外的信息——号码以设备读取为准）。
+func (s *SQLiteStore) UpsertSimCardSeen(record SimCardRecord) error {
+	iccid := strings.TrimSpace(record.ICCID)
+	if iccid == "" {
+		return fmt.Errorf("sim card iccid is required")
+	}
+	now := time.Now().UTC()
+	_, err := s.db.Exec(`
+		INSERT INTO sim_cards(iccid, imsi, msisdn, name, notes, first_seen_at, last_seen_at, updated_at)
+		VALUES(?, ?, ?, '', '', ?, ?, ?)
+		ON CONFLICT(iccid) DO UPDATE SET
+			imsi = CASE WHEN excluded.imsi = '' THEN sim_cards.imsi ELSE excluded.imsi END,
+			msisdn = CASE WHEN excluded.msisdn = '' THEN sim_cards.msisdn ELSE excluded.msisdn END,
+			last_seen_at = excluded.last_seen_at,
+			updated_at = excluded.updated_at
+	`, iccid, record.IMSI, record.MSISDN, now.Format(time.RFC3339Nano),
+		now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+	if err != nil {
+		return fmt.Errorf("upsert sim card seen: %w", err)
+	}
+	return nil
+}
+
+// InsertSimCard 手动建档一张卡。ICCID 为主键，已存在时返回错误（应由更新
+// 或"插卡已自动建档"路径处理）。name/notes/msisdn 可空。
+func (s *SQLiteStore) InsertSimCard(record SimCardRecord) error {
+	iccid := strings.TrimSpace(record.ICCID)
+	if iccid == "" {
+		return fmt.Errorf("sim card iccid is required")
+	}
+	now := time.Now().UTC()
+	firstSeen := record.FirstSeen
+	if firstSeen.IsZero() {
+		firstSeen = now
+	}
+	_, err := s.db.Exec(`
+		INSERT INTO sim_cards(iccid, imsi, msisdn, name, notes, first_seen_at, last_seen_at, updated_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+	`, iccid, record.IMSI, record.MSISDN, record.Name, record.Notes,
+		firstSeen.UTC().Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+	if err != nil {
+		return fmt.Errorf("insert sim card: %w", err)
+	}
+	return nil
+}
+
+// UpdateSimCardMeta 更新用户维护的卡片元数据（名称/备注/号码）；ICCID 不可变。
+// 号码字段仅在非空时更新，空值保留原值。
+func (s *SQLiteStore) UpdateSimCardMeta(iccid, name, notes, msisdn string) error {
+	iccid = strings.TrimSpace(iccid)
+	if iccid == "" {
+		return fmt.Errorf("sim card iccid is required")
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := s.db.Exec(`
+		UPDATE sim_cards SET
+			name = ?,
+			notes = ?,
+			msisdn = CASE WHEN ? = '' THEN msisdn ELSE ? END,
+			updated_at = ?
+		WHERE iccid = ?
+	`, name, notes, msisdn, msisdn, now, iccid)
+	if err != nil {
+		return fmt.Errorf("update sim card meta: %w", err)
+	}
+	return nil
+}
+
+// DeleteSimCard 删除一张卡档案；返回是否实际删除。
+func (s *SQLiteStore) DeleteSimCard(iccid string) (bool, error) {
+	result, err := s.db.Exec(`DELETE FROM sim_cards WHERE iccid = ?`, strings.TrimSpace(iccid))
+	if err != nil {
+		return false, fmt.Errorf("delete sim card: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("delete sim card rows: %w", err)
+	}
+	return affected > 0, nil
+}
+
+// ListSimCards 按最近见到时间倒序返回全部卡档案。
+func (s *SQLiteStore) ListSimCards() ([]SimCardRecord, error) {
+	rows, err := s.db.Query(`
+		SELECT iccid, imsi, msisdn, name, notes, first_seen_at, last_seen_at, updated_at
+		FROM sim_cards ORDER BY last_seen_at DESC, iccid ASC
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("list sim cards: %w", err)
+	}
+	defer rows.Close()
+	var records []SimCardRecord
+	for rows.Next() {
+		var record SimCardRecord
+		var firstSeen, lastSeen, updatedAt string
+		if err := rows.Scan(&record.ICCID, &record.IMSI, &record.MSISDN, &record.Name, &record.Notes,
+			&firstSeen, &lastSeen, &updatedAt); err != nil {
+			return nil, fmt.Errorf("scan sim card: %w", err)
+		}
+		record.FirstSeen, err = time.Parse(time.RFC3339Nano, firstSeen)
+		if err != nil {
+			return nil, fmt.Errorf("parse sim card first_seen_at: %w", err)
+		}
+		record.LastSeen, err = time.Parse(time.RFC3339Nano, lastSeen)
+		if err != nil {
+			return nil, fmt.Errorf("parse sim card last_seen_at: %w", err)
+		}
+		record.UpdatedAt, err = time.Parse(time.RFC3339Nano, updatedAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse sim card updated_at: %w", err)
+		}
+		records = append(records, record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate sim cards: %w", err)
+	}
+	return records, nil
+}
+
+// UpsertNotificationHistory 写入一条 eUICC 通知历史。去重键
+// (sequence_number, iccid, event)；已存在时更新状态/地址/更新时间，
+// 首次观察时间保持第一次写入不变。
+func (s *SQLiteStore) UpsertNotificationHistory(record NotificationHistoryRecord) error {
+	if record.SequenceNumber <= 0 || strings.TrimSpace(record.Event) == "" {
+		return fmt.Errorf("notification sequence and event are required")
+	}
+	now := time.Now().UTC()
+	observedAt := record.ObservedAt
+	if observedAt.IsZero() {
+		observedAt = now
+	}
+	state := record.State
+	if strings.TrimSpace(string(state)) == "" {
+		state = NotificationStatePending
+	}
+	_, err := s.db.Exec(`
+		INSERT INTO esim_notification_history(
+			sequence_number, event, iccid, address, aid, state, observed_at, updated_at
+		) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(sequence_number, iccid, event) DO UPDATE SET
+			address = excluded.address,
+			aid = excluded.aid,
+			state = excluded.state,
+			updated_at = excluded.updated_at
+	`, record.SequenceNumber, record.Event, record.ICCID, record.Address, record.AID,
+		string(state), observedAt.UTC().Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+	if err != nil {
+		return fmt.Errorf("upsert notification history: %w", err)
+	}
+	return nil
+}
+
+// MarkNotificationHistoryAbsent 把仍处于 pending 状态、但不在当前卡片待处理
+// 快照中的记录标记为 processed——说明通知已被自动清理或卡片自行处置。
+// current 是本次快照中仍在卡片上的记录键集合。
+func (s *SQLiteStore) MarkNotificationHistoryAbsent(current []NotificationHistoryRecord) error {
+	rows, err := s.db.Query(`
+		SELECT sequence_number, iccid, event FROM esim_notification_history WHERE state = ?
+	`, NotificationStatePending)
+	if err != nil {
+		return fmt.Errorf("read pending notification history: %w", err)
+	}
+	// 单连接池（MaxOpenConns=1）下，rows 未关闭前不能发起新的 Exec，
+	// 否则写语句会永远等不到连接。先读完并关闭 rows，再执行更新。
+	var pending [][3]string
+	for rows.Next() {
+		var sequenceNumber int64
+		var iccid, event string
+		if err := rows.Scan(&sequenceNumber, &iccid, &event); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan pending notification history: %w", err)
+		}
+		pending = append(pending, [3]string{fmt.Sprintf("%d", sequenceNumber), iccid, event})
+	}
+	rowsErr := rows.Err()
+	rows.Close()
+	if rowsErr != nil {
+		return fmt.Errorf("iterate pending notification history: %w", rowsErr)
+	}
+	present := make(map[string]bool, len(current))
+	for _, record := range current {
+		present[notificationHistoryKey(record.SequenceNumber, record.ICCID, record.Event)] = true
+	}
+	updatedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	for _, key := range pending {
+		if present[notificationHistoryKeyRaw(key[0], key[1], key[2])] {
+			continue
+		}
+		if _, err := s.db.Exec(`
+			UPDATE esim_notification_history SET state = ?, updated_at = ?
+			WHERE state = ? AND sequence_number = ? AND iccid = ? AND event = ?
+		`, NotificationStateProcessed, updatedAt,
+			NotificationStatePending, key[0], key[1], key[2]); err != nil {
+			return fmt.Errorf("mark notification history absent: %w", err)
+		}
+	}
+	return nil
+}
+
+func notificationHistoryKey(sequenceNumber int64, iccid, event string) string {
+	return fmt.Sprintf("%d|%s|%s", sequenceNumber, iccid, event)
+}
+
+func notificationHistoryKeyRaw(sequenceNumber, iccid, event string) string {
+	return sequenceNumber + "|" + iccid + "|" + event
+}
+
+// NotificationHistoryDefaultLimit 是历史列表的默认页大小。
+const NotificationHistoryDefaultLimit = 200
+
+// ListNotificationHistory 按处置时间倒序返回通知历史。limit<=0 使用默认值。
+func (s *SQLiteStore) ListNotificationHistory(limit int) ([]NotificationHistoryRecord, error) {
+	if limit <= 0 {
+		limit = NotificationHistoryDefaultLimit
+	}
+	rows, err := s.db.Query(`
+		SELECT sequence_number, event, iccid, address, aid, state, observed_at, updated_at
+		FROM esim_notification_history ORDER BY updated_at DESC, sequence_number DESC LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list notification history: %w", err)
+	}
+	defer rows.Close()
+	var records []NotificationHistoryRecord
+	for rows.Next() {
+		var record NotificationHistoryRecord
+		var state, observedAt, updatedAt string
+		if err := rows.Scan(&record.SequenceNumber, &record.Event, &record.ICCID, &record.Address,
+			&record.AID, &state, &observedAt, &updatedAt); err != nil {
+			return nil, fmt.Errorf("scan notification history: %w", err)
+		}
+		record.State = NotificationHistoryState(state)
+		record.ObservedAt, err = time.Parse(time.RFC3339Nano, observedAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse notification observed_at: %w", err)
+		}
+		record.UpdatedAt, err = time.Parse(time.RFC3339Nano, updatedAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse notification updated_at: %w", err)
+		}
+		records = append(records, record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate notification history: %w", err)
+	}
+	return records, nil
 }
 
 func (s *SQLiteStore) Close() error {

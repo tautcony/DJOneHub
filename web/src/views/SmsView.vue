@@ -31,6 +31,10 @@ const {
 } = useViewContext()
 
 const deviceReady = computed(() => device.snapshot?.state === 'ready' && !device.error)
+// 未插卡时模组短信存储不可用：明确提示而非把"无卡"当成加载失败。
+const noSim = computed(() => device.status != null && device.status.sim?.inserted !== true)
+// 设备离线/未就绪时仍展示已持久化的本地缓存短信, 并给出明确提示。
+const offline = computed(() => !deviceReady.value)
 const selectedPeer = computed(() => selectedSmsThread.value?.peer || '')
 const chronologicalMessages = computed(() =>
   selectedSmsThread.value ? [...selectedSmsThread.value.items].reverse() : [],
@@ -126,6 +130,8 @@ function threadDate(value?: string) {
 
       <LoadingState v-if="!loadedViews.sms" />
       <div v-else class="sms-thread-list">
+        <div v-if="offline" class="sms-offline-banner">{{ t('sms.offlineHint') }}</div>
+
         <button
           v-for="thread in visibleThreads"
           :key="thread.key"
@@ -154,8 +160,8 @@ function threadDate(value?: string) {
 
         <EmptyState
           v-if="!filteredSmsThreads.length"
-          :title="smsQuery ? t('sms.noSearchResults') : t('sms.noMessages')"
-          :detail="t('sms.emptyDetail')"
+          :title="noSim ? t('sms.noSim') : (smsQuery ? t('sms.noSearchResults') : t('sms.noMessages'))"
+          :detail="noSim ? t('sms.noSimDetail') : t('sms.emptyDetail')"
         />
       </div>
     </aside>

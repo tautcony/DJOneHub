@@ -18,6 +18,12 @@ export default tseslint.config(
         WebSocket: 'readonly',
         setTimeout: 'readonly',
         clearTimeout: 'readonly',
+        File: 'readonly',
+        URL: 'readonly',
+        Image: 'readonly',
+        Event: 'readonly',
+        ClipboardEvent: 'readonly',
+        HTMLInputElement: 'readonly',
       },
     },
     rules: {

@@ -2170,10 +2170,28 @@ func TestDisableProfileRejectsInvalidICCIDBeforeOpeningChannel(t *testing.T) {
 	}
 }
 
+func TestRemoveNotificationRejectsInvalidSequence(t *testing.T) {
+	mgr := newTestManagerWithOverviewLoader(nil)
+
+	err := mgr.RemoveNotification(0, "")
+	if err == nil {
+		t.Fatal("RemoveNotification(0) error=nil, want invalid sequence error")
+	}
+	var target *NotificationError
+	if !errors.As(err, &target) || target.Code != NotificationErrorInvalidSequence {
+		t.Fatalf("err = %v, want invalid sequence notification error", err)
+	}
+
+	err = mgr.RemoveNotification(-3, "")
+	if err == nil {
+		t.Fatal("RemoveNotification(-3) error=nil, want invalid sequence error")
+	}
+}
+
 func TestDownloadProfileReturnsZeroWarningResultForInvalidAIDHex(t *testing.T) {
 	mgr := newTestManagerWithOverviewLoader(nil)
 
-	result, err := mgr.DownloadProfile(context.Background(), "zz", "example.com", "", "", "", nil)
+	result, err := mgr.DownloadProfile(context.Background(), "zz", "example.com", "", "", "", nil, nil)
 	if err == nil {
 		t.Fatal("DownloadProfile() error=nil, want invalid AID error")
 	}

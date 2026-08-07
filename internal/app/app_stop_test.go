@@ -40,7 +40,7 @@ func TestAppStopClosesAdmissionCancelsOperationsAndClosesStoreLast(t *testing.T)
 
 	// An operation starts and is cancelled+joined by Stop.
 	started := make(chan struct{})
-	id, err := instance.Operations.Start(ctx, "test.flash", func(taskCtx context.Context, _ func(int, string)) error {
+	id, err := instance.Operations.Start(ctx, "test.flash", func(taskCtx context.Context, _ string, _ func(int, string)) error {
 		close(started)
 		<-taskCtx.Done()
 		return taskCtx.Err()
@@ -69,7 +69,7 @@ func TestAppStopClosesAdmissionCancelsOperationsAndClosesStoreLast(t *testing.T)
 		t.Fatalf("operation state = %s, want cancelled", status.State)
 	}
 	// New operations are refused with the structured error and no ID.
-	lateID, err := instance.Operations.Start(context.Background(), "late", func(context.Context, func(int, string)) error { return nil })
+	lateID, err := instance.Operations.Start(context.Background(), "late", func(context.Context, string, func(int, string)) error { return nil })
 	if err == nil || !errors.Is(err, operation.ErrShutdown) {
 		t.Fatalf("Start after shutdown = (%q, %v), want ErrShutdown", lateID, err)
 	}

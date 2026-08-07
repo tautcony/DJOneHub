@@ -17,6 +17,7 @@ import (
 	"github.com/iniwex5/vohive/internal/application/network"
 	"github.com/iniwex5/vohive/internal/application/notification"
 	"github.com/iniwex5/vohive/internal/application/operation"
+	"github.com/iniwex5/vohive/internal/application/simcards"
 	"github.com/iniwex5/vohive/internal/application/rawat"
 	"github.com/iniwex5/vohive/internal/application/sms"
 	"github.com/iniwex5/vohive/internal/application/vowifi"
@@ -153,7 +154,9 @@ func newApp(r *runtime.Runtime, err error, platformAdapter transport.NetworkCont
 	ops := operation.NewManager(r.Events())
 	devices := device.NewService(r)
 	smsService := sms.NewService(devices, ops, r, database)
-	esimService := esim.NewService(devices, ops, r)
+	esimService := esim.NewService(devices, ops, r, database)
+	simCardsService := simcards.NewService(database)
+	simCardsService.Attach(devices)
 	networkService := network.NewService(devices, ops, r, platformAdapter, database)
 	rawATService := rawat.NewService(devices, r)
 	firmwareConfig := firmware.ConfigFromEnvironment()
@@ -223,6 +226,7 @@ func newApp(r *runtime.Runtime, err error, platformAdapter transport.NetworkCont
 		Device:                        devices,
 		SMS:                           smsService,
 		ESIM:                          esimService,
+		SimCards:                      simCardsService,
 		Network:                       networkService,
 		Notification:                  notifications,
 		RawAT:                         rawATService,

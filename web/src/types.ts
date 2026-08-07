@@ -76,6 +76,35 @@ export interface EsimOverview {
   }>
 }
 
+export interface EsimNotification {
+  sequence_number: number
+  event?: string
+  iccid?: string
+  address?: string
+  can_retry?: boolean
+}
+
+export interface SimCard {
+  iccid: string
+  imsi?: string
+  msisdn?: string
+  name?: string
+  notes?: string
+  first_seen_at?: string
+  last_seen_at?: string
+}
+
+export interface EsimNotificationHistory {
+  sequence_number: number
+  event?: string
+  iccid?: string
+  address?: string
+  aid?: string
+  state?: 'pending' | 'processed' | 'failed' | 'removed'
+  observed_at?: string
+  updated_at?: string
+}
+
 export interface NetworkStatus {
   mode?: string
   network_mode?: string

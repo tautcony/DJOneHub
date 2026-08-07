@@ -335,11 +335,11 @@ func (b *CommandBackend) Profiles(ctx context.Context) ([]Profile, error) {
 	return b.esimPort.Profiles(ctx)
 }
 
-func (b *CommandBackend) Download(ctx context.Context, activationCode, confirmationCode, matchingID string) error {
+func (b *CommandBackend) Download(ctx context.Context, activationCode, confirmationCode, matchingID string, opts *ESIMDownloadOptions) error {
 	if b.esimPort == nil {
 		return commandUnsupported("esim", "esim_download")
 	}
-	return b.esimPort.Download(ctx, activationCode, confirmationCode, matchingID)
+	return b.esimPort.Download(ctx, activationCode, confirmationCode, matchingID, opts)
 }
 
 func (b *CommandBackend) Enable(ctx context.Context, iccid string) error {
@@ -361,6 +361,34 @@ func (b *CommandBackend) Delete(ctx context.Context, iccid string) error {
 		return commandUnsupported("esim", "esim_delete")
 	}
 	return b.esimPort.Delete(ctx, iccid)
+}
+
+func (b *CommandBackend) Disable(ctx context.Context, iccid string) error {
+	if b.esimPort == nil {
+		return commandUnsupported("esim", "esim_disable")
+	}
+	return b.esimPort.Disable(ctx, iccid)
+}
+
+func (b *CommandBackend) ListNotifications(ctx context.Context) ([]NotificationItem, error) {
+	if b.esimPort == nil {
+		return nil, commandUnsupported("esim", "esim_notifications")
+	}
+	return b.esimPort.ListNotifications(ctx)
+}
+
+func (b *CommandBackend) ProcessNotification(ctx context.Context, sequenceNumber int64) error {
+	if b.esimPort == nil {
+		return commandUnsupported("esim", "esim_notifications")
+	}
+	return b.esimPort.ProcessNotification(ctx, sequenceNumber)
+}
+
+func (b *CommandBackend) RemoveNotification(ctx context.Context, sequenceNumber int64) error {
+	if b.esimPort == nil {
+		return commandUnsupported("esim", "esim_notifications")
+	}
+	return b.esimPort.RemoveNotification(ctx, sequenceNumber)
 }
 func (b *CommandBackend) Events(context.Context) (<-chan BackendEvent, error) {
 	return make(chan BackendEvent), nil

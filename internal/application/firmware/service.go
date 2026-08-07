@@ -292,7 +292,7 @@ func (s *Service) StartUnlock(ctx context.Context) (string, error) {
 	if s.ops == nil {
 		return "", errors.New("operation manager is unavailable")
 	}
-	return s.ops.Start(ctx, "firmware.adb_unlock", func(ctx context.Context, report func(int, string)) error {
+	return s.ops.Start(ctx, "firmware.adb_unlock", func(ctx context.Context, _ string, report func(int, string)) error {
 		return s.unlock(ctx, report)
 	})
 }
@@ -301,7 +301,7 @@ func (s *Service) StartADBMode(ctx context.Context, enabled bool) (string, error
 	if s.ops == nil {
 		return "", errors.New("operation manager is unavailable")
 	}
-	return s.ops.Start(ctx, "firmware.adb_mode", func(ctx context.Context, report func(int, string)) error {
+	return s.ops.Start(ctx, "firmware.adb_mode", func(ctx context.Context, _ string, report func(int, string)) error {
 		if s.at == nil {
 			return derrors.CapabilityMissing("raw_at", "firmware_adb_mode", "AT control channel is unavailable")
 		}
@@ -335,7 +335,7 @@ func (s *Service) StartEnterEDL(ctx context.Context, serial string) (string, err
 	if s.ops == nil {
 		return "", errors.New("operation manager is unavailable")
 	}
-	return s.ops.Start(ctx, "firmware.enter_edl", func(ctx context.Context, report func(int, string)) error {
+	return s.ops.Start(ctx, "firmware.enter_edl", func(ctx context.Context, _ string, report func(int, string)) error {
 		device, err := s.selectOnlineADBDevice(serial)
 		if err != nil {
 			return err
@@ -415,7 +415,7 @@ func (s *Service) StartBackup(ctx context.Context, request BackupRequest) (strin
 	var operationID string
 	ready := make(chan struct{})
 	var startErr error
-	operationID, startErr = s.ops.Start(ctx, "firmware.backup", func(ctx context.Context, report func(int, string)) error {
+	operationID, startErr = s.ops.Start(ctx, "firmware.backup", func(ctx context.Context, _ string, report func(int, string)) error {
 		<-ready
 		return s.backup(ctx, output, loader, invocation, report, func(message string) {
 			s.ops.Log(operationID, message)
@@ -574,7 +574,7 @@ func (s *Service) StartUSBID(ctx context.Context, request USBIDRequest) (string,
 	if s.ops == nil {
 		return "", errors.New("operation manager is unavailable")
 	}
-	return s.ops.Start(ctx, "firmware.usb_id", func(ctx context.Context, report func(int, string)) error {
+	return s.ops.Start(ctx, "firmware.usb_id", func(ctx context.Context, _ string, report func(int, string)) error {
 		if s.at == nil {
 			return derrors.CapabilityMissing("raw_at", "firmware_usb_id", "AT control channel is unavailable")
 		}

@@ -256,7 +256,11 @@ func (s *Service) registerConsumer(b backend.ModemBackend) {
 func (s *Service) List(ctx context.Context) ([]backend.SMSMessage, error) {
 	_, err := s.devices.RequireCapability(domain.CapabilitySMSRead, "list_sms")
 	if err != nil {
-		return nil, err
+		// 设备离线/未就绪时无法从模组读取, 但已持久化的短信仍可查看。
+		s.mu.RLock()
+		items := clone(s.cache)
+		s.mu.RUnlock()
+		return items, nil
 	}
 	s.mu.RLock()
 	loaded := s.loaded
@@ -273,7 +277,16 @@ func (s *Service) List(ctx context.Context) ([]backend.SMSMessage, error) {
 func (s *Service) Refresh(ctx context.Context) ([]backend.SMSMessage, error) {
 	b, err := s.devices.RequireCapability(domain.CapabilitySMSRead, "refresh_sms")
 	if err != nil {
-		return nil, err
+		// 设备离线/未就绪时无法从模组读取短信, 但 SQLite 中已持久化的记录
+		// (发送历史与已收短信) 仍可查看: 直接返回缓存并标记已加载, 避免把
+		// "离线"误判为加载错误。设备恢复后会走正常刷新路径。
+		s.mu.RLock()
+		cached := clone(s.cache)
+		s.mu.RUnlock()
+		s.mu.Lock()
+		s.loaded = true
+		s.mu.Unlock()
+		return cached, nil
 	}
 	// The first refresh establishes the consumer so +CMTI notifications are
 	// delivered to this service instead of being retained unread.
@@ -283,6 +296,20 @@ func (s *Service) Refresh(ctx context.Context) ([]backend.SMSMessage, error) {
 		return nil, err
 	}
 	defer release()
+
+	// 无 SIM 时模组短信存储不可用：直接返回已缓存(可能为空的)状态，不再向模组
+	// 发起必然失败的查询，避免把"未插卡"误判为加载错误（与 device.Service.Status
+	// 对 +CME ERROR: 10 的容错一致）。插入 SIM 后下次刷新会走正常路径。
+	if provider, ok := b.(backend.DeviceInfoProvider); ok {
+		if inserted, simErr := provider.IsSimInserted(ctx); simErr == nil && !inserted {
+			s.mu.Lock()
+			s.loaded = true
+			cached := clone(s.cache)
+			s.mu.Unlock()
+			return cached, nil
+		}
+	}
+
 	items, err := b.ListSMS(ctx)
 	if err != nil {
 		s.mu.RLock()
@@ -673,7 +700,7 @@ func (s *Service) Send(ctx context.Context, recipient, body string) (string, err
 	if err != nil {
 		return "", err
 	}
-	return s.ops.Start(ctx, "sms.send", func(taskCtx context.Context, progress func(int, string)) error {
+	return s.ops.Start(ctx, "sms.send", func(taskCtx context.Context, _ string, progress func(int, string)) error {
 		release, err := s.runtime.Acquire(taskCtx, runtime.ResourceAT)
 		if err != nil {
 			return err

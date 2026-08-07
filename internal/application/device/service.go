@@ -25,6 +25,7 @@ type Service struct {
 	mu             sync.Mutex
 	iccidCache     string
 	iccidCacheGen  uint64
+	simObserver    SimObserver
 	iccidCacheTime time.Time
 }
 
@@ -78,7 +79,27 @@ func (s *Service) Status(ctx context.Context) (Status, error) {
 	if out.SIM, err = b.SIM(ctx); err != nil && out.Snapshot.LastError == "" {
 		out.Snapshot.LastError = err.Error()
 	}
+	s.notifySimObserver(out)
 	return out, nil
+}
+
+// SimObserver 观察每次状态轮询中读到的 SIM 信息（ICCID/IMSI/MSISDN）。
+// 由 App 层注入，用于 SIM 卡档案的自动建档与补录；不改变 Status 的行为。
+type SimObserver func(sim backend.SIMState, identity backend.Identity)
+
+func (s *Service) SetSimObserver(observer SimObserver) {
+	s.simObserver = observer
+}
+
+func (s *Service) notifySimObserver(status Status) {
+	if s.simObserver == nil {
+		return
+	}
+	iccid := strings.TrimSpace(status.SIM.ICCID)
+	if iccid == "" {
+		return
+	}
+	s.simObserver(status.SIM, status.Identity)
 }
 
 func (s *Service) Rescan(ctx context.Context) error { return s.runtime.Rescan(ctx) }

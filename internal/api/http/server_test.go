@@ -24,6 +24,8 @@ import (
 	"github.com/iniwex5/vohive/internal/application/notification"
 	"github.com/iniwex5/vohive/internal/application/operation"
 	"github.com/iniwex5/vohive/internal/application/rawat"
+	"github.com/iniwex5/vohive/internal/application/simcards"
+	"github.com/iniwex5/vohive/internal/storage"
 	"github.com/iniwex5/vohive/internal/application/sms"
 	"github.com/iniwex5/vohive/internal/application/vowifi"
 	"github.com/iniwex5/vohive/internal/backend"
@@ -183,11 +185,19 @@ func (b *contractBackend) EID(context.Context) (string, error) {
 func (b *contractBackend) Profiles(context.Context) ([]backend.Profile, error) {
 	return []backend.Profile{{ICCID: "8901000000000000000", State: "active"}}, nil
 }
-func (b *contractBackend) Download(context.Context, string, string, string) error { return nil }
-func (b *contractBackend) Enable(context.Context, string) error                   { return nil }
-func (b *contractBackend) Rename(context.Context, string, string) error           { return nil }
-func (b *contractBackend) Delete(context.Context, string) error                   { return nil }
-func (b *contractBackend) RawAT(context.Context, string) (string, error)          { return "OK", nil }
+func (b *contractBackend) Download(context.Context, string, string, string, *backend.ESIMDownloadOptions) error {
+	return nil
+}
+func (b *contractBackend) Enable(context.Context, string) error  { return nil }
+func (b *contractBackend) Disable(context.Context, string) error { return nil }
+func (b *contractBackend) Rename(context.Context, string, string) error { return nil }
+func (b *contractBackend) Delete(context.Context, string) error   { return nil }
+func (b *contractBackend) ListNotifications(context.Context) ([]backend.NotificationItem, error) {
+	return []backend.NotificationItem{{SequenceNumber: 1, Event: "install", CanRetry: true}}, nil
+}
+func (b *contractBackend) ProcessNotification(context.Context, int64) error { return nil }
+func (b *contractBackend) RemoveNotification(context.Context, int64) error { return nil }
+func (b *contractBackend) RawAT(context.Context, string) (string, error)   { return "OK", nil }
 
 type contractVoWiFiBackend struct{ *contractBackend }
 
@@ -236,14 +246,20 @@ func newReadyServerWithBackend(t *testing.T, discovery *fakeReadyDiscovery, b ba
 	devices := device.NewService(r)
 	smsService := sms.NewService(devices, ops, r)
 	esimService := esim.NewService(devices, ops, r)
+	db, err := storage.OpenSQLite(filepath.Join(t.TempDir(), "server-test.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	simCardsService := simcards.NewService(db)
 	networkService := network.NewService(devices, ops, r, contractNetwork{})
 	rawATService := rawat.NewService(devices, r)
 	vowifiService := vowifi.NewService(devices, ops, r)
 	notificationService := notification.New(notification.Config{Events: r.Events()})
 	return NewServer(Config{
-		Device: devices, SMS: smsService, ESIM: esimService, Network: networkService,
-		Notification: notificationService, RawAT: rawATService, VoWiFi: vowifiService,
-		Operations: ops, Runtime: r, LoopbackPort: testLoopbackPort,
+		Device: devices, SMS: smsService, ESIM: esimService, SimCards: simCardsService,
+		Network: networkService, Notification: notificationService, RawAT: rawATService,
+		VoWiFi: vowifiService, Operations: ops, Runtime: r, LoopbackPort: testLoopbackPort,
 	}), ops
 }
 
@@ -310,6 +326,237 @@ func TestAPIContractCoversQueriesCommandsAndOperations(t *testing.T) {
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/openapi.json", nil))
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "/api/v1/esim/actions/download") || !strings.Contains(recorder.Body.String(), "/api/v1/notifications/debug") {
 		t.Fatalf("OpenAPI response does not describe all commands: %s", recorder.Body.String())
+	}
+}
+
+func TestEsimDisableReturnsOperationID(t *testing.T) {
+	server, _ := newReadyServer(t, allContractCapabilities())
+	handler := server.Handler()
+
+	request := withSameOrigin(httptest.NewRequest(http.MethodPost, "/api/v1/esim/actions/disable", strings.NewReader(`{"iccid":"8986012001000000000"}`)))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("disable status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var accepted struct {
+		ID string `json:"operation_id"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &accepted); err != nil || accepted.ID == "" {
+		t.Fatalf("disable response = %s", recorder.Body.String())
+	}
+}
+
+func TestEsimNotificationsAPI(t *testing.T) {
+	server, _ := newReadyServer(t, allContractCapabilities())
+	handler := server.Handler()
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/esim/notifications", nil))
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"sequence_number":1`) {
+		t.Fatalf("notifications list = %d %s", recorder.Code, recorder.Body.String())
+	}
+
+	process := withSameOrigin(httptest.NewRequest(http.MethodPost, "/api/v1/esim/notifications/1/process", strings.NewReader(`{}`)))
+	process.Header.Set("Content-Type", "application/json")
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, process)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"state":"processed"`) {
+		t.Fatalf("notification process = %d %s", recorder.Code, recorder.Body.String())
+	}
+
+	remove := withSameOrigin(httptest.NewRequest(http.MethodDelete, "/api/v1/esim/notifications/1", nil))
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, remove)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"state":"removed"`) {
+		t.Fatalf("notification remove = %d %s", recorder.Code, recorder.Body.String())
+	}
+
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodDelete, "/api/v1/esim/notifications/not-a-number", nil))
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("invalid sequence status = %d, want 400", recorder.Code)
+	}
+}
+
+// confirmationCodeBackend 在 Download 时触发确认码请求，验证端到端交互链路。
+type confirmationCodeBackend struct {
+	*contractBackend
+	requested chan struct{}
+}
+
+func (b *confirmationCodeBackend) Download(ctx context.Context, _ string, _ string, _ string, opts *backend.ESIMDownloadOptions) error {
+	if opts == nil || opts.ConfirmationCodeRequest == nil {
+		return fmt.Errorf("ConfirmationCodeRequest not wired")
+	}
+	close(b.requested)
+	code, canceled, err := opts.ConfirmationCodeRequest()
+	if err != nil {
+		return err
+	}
+	if canceled {
+		return fmt.Errorf("user declined")
+	}
+	if code != "2468" {
+		return fmt.Errorf("code = %q, want 2468", code)
+	}
+	return nil
+}
+
+func TestEsimDownloadConfirmationCodeRoundTrip(t *testing.T) {
+	discovery := &fakeReadyDiscovery{candidate: domain.Candidate{Identity: domain.Identity{StableID: "fake-1", Product: "Fake modem"}}}
+	b := &confirmationCodeBackend{
+		contractBackend: &contractBackend{caps: allContractCapabilities()},
+		requested:       make(chan struct{}),
+	}
+	server, ops := newReadyServerWithBackend(t, discovery, b)
+	handler := server.Handler()
+
+	request := withSameOrigin(httptest.NewRequest(http.MethodPost, "/api/v1/esim/actions/download", strings.NewReader(`{"activation_code":"LPA:1$smdp.example.com$1-abc"}`)))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("download status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var accepted struct {
+		ID string `json:"operation_id"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &accepted); err != nil || accepted.ID == "" {
+		t.Fatalf("download response = %s", recorder.Body.String())
+	}
+
+	select {
+	case <-b.requested:
+	case <-time.After(5 * time.Second):
+		t.Fatal("download did not request a confirmation code")
+	}
+
+	reply := withSameOrigin(httptest.NewRequest(http.MethodPost, "/api/v1/esim/operations/"+accepted.ID+"/confirmation-code", strings.NewReader(`{"code":"2468"}`)))
+	reply.Header.Set("Content-Type", "application/json")
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, reply)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("confirmation reply status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		status, ok := ops.Get(accepted.ID)
+		if ok && status.State == operation.Succeeded {
+			return
+		}
+		if ok && status.State == operation.Failed {
+			t.Fatalf("operation failed: %+v", status.Error)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("download operation did not succeed after confirmation code reply")
+}
+
+func TestEsimNotificationHistoryEndpoint(t *testing.T) {
+	server, _ := newReadyServer(t, allContractCapabilities())
+	handler := server.Handler()
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/esim/notifications/history", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("history status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var body struct {
+		History []map[string]any `json:"history"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatalf("history decode: %v", err)
+	}
+	if body.History == nil {
+		t.Fatalf("history must be an array, got %s", recorder.Body.String())
+	}
+}
+
+func TestSimCardsAPI(t *testing.T) {
+	server, _ := newReadyServer(t, allContractCapabilities())
+	handler := server.Handler()
+
+	// 空列表。
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/simcards", nil))
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"cards":[]`) {
+		t.Fatalf("empty list = %d %s", recorder.Code, recorder.Body.String())
+	}
+
+	// 手动建档。
+	create := withSameOrigin(httptest.NewRequest(http.MethodPost, "/api/v1/simcards",
+		strings.NewReader(`{"iccid":"89860120010000000001","msisdn":"+8613800000000","name":"work","notes":"travel card"}`)))
+	create.Header.Set("Content-Type", "application/json")
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, create)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+
+	// 重复建档 → 409。
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, withSameOrigin(httptest.NewRequest(http.MethodPost, "/api/v1/simcards",
+		strings.NewReader(`{"iccid":"89860120010000000001"}`))))
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("duplicate create status = %d, want 409", recorder.Code)
+	}
+
+	// 列表包含档案。
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/simcards", nil))
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "89860120010000000001") {
+		t.Fatalf("list = %d %s", recorder.Code, recorder.Body.String())
+	}
+
+	// 更新元数据。
+	update := withSameOrigin(httptest.NewRequest(http.MethodPut, "/api/v1/simcards/89860120010000000001",
+		strings.NewReader(`{"name":"renamed","notes":"updated","msisdn":""}`)))
+	update.Header.Set("Content-Type", "application/json")
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, update)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("update status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/simcards", nil))
+	if !strings.Contains(recorder.Body.String(), "renamed") || !strings.Contains(recorder.Body.String(), "+8613800000000") {
+		t.Fatalf("update result = %s", recorder.Body.String())
+	}
+
+	// 删除。
+	remove := withSameOrigin(httptest.NewRequest(http.MethodDelete, "/api/v1/simcards/89860120010000000001", nil))
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, remove)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("delete status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/simcards", nil))
+	if !strings.Contains(recorder.Body.String(), `"cards":[]`) {
+		t.Fatalf("list after delete = %s", recorder.Body.String())
+	}
+
+	// 删除不存在的卡 → 404。
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, withSameOrigin(httptest.NewRequest(http.MethodDelete, "/api/v1/simcards/89860120010000000002", nil)))
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("delete missing status = %d, want 404", recorder.Code)
+	}
+}
+
+func TestEsimConfirmationCodeReplyRejectsUnknownOperation(t *testing.T) {
+	server, _ := newReadyServer(t, allContractCapabilities())
+	handler := server.Handler()
+
+	request := withSameOrigin(httptest.NewRequest(http.MethodPost, "/api/v1/esim/operations/no-such-op/confirmation-code", strings.NewReader(`{"code":"2468"}`)))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("unknown operation status = %d, want 404", recorder.Code)
 	}
 }
 
@@ -497,7 +744,7 @@ func TestPublicErrorMessageDoesNotExposeLocalizedBackendText(t *testing.T) {
 func TestAPIContractOperationStatusIsStable(t *testing.T) {
 	server, ops := newReadyServer(t, allContractCapabilities())
 	var startErr error
-	id, startErr := ops.Start(context.Background(), "test", func(context.Context, func(int, string)) error {
+	id, startErr := ops.Start(context.Background(), "test", func(context.Context, string, func(int, string)) error {
 		time.Sleep(5 * time.Millisecond)
 		return nil
 	})

@@ -114,6 +114,11 @@ export const useDeviceStore = defineStore('device', () => {
         operations.value[operation.operation_id] = operation
         scheduleTerminalCleanup(operation)
       }
+      return
+    }
+    const handler = domainHandlers.get(envelope.type)
+    if (handler) {
+      handler(envelope.data)
     }
   }
 
@@ -167,6 +172,14 @@ export const useDeviceStore = defineStore('device', () => {
   function basePath() {
     return '/api/v1'
   }
+  // 领域事件订阅：其它 store（如 eSIM 确认码请求）经 applyEnvelope 分发。
+  // 事件到达时以最新注册为准，注册后自动获得后续事件。
+  const domainHandlers = new Map<string, (data: unknown) => void>()
+
+  function registerDomainHandler(type: string, handler: (data: unknown) => void) {
+    domainHandlers.set(type, handler)
+  }
+
   return {
     status,
     snapshot,
@@ -181,5 +194,6 @@ export const useDeviceStore = defineStore('device', () => {
     has,
     refresh,
     connect,
+    registerDomainHandler,
   }
 })

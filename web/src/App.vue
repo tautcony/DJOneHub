@@ -13,6 +13,7 @@ import { useDeviceStore } from './stores/device'
 import { useEsimStore } from './stores/esim'
 import { useNetworkStore } from './stores/network'
 import { useSmsStore } from './stores/sms'
+import { useSimCardsStore } from './stores/simcards'
 import { useVowifiStore } from './stores/vowifi'
 import type {
   CallStatus,
@@ -83,6 +84,13 @@ const {
   labels: esimLabels,
   operation: esimOperation,
   reloadedOperationID: esimReloadedOperationID,
+  notifications: esimNotifications,
+  notificationHistory: esimNotificationHistory,
+  notificationBusy: esimNotificationBusy,
+  confirmationOpen: esimConfirmationOpen,
+  confirmationOperationID: esimConfirmationOperationID,
+  confirmationInput: esimConfirmationInput,
+  confirmationBusy: esimConfirmationBusy,
   noteICCID,
   noteLabel,
   notePhone,
@@ -99,6 +107,9 @@ const {
   trafficRangeData,
 } = storeToRefs(networkStore)
 type TrafficRange = 'day' | 'week' | 'month'
+
+const simCardsStore = useSimCardsStore()
+const { cards: simCards, busy: simCardsBusy } = storeToRefs(simCardsStore)
 
 const vowifiStore = useVowifiStore()
 const { status: vowifi, operation: vowifiOperation } = storeToRefs(vowifiStore)
@@ -166,6 +177,7 @@ const navGroups = computed<ShellNavGroup[]>(() => [
       { id: 'raw-at', label: t('nav.rawAt'), capability: 'raw_at' },
       { id: 'firmware', label: t('nav.firmware'), capability: 'raw_at' },
       ...(showNotificationDebug.value ? [{ id: 'notifications', label: t('nav.notifications') }] : []),
+      { id: 'simcards', label: t('nav.simcards') },
       { id: 'settings', label: t('nav.settings') },
     ],
   },
@@ -366,11 +378,56 @@ function resetSMSOperation() {
 async function loadEsim() {
   try {
     await esimStore.load()
+    await esimStore.loadNotifications()
     viewError.value = ''
   } catch (error) {
     viewError.value = errorText(error, 'esim.unableLoad')
   } finally {
     markViewLoaded('esim')
+  }
+}
+
+async function loadSimCards() {
+  try {
+    await simCardsStore.load()
+    viewError.value = ''
+  } catch (error) {
+    viewError.value = errorText(error, 'simcards.unableLoad')
+  } finally {
+    markViewLoaded('simcards')
+  }
+}
+
+async function createSimCard(input: {
+  iccid: string
+  imsi: string
+  msisdn: string
+  name: string
+  notes: string
+}) {
+  try {
+    await simCardsStore.create(input)
+    notifySuccess(t('simcards.saved'))
+  } catch (error) {
+    notifyError('view', errorText(error, 'simcards.unableSave'))
+  }
+}
+
+async function updateSimCard(iccid: string, input: { name: string; notes: string; msisdn: string }) {
+  try {
+    await simCardsStore.update(iccid, input)
+    notifySuccess(t('simcards.saved'))
+  } catch (error) {
+    notifyError('view', errorText(error, 'simcards.unableSave'))
+  }
+}
+
+async function deleteSimCard(iccid: string) {
+  try {
+    await simCardsStore.remove(iccid)
+    notifySuccess(t('simcards.deleted'))
+  } catch (error) {
+    notifyError('view', errorText(error, 'simcards.unableDelete'))
   }
 }
 
@@ -582,6 +639,56 @@ async function deleteEsim(iccid?: string) {
     notifySuccess(t('esim.operationAccepted', { id: result.operation_id }))
   } catch (error) {
     notifyError('view', errorText(error, 'esim.unableDelete'))
+  }
+}
+
+async function disableEsim(iccid?: string) {
+  if (!iccid) return
+  try {
+    const result = await esimStore.disable(iccid)
+    notifySuccess(t('esim.operationAccepted', { id: result.operation_id }))
+  } catch (error) {
+    notifyError('view', errorText(error, 'esim.unableDisable'))
+  }
+}
+
+async function loadNotifications() {
+  try {
+    await esimStore.loadNotifications()
+  } catch (error) {
+    notifyError('view', errorText(error, 'esim.unableNotifications'))
+  }
+}
+
+async function processNotification(sequence: number) {
+  try {
+    await esimStore.processNotification(sequence)
+  } catch (error) {
+    notifyError('view', errorText(error, 'esim.unableProcessNotification'))
+  }
+}
+
+async function removeNotification(sequence: number) {
+  try {
+    await esimStore.removeNotification(sequence)
+  } catch (error) {
+    notifyError('view', errorText(error, 'esim.unableRemoveNotification'))
+  }
+}
+
+async function submitConfirmationCode() {
+  try {
+    await esimStore.submitConfirmationCode()
+  } catch (error) {
+    notifyError('view', errorText(error, 'esim.unableConfirmationCode'))
+  }
+}
+
+async function declineConfirmationCode() {
+  try {
+    await esimStore.declineConfirmationCode()
+  } catch (error) {
+    notifyError('view', errorText(error, 'esim.unableConfirmationCode'))
   }
 }
 
@@ -892,6 +999,7 @@ const viewLoaders: Partial<Record<ViewID, () => Promise<void>>> = {
   calls: loadCalls,
   sms: loadSMS,
   esim: loadEsim,
+  simcards: loadSimCards,
   network: loadNetwork,
   vowifi: loadVowifi,
   firmware: loadFirmware,
@@ -1080,6 +1188,7 @@ provide(viewContextKey, {
   closeEsimDownload,
   closeEsimSettings,
   deleteEsim,
+  disableEsim,
   downloadEsim,
   enableEsim,
   esim,
@@ -1091,6 +1200,23 @@ provide(viewContextKey, {
   esimOperation,
   esimSettingsOpen,
   esimSettingsICCID,
+  loadNotifications,
+  processNotification,
+  removeNotification,
+  submitConfirmationCode,
+  declineConfirmationCode,
+  esimNotifications,
+  esimNotificationHistory,
+  esimNotificationBusy,
+  simCards,
+  simCardsBusy,
+  createSimCard,
+  updateSimCard,
+  deleteSimCard,
+  esimConfirmationOpen,
+  esimConfirmationOperationID,
+  esimConfirmationInput,
+  esimConfirmationBusy,
   localProfileNote,
   noteLabel,
   notePhone,

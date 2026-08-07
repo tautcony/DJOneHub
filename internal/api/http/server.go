@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	nethttp "net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -18,10 +19,12 @@ import (
 	"github.com/iniwex5/vohive/internal/application/esim"
 	"github.com/iniwex5/vohive/internal/application/extras"
 	"github.com/iniwex5/vohive/internal/application/firmware"
+	"github.com/iniwex5/vohive/internal/storage"
 	"github.com/iniwex5/vohive/internal/application/network"
 	"github.com/iniwex5/vohive/internal/application/notification"
 	"github.com/iniwex5/vohive/internal/application/operation"
 	"github.com/iniwex5/vohive/internal/application/rawat"
+	"github.com/iniwex5/vohive/internal/application/simcards"
 	"github.com/iniwex5/vohive/internal/application/sms"
 	"github.com/iniwex5/vohive/internal/application/vowifi"
 	"github.com/iniwex5/vohive/internal/backend"
@@ -39,6 +42,7 @@ type Config struct {
 	Device                        *device.Service
 	SMS                           *sms.Service
 	ESIM                          *esim.Service
+	SimCards                      *simcards.Service
 	Network                       *network.Service
 	Notification                  *notification.Service
 	RawAT                         *rawat.Service
@@ -98,6 +102,10 @@ func (s *Server) Handler() nethttp.Handler {
 	mux.HandleFunc("/api/v1/esim/actions/enable", s.esimEnable)
 	mux.HandleFunc("/api/v1/esim/actions/rename", s.esimRename)
 	mux.HandleFunc("/api/v1/esim/actions/delete", s.esimDelete)
+	mux.HandleFunc("/api/v1/esim/actions/disable", s.esimDisable)
+	mux.HandleFunc("/api/v1/esim/notifications", s.esimNotifications)
+	mux.HandleFunc("/api/v1/esim/notifications/", s.esimNotificationBySequence)
+	mux.HandleFunc("/api/v1/esim/operations/", s.esimConfirmationCodeReply)
 	mux.HandleFunc("/api/v1/network", s.networkStatus)
 	mux.HandleFunc("/api/v1/network/actions/mode", s.networkMode)
 	mux.HandleFunc("/api/v1/network/actions/check", s.networkCheck)
@@ -131,6 +139,8 @@ func (s *Server) Handler() nethttp.Handler {
 	mux.HandleFunc("/api/v1/calls/actions/reject", s.callReject)
 	mux.HandleFunc("/api/v1/esim/health", s.esimHealth)
 	mux.HandleFunc("/api/v1/esim/notes", s.esimNotes)
+	mux.HandleFunc("/api/v1/simcards", s.simCards)
+	mux.HandleFunc("/api/v1/simcards/", s.simCardByICCID)
 	mux.HandleFunc("/api/v1/operations/", s.operationStatus)
 	mux.HandleFunc("/api/v1/openapi.json", s.openapi)
 	mux.HandleFunc("/api/v1/events/ws", s.websocket)
@@ -336,6 +346,171 @@ func (s *Server) esimDelete(w nethttp.ResponseWriter, r *nethttp.Request) {
 		return
 	}
 	writeJSON(w, nethttp.StatusAccepted, map[string]string{"operation_id": id})
+}
+
+func (s *Server) esimDisable(w nethttp.ResponseWriter, r *nethttp.Request) {
+	var value esimRequest
+	if !s.commandJSON(w, r, &value) {
+		return
+	}
+	if strings.TrimSpace(value.ICCID) == "" {
+		writeError(w, derrors.New(derrors.InvalidRequest, "iccid is required", false, nil))
+		return
+	}
+	id, err := s.config.ESIM.Disable(r.Context(), value.ICCID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, nethttp.StatusAccepted, map[string]string{"operation_id": id})
+}
+
+func (s *Server) esimNotifications(w nethttp.ResponseWriter, r *nethttp.Request) {
+	if !s.requireMethod(w, r, nethttp.MethodGet) || !s.protected(w, r) {
+		return
+	}
+	items, err := s.config.ESIM.ListNotifications(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, nethttp.StatusOK, map[string]any{"notifications": items})
+}
+
+func (s *Server) esimNotificationBySequence(w nethttp.ResponseWriter, r *nethttp.Request) {
+	if !s.protected(w, r) {
+		return
+	}
+	rest := strings.TrimPrefix(r.URL.Path, "/api/v1/esim/notifications/")
+	if rest == "history" {
+		if !s.requireMethod(w, r, nethttp.MethodGet) {
+			return
+		}
+		records, err := s.config.ESIM.NotificationHistory(r.Context(), 0)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		writeJSON(w, nethttp.StatusOK, map[string]any{"history": publicNotificationHistory(records)})
+		return
+	}
+	parts := strings.Split(rest, "/")
+	if strings.TrimSpace(parts[0]) == "" {
+		writeError(w, derrors.New(derrors.NotFound, "notification not found", false, nil))
+		return
+	}
+	sequenceNumber, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil {
+		writeError(w, derrors.New(derrors.InvalidRequest, "invalid notification sequence number", false, nil))
+		return
+	}
+	switch {
+	case r.Method == nethttp.MethodPost && len(parts) == 2 && parts[1] == "process":
+		if err := s.config.ESIM.ProcessNotification(r.Context(), sequenceNumber); err != nil {
+			writeError(w, err)
+			return
+		}
+		writeJSON(w, nethttp.StatusOK, map[string]string{"state": "processed"})
+	case r.Method == nethttp.MethodDelete && len(parts) == 1:
+		if err := s.config.ESIM.RemoveNotification(r.Context(), sequenceNumber); err != nil {
+			writeError(w, err)
+			return
+		}
+		writeJSON(w, nethttp.StatusOK, map[string]string{"state": "removed"})
+	default:
+		writeError(w, derrors.New(derrors.NotFound, "notification not found", false, nil))
+	}
+}
+
+type simCardRequest struct {
+	ICCID  string `json:"iccid"`
+	IMSI   string `json:"imsi"`
+	MSISDN string `json:"msisdn"`
+	Name   string `json:"name"`
+	Notes  string `json:"notes"`
+}
+
+func (s *Server) simCards(w nethttp.ResponseWriter, r *nethttp.Request) {
+	switch {
+	case r.Method == nethttp.MethodGet:
+		if !s.protected(w, r) {
+			return
+		}
+		cards, err := s.config.SimCards.List(r.Context())
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		writeJSON(w, nethttp.StatusOK, map[string]any{"cards": cards})
+	case r.Method == nethttp.MethodPost:
+		var value simCardRequest
+		if !s.commandJSON(w, r, &value) {
+			return
+		}
+		if err := s.config.SimCards.Create(r.Context(), value.ICCID, value.IMSI, value.MSISDN, value.Name, value.Notes); err != nil {
+			writeError(w, err)
+			return
+		}
+		writeJSON(w, nethttp.StatusCreated, map[string]string{"state": "created"})
+	default:
+		s.requireMethod(w, r, nethttp.MethodGet)
+	}
+}
+
+func (s *Server) simCardByICCID(w nethttp.ResponseWriter, r *nethttp.Request) {
+	iccid := strings.TrimPrefix(r.URL.Path, "/api/v1/simcards/")
+	switch {
+	case r.Method == nethttp.MethodPut:
+		if !s.requireMethod(w, r, nethttp.MethodPut) || !s.protected(w, r) {
+			return
+		}
+		var value simCardRequest
+		if err := decodeJSON(r, &value); err != nil {
+			writeError(w, derrors.New(derrors.InvalidRequest, "invalid JSON request", false, nil))
+			return
+		}
+		if err := s.config.SimCards.UpdateMeta(r.Context(), iccid, value.Name, value.Notes, value.MSISDN); err != nil {
+			writeError(w, err)
+			return
+		}
+		writeJSON(w, nethttp.StatusOK, map[string]string{"state": "updated"})
+	case r.Method == nethttp.MethodDelete:
+		if !s.protected(w, r) {
+			return
+		}
+		if err := s.config.SimCards.Delete(r.Context(), iccid); err != nil {
+			writeError(w, err)
+			return
+		}
+		writeJSON(w, nethttp.StatusOK, map[string]string{"state": "deleted"})
+	default:
+		s.requireMethod(w, r, nethttp.MethodPut)
+	}
+}
+
+func (s *Server) esimConfirmationCodeReply(w nethttp.ResponseWriter, r *nethttp.Request) {
+	if !s.requireMethod(w, r, nethttp.MethodPost) || !s.protected(w, r) {
+		return
+	}
+	const suffix = "/confirmation-code"
+	rest := strings.TrimPrefix(r.URL.Path, "/api/v1/esim/operations/")
+	operationID := strings.TrimSuffix(rest, suffix)
+	if rest == operationID || strings.TrimSpace(operationID) == "" {
+		writeError(w, derrors.New(derrors.NotFound, "confirmation request not found", false, nil))
+		return
+	}
+	var value struct {
+		Code     string `json:"code"`
+		Declined bool   `json:"declined"`
+	}
+	if !s.commandJSON(w, r, &value) {
+		return
+	}
+	if err := s.config.ESIM.SubmitConfirmationCode(operationID, value.Code, value.Declined); err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, nethttp.StatusOK, map[string]string{"state": "accepted"})
 }
 
 func (s *Server) networkStatus(w nethttp.ResponseWriter, r *nethttp.Request) {
@@ -1327,6 +1502,25 @@ func publicESIMOverview(value map[string]any) map[string]any {
 		copy["message"] = fallbackText(message, "eUICC profile service is unavailable")
 	}
 	return copy
+}
+
+// publicNotificationHistory 把存储层的通知历史映射为稳定 JSON 结构，
+// 避免 API 面暴露 storage 类型。
+func publicNotificationHistory(records []storage.NotificationHistoryRecord) []map[string]any {
+	out := make([]map[string]any, 0, len(records))
+	for _, record := range records {
+		out = append(out, map[string]any{
+			"sequence_number": record.SequenceNumber,
+			"event":           record.Event,
+			"iccid":           record.ICCID,
+			"address":         record.Address,
+			"aid":             record.AID,
+			"state":           string(record.State),
+			"observed_at":     record.ObservedAt.UTC().Format(time.RFC3339Nano),
+			"updated_at":      record.UpdatedAt.UTC().Format(time.RFC3339Nano),
+		})
+	}
+	return out
 }
 
 func errorStatus(code derrors.Code) int {

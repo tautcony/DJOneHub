@@ -135,7 +135,7 @@ func NewService(devices *device.Service, ops *operation.Manager, rt *runtime.Run
 	// Event-driven recovery runs through the operation manager under the
 	// ResourceVoWiFi lock, so it cannot interleave with user Enable/Disable.
 	host.SetRecoveryRunner(func(ctx context.Context) error {
-		_, err := service.ops.Start(ctx, "vowifi.recover", func(taskCtx context.Context, progress func(int, string)) error {
+		_, err := service.ops.Start(ctx, "vowifi.recover", func(taskCtx context.Context, _ string, progress func(int, string)) error {
 			release, err := service.runtime.Acquire(taskCtx, runtime.ResourceVoWiFi)
 			if err != nil {
 				return err
@@ -271,7 +271,7 @@ func (s *Service) run(ctx context.Context, kind, operationName string) (string, 
 	if _, err := s.port(operationName); err != nil {
 		return "", err
 	}
-	return s.ops.Start(ctx, kind, func(taskCtx context.Context, progress func(int, string)) error {
+	return s.ops.Start(ctx, kind, func(taskCtx context.Context, _ string, progress func(int, string)) error {
 		release, err := s.runtime.Acquire(taskCtx, runtime.ResourceVoWiFi)
 		if err != nil {
 			return err

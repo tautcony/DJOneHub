@@ -72,11 +72,11 @@ func (a *ATBackend) Profiles(ctx context.Context) ([]Profile, error) {
 	return a.esimPort.Profiles(ctx)
 }
 
-func (a *ATBackend) Download(ctx context.Context, activationCode, confirmationCode, matchingID string) error {
+func (a *ATBackend) Download(ctx context.Context, activationCode, confirmationCode, matchingID string, opts *ESIMDownloadOptions) error {
 	if a.esimPort == nil {
 		return commandUnsupported("esim", "esim_download")
 	}
-	return a.esimPort.Download(ctx, activationCode, confirmationCode, matchingID)
+	return a.esimPort.Download(ctx, activationCode, confirmationCode, matchingID, opts)
 }
 
 func (a *ATBackend) Enable(ctx context.Context, iccid string) error {
@@ -84,6 +84,13 @@ func (a *ATBackend) Enable(ctx context.Context, iccid string) error {
 		return commandUnsupported("esim", "esim_enable")
 	}
 	return a.esimPort.Enable(ctx, iccid)
+}
+
+func (a *ATBackend) Disable(ctx context.Context, iccid string) error {
+	if a.esimPort == nil {
+		return commandUnsupported("esim", "esim_disable")
+	}
+	return a.esimPort.Disable(ctx, iccid)
 }
 
 func (a *ATBackend) Rename(ctx context.Context, iccid, label string) error {
@@ -98,6 +105,27 @@ func (a *ATBackend) Delete(ctx context.Context, iccid string) error {
 		return commandUnsupported("esim", "esim_delete")
 	}
 	return a.esimPort.Delete(ctx, iccid)
+}
+
+func (a *ATBackend) ListNotifications(ctx context.Context) ([]NotificationItem, error) {
+	if a.esimPort == nil {
+		return nil, commandUnsupported("esim", "esim_notifications")
+	}
+	return a.esimPort.ListNotifications(ctx)
+}
+
+func (a *ATBackend) ProcessNotification(ctx context.Context, sequenceNumber int64) error {
+	if a.esimPort == nil {
+		return commandUnsupported("esim", "esim_notifications")
+	}
+	return a.esimPort.ProcessNotification(ctx, sequenceNumber)
+}
+
+func (a *ATBackend) RemoveNotification(ctx context.Context, sequenceNumber int64) error {
+	if a.esimPort == nil {
+		return commandUnsupported("esim", "esim_notifications")
+	}
+	return a.esimPort.RemoveNotification(ctx, sequenceNumber)
 }
 
 func (a *ATBackend) RawAT(ctx context.Context, command string) (string, error) {

@@ -3,6 +3,9 @@ import type { ATPreset, ParsedATResponse } from '../services/at'
 import type { useDeviceStore } from '../stores/device'
 import type {
   CallStatus,
+  EsimNotification,
+  SimCard,
+  EsimNotificationHistory,
   EsimOverview,
   FirmwareStatus,
   NetworkStatus,
@@ -79,6 +82,7 @@ export type ViewContext = {
   closeEsimDownload: () => void
   closeEsimSettings: () => void
   deleteEsim: (iccid?: string) => Promise<void>
+  disableEsim: (iccid?: string) => Promise<void>
   downloadEsim: () => Promise<void>
   enableEsim: (iccid?: string) => Promise<void>
   esim: Ref<EsimOverview | null>
@@ -90,6 +94,18 @@ export type ViewContext = {
   esimOperation: ComputedRef<OperationStatus | undefined>
   esimSettingsOpen: Ref<boolean>
   esimSettingsICCID: Ref<string>
+  esimNotifications: Ref<EsimNotification[]>
+  esimNotificationHistory: Ref<EsimNotificationHistory[]>
+  esimNotificationBusy: Ref<boolean>
+  esimConfirmationOpen: Ref<boolean>
+  esimConfirmationOperationID: Ref<string>
+  esimConfirmationInput: Ref<string>
+  esimConfirmationBusy: Ref<boolean>
+  loadNotifications: () => Promise<void>
+  processNotification: (sequence: number) => Promise<void>
+  removeNotification: (sequence: number) => Promise<void>
+  submitConfirmationCode: () => Promise<void>
+  declineConfirmationCode: () => Promise<void>
   localProfileNote: (iccid?: string) => ProfileNote | undefined
   noteLabel: Ref<string>
   notePhone: Ref<string>
@@ -98,6 +114,13 @@ export type ViewContext = {
   openEsimDownload: () => void
   openEsimSettings: (iccid?: string) => void
   saveProfileNote: () => Promise<void>
+
+  // SIM cards
+  simCards: Ref<SimCard[]>
+  simCardsBusy: Ref<boolean>
+  createSimCard: (input: { iccid: string; imsi: string; msisdn: string; name: string; notes: string }) => Promise<void>
+  updateSimCard: (iccid: string, input: { name: string; notes: string; msisdn: string }) => Promise<void>
+  deleteSimCard: (iccid: string) => Promise<void>
 
   // VoWiFi
   loadVowifi: () => Promise<void>

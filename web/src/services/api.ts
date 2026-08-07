@@ -1,6 +1,8 @@
 import type {
   CallStatus,
   DeviceStatus,
+  EsimNotification,
+  EsimNotificationHistory,
   EsimOverview,
   NetworkTrafficDaily,
   NetworkTrafficRange,
@@ -11,6 +13,7 @@ import type {
   NotificationPermissionStatus,
   NotificationPreferences,
   NotificationPreferencesResponse,
+  SimCard,
   StartupStatus,
   OperationStatus,
   SMSMessage,
@@ -84,6 +87,39 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ iccid }),
     }),
+  esimDisable: (iccid: string) =>
+    request<{ operation_id: string }>('/esim/actions/disable', {
+      method: 'POST',
+      body: JSON.stringify({ iccid }),
+    }),
+  esimNotifications: () => request<{ notifications: EsimNotification[] }>('/esim/notifications'),
+  esimNotificationHistory: () =>
+    request<{ history: EsimNotificationHistory[] }>('/esim/notifications/history'),
+  esimProcessNotification: (sequence: number) =>
+    request<{ state: string }>(`/esim/notifications/${sequence}/process`, {
+      method: 'POST',
+      body: '{}',
+    }),
+  esimRemoveNotification: (sequence: number) =>
+    request<{ state: string }>(`/esim/notifications/${sequence}`, { method: 'DELETE' }),
+  simCards: () => request<{ cards: SimCard[] }>('/simcards'),
+  simCardCreate: (iccid: string, imsi: string, msisdn: string, name: string, notes: string) =>
+    request<{ state: string }>('/simcards', {
+      method: 'POST',
+      body: JSON.stringify({ iccid, imsi, msisdn, name, notes }),
+    }),
+  simCardUpdate: (iccid: string, name: string, notes: string, msisdn: string) =>
+    request<{ state: string }>(`/simcards/${encodeURIComponent(iccid)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ name, notes, msisdn }),
+    }),
+  simCardDelete: (iccid: string) =>
+    request<{ state: string }>(`/simcards/${encodeURIComponent(iccid)}`, { method: 'DELETE' }),
+  esimConfirmationCode: (operationID: string, code: string, declined: boolean) =>
+    request<{ state: string }>(
+      `/esim/operations/${encodeURIComponent(operationID)}/confirmation-code`,
+      { method: 'POST', body: JSON.stringify({ code, declined }) },
+    ),
   network: () => request<NetworkStatus>('/network'),
   networkTrafficDaily: (date?: string) =>
     request<NetworkTrafficDaily>(`/network/traffic/daily${date ? `?date=${encodeURIComponent(date)}` : ''}`),
