@@ -2,6 +2,7 @@ package esim
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -9,6 +10,62 @@ import (
 
 	"github.com/iniwex5/vohive/internal/apduarbiter"
 )
+
+func TestATPortPhysicalSIMProbeSkipsAIDScanAndCachesByICCID(t *testing.T) {
+	responses := []string{
+		`+CSIM: 4,"9000"`,
+		`+CSIM: 58,"621482054221000A018002000A83022F008A01058B032F06019000"`,
+		`+CSIM: 42,"61114F0CA0000000871002FF49FF01895001019000"`,
+	}
+	var commands []string
+	command := func(cmd string, _ time.Duration) (string, error) {
+		commands = append(commands, cmd)
+		if strings.HasPrefix(cmd, "AT+CCHO=") {
+			t.Fatalf("physical SIM probe must not fall through to AID scan: %s", cmd)
+		}
+		if len(responses) == 0 {
+			return "", fmt.Errorf("unexpected command: %s", cmd)
+		}
+		resp := responses[0]
+		responses = responses[1:]
+		return resp, nil
+	}
+	port, err := NewATPort("physical-sim", nil, command, nil, func(context.Context) (string, error) {
+		return "8986000000000000001", nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		_, err = port.EID(context.Background())
+		if !errors.Is(err, ErrNonEUICC) {
+			t.Fatalf("EID() error = %v, want ErrNonEUICC", err)
+		}
+	}
+	if len(commands) != 3 {
+		t.Fatalf("commands = %v, want one three-command EF_DIR probe", commands)
+	}
+}
+
+func TestTransmitBasicCSIMFollowsGetResponse(t *testing.T) {
+	responses := []string{`+CSIM: 4,"611C"`, `+CSIM: 8,"62009000"`}
+	var commands []string
+	got, err := transmitBasicCSIM(context.Background(), func(cmd string, _ time.Duration) (string, error) {
+		commands = append(commands, cmd)
+		resp := responses[0]
+		responses = responses[1:]
+		return resp, nil
+	}, []byte{0x00, 0xA4, 0x00, 0x04})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprintf("%X", got) != "62009000" {
+		t.Fatalf("response = %X", got)
+	}
+	if len(commands) != 2 || !strings.Contains(commands[1], `"00C000001C"`) {
+		t.Fatalf("commands = %v, want GET RESPONSE", commands)
+	}
+}
 
 // fakeATCommandTransport 记录 AT 命令并返回脚本化响应, 模拟纯 AT 传输。
 type fakeATCommandTransport struct {

@@ -2,6 +2,7 @@ package esim
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"github.com/damonto/euicc-go/driver"
 	"github.com/iniwex5/vohive/internal/apduarbiter"
 	"github.com/iniwex5/vohive/internal/backend"
+	"github.com/iniwex5/vohive/internal/simaid"
 )
 
 // esimPort 将现有 LPA manager 适配为应用后端端口。
@@ -38,7 +40,61 @@ func NewATPort(candidateID string, arbiter *apduarbiter.Arbiter, command func(st
 	if err != nil {
 		return nil, err
 	}
+	manager.cardProbe = func(ctx context.Context) (bool, error) {
+		aids, err := simaid.ReadDirectoryAIDs(func(apdu []byte) ([]byte, error) {
+			return transmitBasicCSIM(ctx, command, apdu)
+		})
+		if err != nil {
+			return false, fmt.Errorf("读取 EF_DIR 失败，暂不能判断卡类型: %w", err)
+		}
+		for _, aid := range aids {
+			for _, candidate := range AIDs {
+				if strings.EqualFold(hex.EncodeToString(aid), hex.EncodeToString(candidate)) {
+					return true, nil
+				}
+			}
+		}
+		return false, nil
+	}
 	return &esimPort{manager: manager}, nil
+}
+
+func transmitBasicCSIM(ctx context.Context, command func(string, time.Duration) (string, error), apdu []byte) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	apduHex := strings.ToUpper(hex.EncodeToString(apdu))
+	resp, err := command(fmt.Sprintf("AT+CSIM=%d,\"%s\"", len(apduHex), apduHex), 5*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	value, ok := parseBasicCSIMResponse(resp)
+	if !ok {
+		return nil, fmt.Errorf("AT+CSIM 响应无效")
+	}
+	decoded, err := hex.DecodeString(value)
+	if err != nil {
+		return nil, err
+	}
+	if len(decoded) == 2 && decoded[0] == 0x61 {
+		getResponse := []byte{0x00, 0xC0, 0x00, 0x00, decoded[1]}
+		return transmitBasicCSIM(ctx, command, getResponse)
+	}
+	return decoded, nil
+}
+
+func parseBasicCSIMResponse(resp string) (string, bool) {
+	for _, line := range strings.Split(resp, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "+CSIM:") {
+			continue
+		}
+		start, end := strings.Index(line, "\""), strings.LastIndex(line, "\"")
+		if start >= 0 && end > start {
+			return strings.TrimSpace(line[start+1 : end]), true
+		}
+	}
+	return "", false
 }
 
 func (p *esimPort) Overview(ctx context.Context) (*EsimOverview, error) {

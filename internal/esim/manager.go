@@ -279,6 +279,10 @@ type Manager struct {
 	channelFactory          func(aid []byte) (*lpa.Client, error)
 	smartCardChannelFactory func() (driver.SmartCardChannel, error)
 	closeClient             func(client *lpa.Client) error
+	cardProbe               func(context.Context) (bool, error)
+	probeMu                 sync.Mutex
+	probeICCID              string
+	probeEUICC              *bool
 
 	// clearChannels 是在首轮 AID 扫描前清理逐辑通道的回调（可选）
 	clearChannels func()
@@ -316,6 +320,10 @@ type Manager struct {
 	// 从而允许 BPP 安装阶段的长时延迟得到正确处理而不被默认超时中断。
 	downloadCtx atomic.Pointer[context.Context]
 }
+
+// ErrNonEUICC means the current card was readable but its EF_DIR contained no
+// supported ISD-R application. It is distinct from a transport/not-ready error.
+var ErrNonEUICC = errors.New("current card is not an eUICC")
 
 // ErrOperationInProgress 表示当前有写操作（下载/切换/删除）正在进行中
 // 读操作（GetProfiles / GetEsimOverview）在检测到此情况时立即降级，不进入 SIM 卡通道
@@ -565,6 +573,40 @@ func (m *Manager) newSmartCardChannel() (driver.SmartCardChannel, error) {
 		return nil, fmt.Errorf("未配置 APDU 通道工厂")
 	}
 	return m.smartCardChannelFactory()
+}
+
+func (m *Manager) probeCard(ctx context.Context) error {
+	if m == nil || m.cardProbe == nil {
+		return nil
+	}
+	iccid := ""
+	if m.iccidProvider != nil {
+		iccid, _ = m.iccidProvider(ctx)
+	}
+	m.probeMu.Lock()
+	if m.probeEUICC != nil && iccid != "" && iccid == m.probeICCID {
+		isEUICC := *m.probeEUICC
+		m.probeMu.Unlock()
+		if !isEUICC {
+			return ErrNonEUICC
+		}
+		return nil
+	}
+	m.probeMu.Unlock()
+	isEUICC, err := m.cardProbe(ctx)
+	if err != nil {
+		logger.Debug("卡片类型预探针不可用，回退 ISD-R AID 扫描", "device", m.deviceID, "err", err)
+		return nil
+	}
+	m.probeMu.Lock()
+	m.probeICCID = iccid
+	m.probeEUICC = &isEUICC
+	m.probeMu.Unlock()
+	if !isEUICC {
+		logger.Info("当前 SIM 已确认不是 eUICC", "device", m.deviceID)
+		return ErrNonEUICC
+	}
+	return nil
 }
 
 func (m *Manager) SetSmartCardChannelFactory(factory func() (driver.SmartCardChannel, error)) {
@@ -888,6 +930,9 @@ func (m *Manager) forEachEUICC(ctx context.Context, fn func(client *lpa.Client, 
 	}
 
 	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := m.probeCard(ctx); err != nil {
 		return err
 	}
 

@@ -696,6 +696,16 @@ func (s *Server) esimHealth(w nethttp.ResponseWriter, r *nethttp.Request) {
 		return
 	}
 	result := map[string]any{"ok": false, "module_iccid": status.Identity.ICCID, "imsi": status.Identity.IMSI, "operator": status.Radio.Operator, "registration": status.Radio.Registered, "registered": status.Radio.Registered, "signal_dbm": status.Radio.SignalDBM, "network_mode": status.Radio.NetworkMode}
+	if cardType, ok := overview["card_type"].(string); ok {
+		result["card_type"] = cardType
+		if cardType != "euicc" {
+			if message, ok := overview["message"].(string); ok && strings.TrimSpace(message) != "" {
+				result["message"] = message
+			}
+			writeJSON(w, nethttp.StatusOK, result)
+			return
+		}
+	}
 	if profiles, ok := overview["profiles"].([]backend.Profile); ok {
 		for _, profile := range profiles {
 			if profile.State == "enabled" {
