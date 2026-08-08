@@ -11,6 +11,9 @@ import (
 // Message，每个渠道再按自己的展示能力渲染：纯文本渠道用 Text()，卡片式渠道
 // （Bark 标题、邮件主题）可以单独取 Title 和 Body。
 type Message struct {
+	// TraceID correlates delivery diagnostics with the originating EventBus
+	// event. It is never rendered by a channel.
+	TraceID uint64
 	// Event 是产生该通知的事件类型，取值为 notification.Event* 常量。
 	Event string
 	// Title 是单行摘要，例如 "收到新短信"。

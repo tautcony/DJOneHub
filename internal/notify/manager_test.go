@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -261,6 +262,94 @@ func TestManagerApplySkipsInvalidChannel(t *testing.T) {
 	names := m.ChannelNames()
 	if len(names) != 1 || names[0] != "webhook" {
 		t.Fatalf("channels=%v, want [webhook]", names)
+	}
+}
+
+func TestManagerRecoversTransientChannelInitializationFailure(t *testing.T) {
+	var attempts atomic.Int32
+	capture := &captureChannel{}
+	m := &Manager{
+		failures: make(map[string]ChannelRecovery), retryBase: 5 * time.Millisecond,
+		retrySweep: 2 * time.Millisecond,
+		builderFactory: func(Settings) []channelBuilder {
+			return []channelBuilder{{name: "capture", enabled: true, build: func(context.Context) (Channel, error) {
+				if attempts.Add(1) == 1 {
+					return nil, errors.New("temporary EOF")
+				}
+				return capture, nil
+			}}}
+		},
+	}
+	m.apply(DefaultSettings())
+	if recovery := m.Diagnostics().Recovering; len(recovery) != 1 || !recovery[0].Retryable {
+		t.Fatalf("initial recovery = %#v", recovery)
+	}
+	m.Start(context.Background())
+	defer m.Stop()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if names := m.ChannelNames(); len(names) == 1 && names[0] == "capture" {
+			if len(m.Diagnostics().Recovering) != 0 {
+				t.Fatal("recovery state remained after successful rebuild")
+			}
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("channel did not recover; attempts=%d", attempts.Load())
+}
+
+func TestManagerDoesNotRetryPermanentChannelConfigurationFailure(t *testing.T) {
+	var attempts atomic.Int32
+	m := &Manager{
+		failures: make(map[string]ChannelRecovery), retryBase: 2 * time.Millisecond,
+		retrySweep: time.Millisecond,
+		builderFactory: func(Settings) []channelBuilder {
+			return []channelBuilder{{name: "invalid", enabled: true, build: func(context.Context) (Channel, error) {
+				attempts.Add(1)
+				return nil, errors.New("bot_token is required")
+			}}}
+		},
+	}
+	m.apply(DefaultSettings())
+	m.Start(context.Background())
+	time.Sleep(25 * time.Millisecond)
+	m.Stop()
+	if attempts.Load() != 1 {
+		t.Fatalf("permanent configuration was retried %d times", attempts.Load())
+	}
+}
+
+type reconnectingChannel struct {
+	listenCalls atomic.Int32
+}
+
+func (c *reconnectingChannel) Name() string                        { return "reconnecting" }
+func (c *reconnectingChannel) Send(context.Context, Message) error { return nil }
+func (c *reconnectingChannel) Close() error                        { return nil }
+func (c *reconnectingChannel) Listen(ctx context.Context, _ Dispatcher) error {
+	if c.listenCalls.Add(1) == 1 {
+		return errors.New("connection reset")
+	}
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func TestManagerReconnectsInterruptedCommandListener(t *testing.T) {
+	channel := &reconnectingChannel{}
+	m := &Manager{
+		channels: []Channel{channel}, failures: make(map[string]ChannelRecovery),
+		retryBase: 5 * time.Millisecond, retrySweep: time.Second,
+	}
+	m.Start(context.Background())
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) && channel.listenCalls.Load() < 2 {
+		time.Sleep(5 * time.Millisecond)
+	}
+	m.Stop()
+	if channel.listenCalls.Load() < 2 {
+		t.Fatalf("listener calls = %d, want reconnect", channel.listenCalls.Load())
 	}
 }
 

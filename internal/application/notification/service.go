@@ -43,6 +43,7 @@ const sinkQueueCapacity = 64
 // exactly the prompts that were dropped.
 type sinkOp struct {
 	name         string
+	traceID      uint64
 	call         func(Sink)
 	markNotified func()
 }
@@ -137,7 +138,7 @@ func (s *Service) Start(ctx context.Context) error {
 			}
 		}
 	}
-	_, events, unsubscribe := s.config.Events.Subscribe(64)
+	_, events, unsubscribe := s.config.Events.SubscribeNamed("notification-policy", 64)
 	s.unsubscribe = unsubscribe
 	runCtx, cancel := context.WithCancel(ctx)
 	s.cancel = cancel
@@ -174,7 +175,9 @@ func (s *Service) Start(ctx context.Context) error {
 				if !ok {
 					return
 				}
+				s.config.Events.RecordTraceHop(op.traceID, "notification-queue", "dequeue", "success", op.name)
 				op.call(s.config.Sink)
+				s.config.Events.RecordTraceHop(op.traceID, "native-ui", "dispatch", "success", op.name)
 			}
 		}
 	}()
@@ -239,6 +242,26 @@ func (s *Service) Stop(ctx context.Context) error {
 // full, for tests and diagnostics.
 func (s *Service) SinkDrops() uint64 { return s.sinkDropped.Load() }
 
+type Diagnostics struct {
+	Running       bool   `json:"running"`
+	QueueDepth    int    `json:"queue_depth"`
+	QueueCapacity int    `json:"queue_capacity"`
+	Dropped       uint64 `json:"dropped"`
+}
+
+func (s *Service) Diagnostics() Diagnostics {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	depth, capacity := 0, 0
+	if s.sinkQueue != nil {
+		depth, capacity = len(s.sinkQueue), cap(s.sinkQueue)
+	}
+	return Diagnostics{
+		Running: s.cancel != nil, QueueDepth: depth,
+		QueueCapacity: capacity, Dropped: s.sinkDropped.Load(),
+	}
+}
+
 // enqueueSink hands an approved prompt to the delivery goroutine without
 // blocking. On a full queue the prompt is dropped and counted; the first
 // successful enqueue afterwards triggers reconciliation so the UI converges on
@@ -246,6 +269,7 @@ func (s *Service) SinkDrops() uint64 { return s.sinkDropped.Load() }
 func (s *Service) enqueueSink(op sinkOp) {
 	select {
 	case s.sinkQueue <- op:
+		s.config.Events.RecordTraceHop(op.traceID, "notification-queue", "enqueue", "success", op.name)
 		if strings.Contains(op.name, "call") {
 			logger.Info("[notification] sink enqueue", "name", op.name)
 		}
@@ -259,39 +283,45 @@ func (s *Service) enqueueSink(op sinkOp) {
 		// A slow bridge must not block event consumption; the drop is
 		// counted and reconciled once delivery recovers.
 		s.sinkDropped.Add(1)
+		s.config.Events.RecordTraceHop(op.traceID, "notification-queue", "enqueue", "dropped", "queue full")
 		logger.Warn("[notification] sink drop", "name", op.name, "reason", "queue_full")
 	}
 }
 
 func (s *Service) handle(event runtime.Event) {
+	s.config.Events.RecordTraceHop(event.ID, "notification-policy", "handle", "success", event.Type)
 	switch event.Type {
 	case EventCallIncoming, EventCallUpdated:
 		if call, ok := event.Data.(CallEvent); ok {
+			call.TraceID = event.ID
 			logger.Info("[notification] received call event", "event", event.Type, "call_id", call.ID, "direction", call.Direction, "state", call.State, "number", call.Number)
 			s.applyCall(call)
 		}
 	case EventCallEnded, EventCallMissed:
 		if call, ok := event.Data.(CallEvent); ok {
+			call.TraceID = event.ID
 			logger.Info("[notification] received call end event", "event", event.Type, "call_id", call.ID, "direction", call.Direction, "state", call.State, "missed", call.Missed)
 			s.applyCallEnd(call)
 		}
 	case EventSMSReceived:
 		if message, ok := event.Data.(SMSMessageEvent); ok {
+			message.TraceID = event.ID
 			s.applySMS(message)
 		}
 	case EventDeviceStatusChanged:
 		if snapshot, ok := event.Data.(device.Snapshot); ok {
-			s.enqueueSink(sinkOp{name: "update_device_status", call: func(sink Sink) { sink.UpdateDeviceStatus(snapshot) }})
+			s.enqueueSink(sinkOp{name: "update_device_status", traceID: event.ID, call: func(sink Sink) { sink.UpdateDeviceStatus(snapshot) }})
 			s.applyDeviceState(snapshot.State, nil)
 		}
 	case EventDeviceOffline:
 		if offline, ok := event.Data.(device.OfflineEvent); ok {
-			prompt := DeviceOfflineEvent{State: string(offline.State), Reason: offline.Reason, LastError: offline.LastError}
+			prompt := DeviceOfflineEvent{TraceID: event.ID, State: string(offline.State), Reason: offline.Reason, LastError: offline.LastError}
 			s.applyDeviceState(offline.State, &prompt)
 		}
 	case EventNetworkUpdated:
 		if state, ok := event.Data.(NetworkUpdateEvent); ok {
-			s.enqueueSink(sinkOp{name: "update_network", call: func(sink Sink) { sink.UpdateNetwork(state) }})
+			state.TraceID = event.ID
+			s.enqueueSink(sinkOp{name: "update_network", traceID: event.ID, call: func(sink Sink) { sink.UpdateNetwork(state) }})
 		}
 	}
 }
@@ -303,8 +333,9 @@ func (s *Service) applyCall(call CallEvent) {
 		if call.ID == s.activeCallID && (call.State != s.activeCallState || call.Number != s.activeCallNumber) {
 			c := call
 			op = &sinkOp{
-				name: "update_call",
-				call: func(sink Sink) { sink.UpdateCall(c) },
+				name:    "update_call",
+				traceID: c.TraceID,
+				call:    func(sink Sink) { sink.UpdateCall(c) },
 				markNotified: func() {
 					s.activeCallState = c.State
 					s.activeCallNumber = c.Number
@@ -317,8 +348,9 @@ func (s *Service) applyCall(call CallEvent) {
 		if call.Direction == "incoming" && (call.State == "incoming" || call.State == "waiting") {
 			c := call
 			op = &sinkOp{
-				name: "show_call",
-				call: func(sink Sink) { sink.ShowCall(c) },
+				name:    "show_call",
+				traceID: c.TraceID,
+				call:    func(sink Sink) { sink.ShowCall(c) },
 				markNotified: func() {
 					s.activeCallID = c.ID
 					s.activeCallState = c.State
@@ -347,8 +379,9 @@ func (s *Service) applyCallEnd(call CallEvent) {
 		if shown := s.shownCall; shown != nil {
 			hidden := *shown
 			ops = append(ops, sinkOp{
-				name: "hide_call",
-				call: func(sink Sink) { sink.HideCall(hidden) },
+				name:    "hide_call",
+				traceID: call.TraceID,
+				call:    func(sink Sink) { sink.HideCall(hidden) },
 				markNotified: func() {
 					s.activeCallID = ""
 					s.activeCallState = ""
@@ -368,8 +401,9 @@ func (s *Service) applyCallEnd(call CallEvent) {
 		c := call
 		logger.Info("[notification] queue show_missed_call", "call_id", call.ID, "number", call.Number)
 		ops = append(ops, sinkOp{
-			name: "show_missed_call",
-			call: func(sink Sink) { sink.ShowMissedCall(c) },
+			name:    "show_missed_call",
+			traceID: c.TraceID,
+			call:    func(sink Sink) { sink.ShowMissedCall(c) },
 			markNotified: func() {
 				s.notifiedMissed[c.ID] = struct{}{}
 			},
@@ -392,8 +426,9 @@ func (s *Service) applySMS(message SMSMessageEvent) {
 	s.seenSMS[key] = struct{}{}
 	m := message
 	op = &sinkOp{
-		name: "show_sms",
-		call: func(sink Sink) { sink.ShowSMS(m) },
+		name:    "show_sms",
+		traceID: m.TraceID,
+		call:    func(sink Sink) { sink.ShowSMS(m) },
 		markNotified: func() {
 			s.notifiedSMS[m.DedupKey()] = struct{}{}
 		},
@@ -424,7 +459,7 @@ func (s *Service) applyDeviceState(state device.State, offline *DeviceOfflineEve
 	if s.offlineCount >= OfflineErrorThreshold && !s.offlineShown && offline != nil {
 		s.offlineShown = true
 		e := *offline
-		op = &sinkOp{name: "show_offline", call: func(sink Sink) { sink.ShowOffline(e) }}
+		op = &sinkOp{name: "show_offline", traceID: e.TraceID, call: func(sink Sink) { sink.ShowOffline(e) }}
 	}
 	s.mu.Unlock()
 	if op != nil {

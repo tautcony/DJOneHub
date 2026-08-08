@@ -223,6 +223,7 @@ func DebugActions() []DebugAction {
 // call.missed. It is a copy of extras.CallRecord restricted to fields the
 // native UI displays; no backend or AT types cross the bridge.
 type CallEvent struct {
+	TraceID     uint64     `json:"-"`
 	ID          string     `json:"id"`
 	Direction   string     `json:"direction"` // incoming | outgoing
 	State       string     `json:"state"`     // incoming | waiting | active | alerting | dialing | held
@@ -240,6 +241,7 @@ type CallEvent struct {
 // SMSMessageEvent is the payload of sms.received. DedupKey() follows the
 // documented dedup key: sender + recipient + body + received_at.
 type SMSMessageEvent struct {
+	TraceID    uint64    `json:"-"`
 	Index      int       `json:"index"`
 	Sender     string    `json:"sender,omitempty"`
 	Recipient  string    `json:"recipient,omitempty"`
@@ -260,6 +262,7 @@ func (m SMSMessageEvent) DedupKey() string {
 // DeviceOfflineEvent is the payload of device.offline, published when the
 // device runtime enters a disconnected/offline state.
 type DeviceOfflineEvent struct {
+	TraceID   uint64 `json:"-"`
 	State     string `json:"state"`
 	Reason    string `json:"reason,omitempty"`
 	LastError string `json:"last_error,omitempty"`
@@ -269,6 +272,7 @@ type DeviceOfflineEvent struct {
 // producers; it drives the 4G menu bar model. Existing producers keep their
 // legacy map payloads until they are converged (see the contract doc).
 type NetworkUpdateEvent struct {
+	TraceID     uint64 `json:"-"`
 	Mode        string `json:"mode,omitempty"`
 	NetworkMode string `json:"network_mode,omitempty"`
 	Registered  bool   `json:"registered"`

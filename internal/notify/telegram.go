@@ -64,6 +64,12 @@ var (
 )
 
 func NewTelegramChannel(cfg TelegramSettings) (*TelegramChannel, error) {
+	return NewTelegramChannelContext(context.Background(), cfg)
+}
+
+// NewTelegramChannelContext makes the startup getMe handshake cancellable so
+// manager shutdown and settings replacement never wait for a dead network.
+func NewTelegramChannelContext(ctx context.Context, cfg TelegramSettings) (*TelegramChannel, error) {
 	if cfg.BotToken == "" {
 		return nil, fmt.Errorf("telegram: bot_token 不能为空")
 	}
@@ -90,14 +96,26 @@ func NewTelegramChannel(cfg TelegramSettings) (*TelegramChannel, error) {
 
 	// 长轮询超时 60s，客户端超时必须显著大于它，否则每轮都会被自己掐断。
 	client := &http.Client{Transport: transport, Timeout: 120 * time.Second}
-	bot, err := tgbotapi.NewBotAPIWithClient(cfg.BotToken, endpoint, client)
+	bot, err := tgbotapi.NewBotAPIWithClient(cfg.BotToken, endpoint, startupHTTPClient{ctx: ctx, client: client})
 	if err != nil {
 		// 错误信息可能回显 token，必须脱敏后再往上抛。
 		return nil, fmt.Errorf("telegram: 创建 bot 失败: %s", redactToken(err.Error(), cfg.BotToken))
 	}
+	// Only the startup handshake uses the manager context. Normal sends retain
+	// the channel client and its own transport timeout for the channel lifetime.
+	bot.Client = client
 
 	logger.Info("[notify] telegram 已授权", "username", bot.Self.UserName)
 	return &TelegramChannel{api: bot, chatID: cfg.ChatID, adminID: cfg.AdminID}, nil
+}
+
+type startupHTTPClient struct {
+	ctx    context.Context
+	client *http.Client
+}
+
+func (c startupHTTPClient) Do(request *http.Request) (*http.Response, error) {
+	return c.client.Do(request.WithContext(c.ctx))
 }
 
 func (t *TelegramChannel) Name() string { return "telegram" }
@@ -126,8 +144,6 @@ func (t *TelegramChannel) Listen(ctx context.Context, dispatch Dispatcher) error
 	config := tgbotapi.NewUpdate(0)
 	config.Timeout = 60
 	updates := t.api.GetUpdatesChan(config)
-	defer t.stopReceiving()
-
 	logger.Info("[notify] telegram 命令监听已启动")
 	for {
 		select {

@@ -3,6 +3,7 @@ package notify
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +16,13 @@ import (
 // sendTimeout 限制单个渠道投递一条消息的时间。
 const sendTimeout = 30 * time.Second
 
+const (
+	channelInitTimeout = 20 * time.Second
+	retryBaseDelay     = 2 * time.Second
+	retryMaxDelay      = 5 * time.Minute
+	retrySweepInterval = time.Second
+)
+
 // Manager 持有所有已启用的远程通知渠道，并实现 notification.Sink，因此它与
 // macOS 原生通知在 notification.Service 里并列：同一条事件会同时投给 Swift
 // 和用户勾选的每个远程渠道。
@@ -24,11 +32,72 @@ const sendTimeout = 30 * time.Second
 type Manager struct {
 	ports Ports
 
-	mu       sync.RWMutex
-	settings Settings
-	channels []Channel
-	cancel   context.CancelFunc
-	wg       sync.WaitGroup
+	mu               sync.RWMutex
+	settings         Settings
+	channels         []Channel
+	failures         map[string]ChannelRecovery
+	cancel           context.CancelFunc
+	wg               sync.WaitGroup
+	builderFactory   func(Settings) []channelBuilder
+	retryBase        time.Duration
+	retrySweep       time.Duration
+	deliveryAttempts uint64
+	deliveryFailures uint64
+	traceRecorder    interface {
+		RecordTraceHop(uint64, string, string, string, string)
+	}
+}
+
+func (m *Manager) SetTraceRecorder(recorder interface {
+	RecordTraceHop(uint64, string, string, string, string)
+}) {
+	m.mu.Lock()
+	m.traceRecorder = recorder
+	m.mu.Unlock()
+}
+
+type Diagnostics struct {
+	Running            bool              `json:"running"`
+	Channels           []string          `json:"channels"`
+	ConfiguredChannels []string          `json:"configured_channels"`
+	CommandListeners   []string          `json:"command_listeners"`
+	Recovering         []ChannelRecovery `json:"recovering"`
+	DeliveryAttempts   uint64            `json:"delivery_attempts"`
+	DeliveryFailures   uint64            `json:"delivery_failures"`
+}
+
+type ChannelRecovery struct {
+	Channel    string    `json:"channel"`
+	Attempts   int       `json:"attempts"`
+	Retryable  bool      `json:"retryable"`
+	LastError  string    `json:"last_error"`
+	NextRetry  time.Time `json:"next_retry,omitempty"`
+	LastFailed time.Time `json:"last_failed"`
+}
+
+func (m *Manager) Diagnostics() Diagnostics {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := Diagnostics{Running: m.cancel != nil, DeliveryAttempts: m.deliveryAttempts, DeliveryFailures: m.deliveryFailures}
+	for _, builder := range m.builders(m.settings) {
+		if builder.enabled {
+			out.ConfiguredChannels = append(out.ConfiguredChannels, builder.name)
+		}
+	}
+	for _, channel := range m.channels {
+		out.Channels = append(out.Channels, channel.Name())
+		if _, ok := channel.(CommandReceiver); ok {
+			out.CommandListeners = append(out.CommandListeners, channel.Name())
+		}
+	}
+	for _, failure := range m.failures {
+		out.Recovering = append(out.Recovering, failure)
+	}
+	sort.Strings(out.ConfiguredChannels)
+	sort.Strings(out.Channels)
+	sort.Strings(out.CommandListeners)
+	sort.Slice(out.Recovering, func(i, j int) bool { return out.Recovering[i].Channel < out.Recovering[j].Channel })
+	return out
 }
 
 // ChannelConfigError indicates that a requested channel cannot be constructed
@@ -53,7 +122,10 @@ var _ notification.Sink = (*Manager)(nil)
 // NewManager 按 settings 构建所有已启用的渠道。构建失败的单个渠道只记录日志
 // 并跳过，不影响其余渠道，避免一处配置错误导致整个通知子系统不可用。
 func NewManager(settings Settings, ports Ports) *Manager {
-	m := &Manager{ports: ports}
+	m := &Manager{
+		ports: ports, failures: make(map[string]ChannelRecovery), builderFactory: channelBuilders,
+		retryBase: retryBaseDelay, retrySweep: retrySweepInterval,
+	}
 	m.apply(settings)
 	return m
 }
@@ -71,6 +143,8 @@ func (m *Manager) Start(ctx context.Context) {
 	m.mu.Unlock()
 
 	m.startListeners(runCtx, channels)
+	m.wg.Add(1)
+	go m.retryLoop(runCtx)
 }
 
 func (m *Manager) startListeners(ctx context.Context, channels []Channel) {
@@ -83,8 +157,22 @@ func (m *Manager) startListeners(ctx context.Context, channels []Channel) {
 		m.wg.Add(1)
 		go func(name string, receiver CommandReceiver) {
 			defer m.wg.Done()
-			if err := receiver.Listen(ctx, dispatcher); err != nil && ctx.Err() == nil {
-				logger.Warn("[notify] 命令监听退出", "channel", name, "err", err)
+			attempt := 0
+			for ctx.Err() == nil {
+				err := receiver.Listen(ctx, dispatcher)
+				if ctx.Err() != nil {
+					return
+				}
+				attempt++
+				wait := retryDelay(m.retryBaseDelay(), attempt)
+				logger.Warn("[notify] 命令监听中断，等待重连", "channel", name, "attempt", attempt, "retry_in", wait, "err", err)
+				timer := time.NewTimer(wait)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return
+				case <-timer.C:
+				}
 			}
 		}(channel.Name(), receiver)
 	}
@@ -95,13 +183,13 @@ func (m *Manager) Stop() {
 	m.mu.Lock()
 	cancel := m.cancel
 	m.cancel = nil
+	if cancel != nil {
+		cancel()
+	}
 	channels := m.channels
 	m.channels = nil
 	m.mu.Unlock()
 
-	if cancel != nil {
-		cancel()
-	}
 	m.wg.Wait()
 	for _, channel := range channels {
 		if err := channel.Close(); err != nil {
@@ -114,14 +202,7 @@ func (m *Manager) Stop() {
 func (m *Manager) UpdateSettings(ctx context.Context, settings Settings) {
 	m.Stop()
 	m.apply(settings)
-
-	m.mu.Lock()
-	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
-	m.cancel = cancel
-	channels := append([]Channel(nil), m.channels...)
-	m.mu.Unlock()
-
-	m.startListeners(runCtx, channels)
+	m.Start(ctx)
 }
 
 // Settings 返回当前生效的配置。
@@ -147,32 +228,42 @@ func (m *Manager) ChannelNames() []string {
 type channelBuilder struct {
 	name    string
 	enabled bool
-	build   func() (Channel, error)
+	build   func(context.Context) (Channel, error)
 }
 
 // channelBuilders 返回按 settings 构造六个渠道的构建器列表。
 func channelBuilders(settings Settings) []channelBuilder {
 	return []channelBuilder{
-		{"telegram", settings.Telegram.Enabled, func() (Channel, error) { return NewTelegramChannel(settings.Telegram) }},
-		{"feishu", settings.Feishu.Enabled, func() (Channel, error) { return NewFeishuChannel(settings.Feishu) }},
-		{"webhook", settings.Webhook.Enabled, func() (Channel, error) { return NewWebhookChannel(settings.Webhook) }},
-		{"bark", settings.Bark.Enabled, func() (Channel, error) { return NewBarkChannel(settings.Bark) }},
-		{"email", settings.Email.Enabled, func() (Channel, error) { return NewEmailChannel(settings.Email) }},
-		{"pushplus", settings.Pushplus.Enabled, func() (Channel, error) { return NewPushplusChannel(settings.Pushplus) }},
+		{"telegram", settings.Telegram.Enabled, func(ctx context.Context) (Channel, error) { return NewTelegramChannelContext(ctx, settings.Telegram) }},
+		{"feishu", settings.Feishu.Enabled, func(context.Context) (Channel, error) { return NewFeishuChannel(settings.Feishu) }},
+		{"webhook", settings.Webhook.Enabled, func(context.Context) (Channel, error) { return NewWebhookChannel(settings.Webhook) }},
+		{"bark", settings.Bark.Enabled, func(context.Context) (Channel, error) { return NewBarkChannel(settings.Bark) }},
+		{"email", settings.Email.Enabled, func(context.Context) (Channel, error) { return NewEmailChannel(settings.Email) }},
+		{"pushplus", settings.Pushplus.Enabled, func(context.Context) (Channel, error) { return NewPushplusChannel(settings.Pushplus) }},
 	}
+}
+
+func (m *Manager) builders(settings Settings) []channelBuilder {
+	if m.builderFactory != nil {
+		return m.builderFactory(settings)
+	}
+	return channelBuilders(settings)
 }
 
 // apply 用 settings 重建渠道列表。调用方必须保证此时没有监听在跑。
 func (m *Manager) apply(settings Settings) {
 	settings = settings.Normalize()
 	channels := make([]Channel, 0, 6)
-	for _, b := range channelBuilders(settings) {
+	failures := make(map[string]ChannelRecovery)
+	for _, b := range m.builders(settings) {
 		if !b.enabled {
 			continue
 		}
-		channel, err := b.build()
+		channel, err := m.buildChannel(context.Background(), b)
 		if err != nil {
-			logger.Error("[notify] 初始化渠道失败", "channel", b.name, "err", err)
+			failure := newChannelRecovery(b.name, 1, err, m.retryBaseDelay())
+			failures[b.name] = failure
+			logger.Error("[notify] 初始化渠道失败", "channel", b.name, "retryable", failure.Retryable, "next_retry", failure.NextRetry, "err", err)
 			continue
 		}
 		if channel == nil {
@@ -184,11 +275,151 @@ func (m *Manager) apply(settings Settings) {
 	m.mu.Lock()
 	m.settings = settings
 	m.channels = channels
+	m.failures = failures
 	m.mu.Unlock()
 
 	if len(channels) > 0 {
 		logger.Info("[notify] 远程通知渠道已就绪", "channels", strings.Join(namesOf(channels), ","))
 	}
+}
+
+func (m *Manager) buildChannel(parent context.Context, builder channelBuilder) (Channel, error) {
+	ctx, cancel := context.WithTimeout(parent, channelInitTimeout)
+	defer cancel()
+	return builder.build(ctx)
+}
+
+func (m *Manager) retryBaseDelay() time.Duration {
+	if m.retryBase > 0 {
+		return m.retryBase
+	}
+	return retryBaseDelay
+}
+
+func (m *Manager) retrySweepInterval() time.Duration {
+	if m.retrySweep > 0 {
+		return m.retrySweep
+	}
+	return retrySweepInterval
+}
+
+func retryDelay(base time.Duration, attempt int) time.Duration {
+	if base <= 0 {
+		base = retryBaseDelay
+	}
+	if attempt < 1 {
+		attempt = 1
+	}
+	delay := base
+	for i := 1; i < attempt && delay < retryMaxDelay; i++ {
+		delay *= 2
+	}
+	if delay > retryMaxDelay {
+		return retryMaxDelay
+	}
+	return delay
+}
+
+func isRetryableChannelInitError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	for _, marker := range []string{
+		"eof", "timeout", "deadline", "connection", "network", "temporary",
+		"tls handshake", "no such host", "server misbehaving", "unavailable", "502", "503", "504",
+	} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func newChannelRecovery(channel string, attempts int, err error, base time.Duration) ChannelRecovery {
+	now := time.Now().UTC()
+	recovery := ChannelRecovery{
+		Channel: channel, Attempts: attempts, Retryable: isRetryableChannelInitError(err),
+		LastError: err.Error(), LastFailed: now,
+	}
+	if recovery.Retryable {
+		recovery.NextRetry = now.Add(retryDelay(base, attempts))
+	}
+	return recovery
+}
+
+func (m *Manager) retryLoop(ctx context.Context) {
+	defer m.wg.Done()
+	ticker := time.NewTicker(m.retrySweepInterval())
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			m.retryDueChannels(ctx)
+		}
+	}
+}
+
+func (m *Manager) retryDueChannels(ctx context.Context) {
+	m.mu.RLock()
+	settings := m.settings
+	failures := make(map[string]ChannelRecovery, len(m.failures))
+	for name, failure := range m.failures {
+		failures[name] = failure
+	}
+	m.mu.RUnlock()
+
+	now := time.Now().UTC()
+	for _, builder := range m.builders(settings) {
+		failure, failed := failures[builder.name]
+		if !builder.enabled || !failed || !failure.Retryable || now.Before(failure.NextRetry) {
+			continue
+		}
+		m.recoverChannel(ctx, builder, failure)
+	}
+}
+
+func (m *Manager) recoverChannel(ctx context.Context, builder channelBuilder, previous ChannelRecovery) {
+	channel, err := m.buildChannel(ctx, builder)
+	if ctx.Err() != nil {
+		if channel != nil {
+			_ = channel.Close()
+		}
+		return
+	}
+	if err != nil {
+		failure := newChannelRecovery(builder.name, previous.Attempts+1, err, m.retryBaseDelay())
+		m.mu.Lock()
+		m.failures[builder.name] = failure
+		m.mu.Unlock()
+		logger.Warn("[notify] 渠道恢复失败", "channel", builder.name, "attempt", failure.Attempts, "retryable", failure.Retryable, "next_retry", failure.NextRetry, "err", err)
+		return
+	}
+	if channel == nil {
+		return
+	}
+
+	m.mu.Lock()
+	if ctx.Err() != nil || m.cancel == nil {
+		m.mu.Unlock()
+		_ = channel.Close()
+		return
+	}
+	for _, active := range m.channels {
+		if active.Name() == builder.name {
+			m.mu.Unlock()
+			_ = channel.Close()
+			return
+		}
+	}
+	m.channels = append(m.channels, channel)
+	delete(m.failures, builder.name)
+	m.mu.Unlock()
+
+	logger.Info("[notify] 渠道已自动恢复", "channel", builder.name, "attempt", previous.Attempts+1)
+	m.startListeners(ctx, []Channel{channel})
 }
 
 // Broadcast 把一条消息并行投递给所有已启用渠道。单个渠道失败只记录日志。
@@ -212,13 +443,42 @@ func (m *Manager) Broadcast(msg Message) {
 
 	for _, channel := range channels {
 		go func(channel Channel) {
+			m.mu.Lock()
+			m.deliveryAttempts++
+			m.mu.Unlock()
 			ctx, cancel := context.WithTimeout(context.Background(), sendTimeout)
 			defer cancel()
+			m.recordTrace(msg.TraceID, channel.Name(), "deliver", "attempt", "")
 			if err := channel.Send(ctx, msg); err != nil {
+				m.mu.Lock()
+				m.deliveryFailures++
+				m.mu.Unlock()
+				m.recordTrace(msg.TraceID, channel.Name(), "deliver", "failed", classifyDeliveryError(err))
 				logger.Warn("[notify] 渠道投递失败", "channel", channel.Name(), "event", msg.Event, "err", err)
+				return
 			}
+			m.recordTrace(msg.TraceID, channel.Name(), "deliver", "success", "")
 		}(channel)
 	}
+}
+
+func (m *Manager) recordTrace(traceID uint64, node, action, state, detail string) {
+	m.mu.RLock()
+	recorder := m.traceRecorder
+	m.mu.RUnlock()
+	if recorder != nil {
+		recorder.RecordTraceHop(traceID, node, action, state, detail)
+	}
+}
+
+func classifyDeliveryError(err error) string {
+	if err == nil {
+		return ""
+	}
+	if strings.Contains(strings.ToLower(err.Error()), "timeout") || strings.Contains(strings.ToLower(err.Error()), "deadline") {
+		return "timeout"
+	}
+	return "delivery error"
 }
 
 // ---------- notification.Sink 实现 ----------
@@ -237,8 +497,9 @@ func (m *Manager) HideCall(notification.CallEvent) {}
 
 func (m *Manager) ShowCall(call notification.CallEvent) {
 	m.Broadcast(Message{
-		Event: notification.EventCallIncoming,
-		Title: "来电",
+		TraceID: call.TraceID,
+		Event:   notification.EventCallIncoming,
+		Title:   "来电",
 		Fields: []Field{
 			{Key: "号码", Value: orDash(call.Number)},
 			{Key: "时间", Value: formatTime(call.StartedAt)},
@@ -253,8 +514,9 @@ func (m *Manager) ShowMissedCall(call notification.CallEvent) {
 		at = *call.EndedAt
 	}
 	m.Broadcast(Message{
-		Event: notification.EventCallMissed,
-		Title: "未接来电",
+		TraceID: call.TraceID,
+		Event:   notification.EventCallMissed,
+		Title:   "未接来电",
 		Fields: []Field{
 			{Key: "号码", Value: orDash(call.Number)},
 			{Key: "时间", Value: formatTime(at)},
@@ -269,8 +531,9 @@ func (m *Manager) ShowSMS(message notification.SMSMessageEvent) {
 		at = message.RecordedAt
 	}
 	m.Broadcast(Message{
-		Event: notification.EventSMSReceived,
-		Title: "收到新短信",
+		TraceID: message.TraceID,
+		Event:   notification.EventSMSReceived,
+		Title:   "收到新短信",
 		Fields: []Field{
 			{Key: "号码", Value: orDash(message.Sender)},
 			{Key: "时间", Value: formatTime(at)},
@@ -286,8 +549,9 @@ func (m *Manager) ShowOffline(event notification.DeviceOfflineEvent) {
 		reason = strings.TrimSpace(event.LastError)
 	}
 	m.Broadcast(Message{
-		Event: notification.EventDeviceOffline,
-		Title: "设备离线",
+		TraceID: event.TraceID,
+		Event:   notification.EventDeviceOffline,
+		Title:   "设备离线",
 		Fields: []Field{
 			{Key: "状态", Value: orDash(event.State)},
 			{Key: "原因", Value: orDash(reason)},
@@ -323,7 +587,7 @@ func (m *Manager) TestChannel(ctx context.Context, name string, probe Settings) 
 		if b.name != name {
 			continue
 		}
-		channel, err := b.build()
+		channel, err := b.build(ctx)
 		if err != nil {
 			return &ChannelConfigError{Channel: name, Err: err}
 		}
