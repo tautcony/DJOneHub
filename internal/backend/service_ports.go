@@ -6,12 +6,14 @@ import "context"
 // 能力声明（Capabilities）依赖该接口的类型断言，漏实现任一方法都会导致
 // 运行期 eSIM 能力静默消失（capability_not_supported / 422）。
 var (
-	_ ESIMPort        = (*ATBackend)(nil)
-	_ ESIMPort        = (*CommandBackend)(nil)
-	_ ESIMPort        = (*BusinessAdapter)(nil)
-	_ ESIMStoragePort = (*ATBackend)(nil)
-	_ ESIMStoragePort = (*CommandBackend)(nil)
-	_ ESIMStoragePort = (*BusinessAdapter)(nil)
+	_ ESIMPort         = (*ATBackend)(nil)
+	_ ESIMPort         = (*CommandBackend)(nil)
+	_ ESIMPort         = (*BusinessAdapter)(nil)
+	_ ESIMStoragePort  = (*ATBackend)(nil)
+	_ ESIMStoragePort  = (*CommandBackend)(nil)
+	_ ESIMStoragePort  = (*BusinessAdapter)(nil)
+	_ ESIMSnapshotPort = (*ATBackend)(nil)
+	_ ESIMSnapshotPort = (*CommandBackend)(nil)
 )
 
 type Profile struct {
@@ -66,6 +68,29 @@ type ESIMStorageInfo struct {
 
 type ESIMStoragePort interface {
 	ESIMStorage(context.Context) (ESIMStorageInfo, error)
+}
+
+// ESIMDeviceInfo is the product identity reported by an eUICC vendor applet.
+// It is optional because standard eUICCs do not necessarily expose it.
+type ESIMDeviceInfo struct {
+	SKU          string `json:"sku_name,omitempty"`
+	SerialNumber string `json:"serial_number,omitempty"`
+	Firmware     string `json:"firmware,omitempty"`
+}
+
+type ESIMDeviceInfoPort interface {
+	ESIMDeviceInfo(context.Context) (ESIMDeviceInfo, error)
+}
+
+type ESIMSnapshot struct {
+	EID        string
+	Profiles   []Profile
+	DeviceInfo ESIMDeviceInfo
+	Storage    ESIMStorageInfo
+}
+
+type ESIMSnapshotPort interface {
+	ESIMSnapshot(context.Context) (ESIMSnapshot, error)
 }
 
 type NetworkPort interface {

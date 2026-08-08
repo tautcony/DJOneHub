@@ -181,6 +181,62 @@ func (p *esimPort) ESIMStorage(ctx context.Context) (backend.ESIMStorageInfo, er
 	}, nil
 }
 
+func (p *esimPort) ESIMDeviceInfo(ctx context.Context) (backend.ESIMDeviceInfo, error) {
+	if p == nil || p.manager == nil {
+		return backend.ESIMDeviceInfo{}, fmt.Errorf("eSIM manager is unavailable")
+	}
+	info, err := p.manager.GetEUICCChipInfo(ctx, false)
+	if err != nil {
+		return backend.ESIMDeviceInfo{}, err
+	}
+	if info == nil {
+		return backend.ESIMDeviceInfo{}, fmt.Errorf("eUICC device information is unavailable")
+	}
+	return backend.ESIMDeviceInfo{
+		SKU:          info.SkuName,
+		SerialNumber: info.SerialNumber,
+		Firmware:     info.Firmware,
+	}, nil
+}
+
+func (p *esimPort) ESIMSnapshot(ctx context.Context) (backend.ESIMSnapshot, error) {
+	if p == nil || p.manager == nil {
+		return backend.ESIMSnapshot{}, fmt.Errorf("eSIM manager is unavailable")
+	}
+	overview, err := p.manager.GetEsimOverview(ctx)
+	if err != nil {
+		return backend.ESIMSnapshot{}, err
+	}
+	if overview == nil || overview.ChipInfo == nil || len(overview.ChipInfo.EIDs) == 0 {
+		return backend.ESIMSnapshot{}, fmt.Errorf("eUICC device information is unavailable")
+	}
+	profiles := make([]backend.Profile, 0)
+	for _, group := range overview.Profiles {
+		for _, item := range group.Profiles {
+			state := "unknown"
+			if item.StateKnown {
+				switch item.State {
+				case 0:
+					state = "disabled"
+				case 1:
+					state = "enabled"
+				}
+			}
+			profiles = append(profiles, backend.Profile{
+				ICCID: item.ICCID, State: state, StateKnown: item.StateKnown,
+				Label: firstNonEmpty(item.Name, item.ServiceProviderName), EID: group.EID,
+				AID: group.AIDHex, ServiceProviderName: item.ServiceProviderName, ProfileClass: item.ClassText,
+			})
+		}
+	}
+	eid := overview.ChipInfo.EIDs[0].EID
+	return backend.ESIMSnapshot{
+		EID: eid, Profiles: profiles,
+		DeviceInfo: backend.ESIMDeviceInfo{SKU: overview.ChipInfo.SkuName, SerialNumber: overview.ChipInfo.SerialNumber, Firmware: overview.ChipInfo.Firmware},
+		Storage:    backend.ESIMStorageInfo{FreeNvramBytes: overview.ChipInfo.EIDs[0].FreeNvramBytes, FreeNvram: overview.ChipInfo.EIDs[0].FreeNvram},
+	}, nil
+}
+
 func (p *esimPort) Download(ctx context.Context, activationCode, confirmationCode, matchingID string, opts *backend.ESIMDownloadOptions) error {
 	if p == nil || p.manager == nil {
 		return fmt.Errorf("eSIM manager is unavailable")

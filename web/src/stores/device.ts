@@ -7,7 +7,10 @@ import type { DeviceStatus, Envelope, OperationLog, OperationStatus, Snapshot } 
 // terminalOperationTTL 是终态 operation 在客户端保留的时间: 终态后延迟清除,
 // 使长会话中的 operations map 与 operationLogs 保持有界。
 const terminalOperationTTL = 5 * 60_000
-const RECONNECT_BASE_MS = 1000
+// A backend restart is expected to briefly reject the event socket. Starting
+// at three seconds avoids flooding the dev proxy while still recovering
+// promptly once the API is available again.
+const RECONNECT_BASE_MS = 3000
 const RECONNECT_MAX_MS = 30_000
 
 export const useDeviceStore = defineStore('device', () => {
@@ -21,6 +24,7 @@ export const useDeviceStore = defineStore('device', () => {
   const lastEventData = ref<unknown>(undefined)
   let lastEventID = 0
   let socket: WebSocket | undefined
+  let reconnectTimer: number | undefined
   let reconnectAttempt = 0
   const terminalCleanupTimers = new Map<string, number>()
 
@@ -146,21 +150,36 @@ export const useDeviceStore = defineStore('device', () => {
   }
 
   function connect() {
-    socket?.close()
+    if (reconnectTimer !== undefined) {
+      window.clearTimeout(reconnectTimer)
+      reconnectTimer = undefined
+    }
+    const previous = socket
+    if (previous) {
+      // Detach the old close handler first. Closing a stale socket must not
+      // schedule a second reconnect after this call creates its replacement.
+      previous.onclose = null
+      previous.close()
+    }
     const protocol = location.protocol === 'https:' ? 'wss' : 'ws'
-    socket = new WebSocket(`${protocol}://${location.host}${basePath()}/events/ws`)
-    socket.onopen = () => {
+    const current = new WebSocket(`${protocol}://${location.host}${basePath()}/events/ws`)
+    socket = current
+    current.onopen = () => {
       connected.value = true
       reconnectAttempt = 0
     }
-    socket.onclose = () => {
+    current.onclose = () => {
+      if (socket !== current) return
       connected.value = false
-      window.setTimeout(connect, reconnectDelay())
+      reconnectTimer = window.setTimeout(() => {
+        reconnectTimer = undefined
+        if (socket === current) connect()
+      }, reconnectDelay())
     }
-    socket.onerror = () => {
+    current.onerror = () => {
       connected.value = false
     }
-    socket.onmessage = (event) => {
+    current.onmessage = (event) => {
       try {
         applyEnvelope(JSON.parse(event.data) as Envelope)
       } catch {

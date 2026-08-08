@@ -11,6 +11,7 @@ import type {
   FirmwareStatus,
   NetworkStatus,
   NetworkTrafficRange,
+  NotificationChannelsSettings,
   NotificationDebugEvent,
   NotificationDebugInfo,
   NotificationPermissionStatus,
@@ -226,6 +227,15 @@ export type ViewContext = {
   startupBusy: Ref<boolean>
   startupSettings: Ref<StartupStatus | null>
   toggleStartup: (enabled: boolean) => Promise<void>
+
+  // remote notification channels
+  notificationChannels: Ref<NotificationChannelsSettings | null>
+  notificationChannelsBusy: Ref<boolean>
+  notificationChannelTesting: Ref<string | null>
+  loadNotificationChannels: () => Promise<void>
+  saveNotificationChannels: () => Promise<void>
+  testNotificationChannel: (channel: string, probe: NotificationChannelsSettings) => Promise<void>
+  discoverTelegramChatIDs: () => Promise<void>
 }
 
 export interface SmsThread {

@@ -3,8 +3,8 @@ package httpapi
 import (
 	"mime"
 	"net"
-	"net/url"
 	nethttp "net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -116,7 +116,12 @@ func (s *Server) stateChangingAllowed(r *nethttp.Request) bool {
 	// bound port or the port the browser connected to (Host header), so a
 	// same-origin dev proxy is allowed while any other local port is not.
 	hostPort, _ := splitLoopbackHostPort(r.Host)
-	return originPort == strconv.Itoa(s.config.LoopbackPort) || (hostPort != "" && originPort == hostPort)
+	// A Vite dev proxy rewrites Host to the API port while preserving the
+	// browser page Origin (5176 -> 7576 in this project). Keep the exception
+	// narrow: arbitrary loopback ports must remain rejected.
+	return originPort == strconv.Itoa(s.config.LoopbackPort) ||
+		originPort == hostPort ||
+		(originPort == "5176" && hostPort == strconv.Itoa(s.config.LoopbackPort))
 }
 
 // loopbackGuard rejects state-changing requests that fail the temporary

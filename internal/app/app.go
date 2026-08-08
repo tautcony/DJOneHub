@@ -26,6 +26,7 @@ import (
 	domain "github.com/iniwex5/vohive/internal/domain/device"
 	djiesim "github.com/iniwex5/vohive/internal/esim"
 	"github.com/iniwex5/vohive/internal/modem"
+	"github.com/iniwex5/vohive/internal/notify"
 	"github.com/iniwex5/vohive/internal/platform/darwin"
 	"github.com/iniwex5/vohive/internal/platform/darwin/native"
 	"github.com/iniwex5/vohive/internal/platform/linux"
@@ -77,8 +78,11 @@ type App struct {
 	Firmware     *firmware.Service
 	Notification *notification.Service
 	NativeUI     *native.Bridge
-	HTTP         *httpapi.Server
-	Store        *storage.SQLiteStore
+	// NotifyChannels 是与 NativeUI 并列的远程通知渠道管理器：同一条事件会同时
+	// 投给 Swift 原生通知和用户勾选的每个远程渠道。
+	NotifyChannels *notify.Manager
+	HTTP           *httpapi.Server
+	Store          *storage.SQLiteStore
 
 	// shutdownAdmission is closed by BeginShutdown; while open the HTTP
 	// server admits requests and the operation manager accepts new work.
@@ -173,6 +177,21 @@ func newApp(r *runtime.Runtime, err error, platformAdapter transport.NetworkCont
 	bridge := native.New(nil)
 	startupManager := startup.New()
 	bridge.SetNotificationPreferences(notificationPreferences)
+
+	// 远程通知渠道与原生桥并列挂在同一个 Sink 上。渠道配置存在 SQLite 里，
+	// 由设置页读写；单个渠道配置错误只会被跳过，不影响原生通知。
+	notificationChannelsStore := database.Namespace(notificationChannelsNamespace)
+	channelSettings := notify.DefaultSettings()
+	_ = notificationChannelsStore.Read(&channelSettings)
+	notifyManager := notify.NewManager(channelSettings.Normalize(), newNotifyPorts(notifyDependencies{
+		devices: devices,
+		sms:     smsService,
+		esim:    esimService,
+		extras:  extraService,
+		network: networkService,
+		ops:     ops,
+	}))
+
 	notifications := notification.New(notification.Config{
 		Events: r.Events(),
 		Calls: func(ctx context.Context) ([]notification.CallEvent, error) {
@@ -197,7 +216,7 @@ func newApp(r *runtime.Runtime, err error, platformAdapter transport.NetworkCont
 			}
 			return out, nil
 		},
-		Sink: bridge,
+		Sink: multiSink{bridge, notifyManager},
 	})
 	bridge.SetHandler(&nativeCommandHandler{extras: extraService, bridge: bridge})
 	app := &App{
@@ -214,6 +233,7 @@ func newApp(r *runtime.Runtime, err error, platformAdapter transport.NetworkCont
 		Firmware:          firmwareService,
 		Notification:      notifications,
 		NativeUI:          bridge,
+		NotifyChannels:    notifyManager,
 		Store:             database,
 		shutdownAdmission: make(chan struct{}),
 	}
@@ -244,6 +264,34 @@ func newApp(r *runtime.Runtime, err error, platformAdapter transport.NetworkCont
 			}
 			bridge.SetNotificationPreferences(preferences)
 			return nil
+		},
+		NotificationChannels: func() notify.Settings {
+			// 回显给设置页时脱敏：密钥只写入、不回读。
+			return notifyManager.Settings().Redacted()
+		},
+		SetNotificationChannels: func(ctx context.Context, incoming notify.Settings) error {
+			// 前端原样回传占位符表示"不修改该密钥"，此处还原成真实值。
+			settings := notify.MergeSecrets(incoming, notifyManager.Settings()).Normalize()
+			if err := settings.Validate(); err != nil {
+				return err
+			}
+			if err := notificationChannelsStore.Write(&settings); err != nil {
+				return err
+			}
+			notifyManager.UpdateSettings(ctx, settings)
+			return nil
+		},
+		TestNotificationChannel: func(ctx context.Context, name string, settings notify.Settings) error {
+			return notifyManager.TestChannel(ctx, name, settings)
+		},
+		DiscoverTelegramChatIDs: func(_ context.Context, settings notify.TelegramSettings) ([]int64, error) {
+			// The settings page receives a redacted token; restore the stored
+			// secret before making the discovery request.
+			current := notifyManager.Settings()
+			settings.BotToken = notify.MergeSecrets(
+				notify.Settings{Telegram: settings}, current,
+			).Telegram.BotToken
+			return notify.DiscoverTelegramChatIDs(settings)
 		},
 		StartupStatus:     startupManager.Status,
 		SetStartupEnabled: startupManager.SetEnabled,
@@ -306,6 +354,9 @@ func (a *App) Start(ctx context.Context) {
 		// A failed policy subscription must not take the device services down.
 		_ = err
 	}
+	// Remote channels only need their command listeners started; outbound
+	// delivery works from construction time.
+	a.NotifyChannels.Start(ctx)
 	// The VoWiFi runtime-event subscription is tied to the session context so
 	// it stops when the session ends.
 	a.VoWiFi.Start(ctx)
@@ -334,6 +385,9 @@ func (a *App) Stop(ctx context.Context) error {
 	if err := a.Notification.Stop(ctx); err != nil {
 		return err
 	}
+	// Remote channels stop after the policy so no event is dispatched into a
+	// closed channel.
+	a.NotifyChannels.Stop()
 	if err := a.Extras.Stop(ctx); err != nil {
 		return err
 	}

@@ -7,6 +7,7 @@ import {
   Empty,
   Form,
   Input,
+  InputNumber,
   Layout,
   List,
   Menu,
@@ -22,6 +23,7 @@ import {
   Space,
   Spin,
   Switch,
+  Tabs,
   Tag,
   Tooltip,
 } from 'ant-design-vue'
@@ -43,6 +45,7 @@ const antdComponents = [
   Empty,
   Form,
   Input,
+  InputNumber,
   Layout,
   List,
   Menu,
@@ -58,6 +61,7 @@ const antdComponents = [
   Space,
   Spin,
   Switch,
+  Tabs,
   Tag,
   Tooltip,
 ]

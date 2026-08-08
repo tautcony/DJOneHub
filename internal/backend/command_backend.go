@@ -343,6 +343,14 @@ func (b *CommandBackend) ESIMStorage(ctx context.Context) (ESIMStorageInfo, erro
 	return port.ESIMStorage(ctx)
 }
 
+func (b *CommandBackend) ESIMSnapshot(ctx context.Context) (ESIMSnapshot, error) {
+	port, ok := b.esimPort.(ESIMSnapshotPort)
+	if !ok {
+		return ESIMSnapshot{}, commandUnsupported("esim", "esim_snapshot")
+	}
+	return port.ESIMSnapshot(ctx)
+}
+
 func (b *CommandBackend) Download(ctx context.Context, activationCode, confirmationCode, matchingID string, opts *ESIMDownloadOptions) error {
 	if b.esimPort == nil {
 		return commandUnsupported("esim", "esim_download")

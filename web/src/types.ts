@@ -64,6 +64,11 @@ export interface EsimOverview {
   free_nvram?: string
   probe_error?: string
   message?: string
+  device_info?: {
+    sku_name?: string
+    serial_number?: string
+    firmware?: string
+  }
   profiles: Array<{
     iccid?: string
     state?: 'enabled' | 'disabled' | 'unknown'
@@ -281,4 +286,68 @@ export interface NotificationPreferencesResponse {
 export interface StartupStatus {
   supported: boolean
   enabled: boolean
+}
+
+export interface TelegramChannelSettings {
+  enabled: boolean
+  bot_token: string
+  chat_id: number
+  admin_id: number
+  base_url: string
+  proxy: string
+}
+export interface FeishuChannelSettings {
+  enabled: boolean
+  app_id: string
+  app_secret: string
+  chat_ids: string[]
+}
+export interface WebhookChannelSettings {
+  enabled: boolean
+  urls: string[]
+  secret: string
+  timeout_ms: number
+  retry_max: number
+  text_template: string
+  headers: Record<string, string>
+}
+export interface BarkChannelSettings {
+  enabled: boolean
+  urls: string[]
+  group: string
+  icon: string
+  level: string
+}
+export interface EmailChannelSettings {
+  enabled: boolean
+  use_ssl: boolean
+  smtp_host: string
+  smtp_port: number
+  username: string
+  password: string
+  from_address: string
+  to_addresses: string[]
+}
+export interface PushplusChannelSettings {
+  enabled: boolean
+  token: string
+  topic: string
+  channel: string
+}
+// NotificationChannelsSettings 对应后端 internal/notify.Settings。
+// 机密字段回显为占位符 "__unchanged__"，原样回传表示不修改。
+export interface NotificationChannelsSettings {
+  telegram: TelegramChannelSettings
+  feishu: FeishuChannelSettings
+  webhook: WebhookChannelSettings
+  bark: BarkChannelSettings
+  email: EmailChannelSettings
+  pushplus: PushplusChannelSettings
+}
+export interface NotificationChannelsResponse {
+  channels: NotificationChannelsSettings
+}
+export interface NotificationChannelTestResponse {
+  channel: string
+  delivered: boolean
 }

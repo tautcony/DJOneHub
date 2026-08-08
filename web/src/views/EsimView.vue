@@ -233,8 +233,16 @@ function notificationProfile(item: EsimNotification | EsimNotificationHistory) {
             ><strong class="mono">{{ maskSensitive(esim.eid) }}</strong>
           </div>
           <div class="esim-summary-item">
-            <span>{{ t('esim.profileCount') }}</span
-            ><strong>{{ esim.profiles.length }}</strong>
+            <span>{{ t('esim.deviceSKU') }}</span
+            ><strong>{{ esim.device_info?.sku_name || t('common.unknown') }}</strong>
+          </div>
+          <div class="esim-summary-item">
+            <span>{{ t('esim.deviceSerial') }}</span
+            ><strong class="mono">{{ maskSensitive(esim.device_info?.serial_number) }}</strong>
+          </div>
+          <div class="esim-summary-item">
+            <span>{{ t('esim.deviceFirmware') }}</span
+            ><strong>{{ esim.device_info?.firmware || t('common.unknown') }}</strong>
           </div>
           <div class="esim-summary-item">
             <span>{{ t('esim.activeProfile') }}</span
@@ -243,10 +251,6 @@ function notificationProfile(item: EsimNotification | EsimNotificationHistory) {
           <div class="esim-summary-item">
             <span>{{ t('esim.health') }}</span
             ><strong>{{ healthLabel }}</strong>
-          </div>
-          <div class="esim-summary-item">
-            <span>{{ t('esim.pendingCount') }}</span
-            ><strong>{{ esimNotifications.length }}</strong>
           </div>
           <div class="esim-summary-item">
             <span>{{ t('esim.freeCardSpace') }}</span
@@ -309,6 +313,7 @@ function notificationProfile(item: EsimNotification | EsimNotificationHistory) {
         @click="showEsimWorkspace('profiles')"
       >
         {{ t('esim.profilesWorkspace') }}
+        <span class="esim-tab-count">{{ esim?.profiles.length || 0 }}</span>
       </button>
       <button
         type="button"

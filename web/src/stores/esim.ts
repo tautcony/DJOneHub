@@ -24,6 +24,8 @@ export interface NotificationActionState {
 
 export type EsimDownloadPhase = 'input' | 'progress' | 'terminal'
 
+const snapshotCacheTTL = 60_000
+
 // eSIM 域状态同时持有服务快照与工作台组织状态。筛选只作用于当前快照，
 // 不会把用户输入转换成设备请求。
 export const useEsimStore = defineStore('esim', () => {
@@ -64,6 +66,8 @@ export const useEsimStore = defineStore('esim', () => {
   const confirmationOperationID = ref('')
   const confirmationInput = ref('')
   const confirmationBusy = ref(false)
+  let overviewLoadedAt = 0
+  let notificationsLoadedAt = 0
 
   const operation = computed<OperationStatus | undefined>(() => {
     if (!operationID.value) return undefined
@@ -149,10 +153,12 @@ export const useEsimStore = defineStore('esim', () => {
     return profile ? [profile.name, profile.local_phone, profile.tags].filter(Boolean).join(' · ') : ''
   }
 
-  async function load(): Promise<void> {
+  async function load(force = false): Promise<void> {
+    if (!force && overview.value && Date.now() - overviewLoadedAt < snapshotCacheTTL) return
     overviewError.value = ''
     const result = await api.esim()
     overview.value = { ...result, profiles: Array.isArray(result.profiles) ? result.profiles : [] }
+    overviewLoadedAt = Date.now()
     if (!focusedICCID.value) focusedICCID.value = overview.value.profiles[0]?.iccid || ''
     for (const profile of overview.value.profiles) {
       if (profile.iccid && labels.value[profile.iccid] === undefined)
@@ -176,7 +182,7 @@ export const useEsimStore = defineStore('esim', () => {
   }
 
   async function refreshSnapshots(): Promise<void> {
-    await Promise.allSettled([load(), loadNotifications()])
+    await Promise.allSettled([load(true), loadNotifications(true)])
   }
 
   function openDownload() {
@@ -245,7 +251,8 @@ export const useEsimStore = defineStore('esim', () => {
     return result
   }
 
-  async function loadNotifications(): Promise<void> {
+  async function loadNotifications(force = false): Promise<void> {
+    if (!force && notificationsLoadedAt > 0 && Date.now() - notificationsLoadedAt < snapshotCacheTTL) return
     notificationsLoading.value = true
     notificationsError.value = ''
     try {
@@ -269,6 +276,7 @@ export const useEsimStore = defineStore('esim', () => {
         errors.push('history')
       }
       if (errors.length) notificationsError.value = 'esim.notificationsPartialError'
+      notificationsLoadedAt = Date.now()
     } catch {
       notificationsError.value = 'esim.unableNotifications'
     } finally {

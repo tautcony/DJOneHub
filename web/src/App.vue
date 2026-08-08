@@ -18,6 +18,7 @@ import { useVowifiStore } from './stores/vowifi'
 import type {
   CallStatus,
   FirmwareStatus,
+  NotificationChannelsSettings,
   NotificationDebugEvent,
   NotificationDebugInfo,
   NotificationDebugRequest,
@@ -36,6 +37,7 @@ type NavGroupID = 'main' | 'voice' | 'tools'
 
 const VIEW_REFRESH_MIN_INTERVAL_MS = 500
 const OVERVIEW_REFRESH_MIN_INTERVAL_MS = 2000
+const SETTINGS_REFRESH_MIN_INTERVAL_MS = 5000
 // 拨号后等待轮询器确认通话建立的窗口: 覆盖一次前端 15s 视图轮询周期。
 const DIAL_WAIT_TIMEOUT_MS = 20000
 const ACTIVE_VIEW_FALLBACK_INTERVALS: Partial<Record<ViewID, number>> = {
@@ -175,6 +177,9 @@ const notificationPreferences = ref<NotificationPreferences | null>(null)
 const notificationPreferencesBusy = ref(false)
 const startupSettings = ref<StartupStatus | null>(null)
 const startupBusy = ref(false)
+const notificationChannels = ref<NotificationChannelsSettings | null>(null)
+const notificationChannelsBusy = ref(false)
+const notificationChannelTesting = ref<string | null>(null)
 const sensitiveStorageKey = 'djonehub.show-sensitive'
 const showSensitive = ref(localStorage.getItem(sensitiveStorageKey) === '1')
 const mobileNavOpen = ref(false)
@@ -284,6 +289,9 @@ function usbNetworkModeLabel(mode?: string) {
 
 function errorText(cause: unknown, fallback: string) {
   if (cause instanceof APIError) {
+    // 后端返回的具体错误信息（如渠道配置无效、投递失败原因）优先展示，
+    // 仅当没有 message 才退回到通用文案或按错误码本地化。
+    if (cause.message) return cause.message
     const key = `errors.${cause.code}`
     return te(key) ? t(key) : t('errors.generic')
   }
@@ -952,14 +960,16 @@ async function loadNotificationPermissions() {
 
 async function loadSettings() {
   try {
-    const [permissions, preferences, startup] = await Promise.all([
+    const [permissions, preferences, startup, channels] = await Promise.all([
       api.notificationPermissions(),
       api.notificationPreferences(),
       api.startupSettings(),
+      api.notificationChannels(),
     ])
     notificationPermissions.value = permissions
     notificationPreferences.value = preferences.preferences
     startupSettings.value = startup
+    notificationChannels.value = channels.channels
     viewError.value = ''
   } catch (error) {
     viewError.value = errorText(error, 'settings.unableLoadNotifications')
@@ -1039,6 +1049,64 @@ async function saveNotificationPreferences() {
   }
 }
 
+async function loadNotificationChannels() {
+  try {
+    const result = await api.notificationChannels()
+    notificationChannels.value = result.channels
+    viewError.value = ''
+  } catch (error) {
+    viewError.value = errorText(error, 'settings.channels.loadFailed')
+  } finally {
+    markViewLoaded('settings')
+  }
+}
+
+async function saveNotificationChannels() {
+  if (!notificationChannels.value) return
+  notificationChannelsBusy.value = true
+  try {
+    const result = await api.updateNotificationChannels({ ...notificationChannels.value })
+    notificationChannels.value = result.channels
+    notifySuccess(t('settings.channels.saved'))
+  } catch (error) {
+    notifyError('view', errorText(error, 'settings.channels.saveFailed'))
+    if (isActiveView('settings')) await loadNotificationChannels()
+  } finally {
+    notificationChannelsBusy.value = false
+  }
+}
+
+async function testNotificationChannel(channel: string, probe: NotificationChannelsSettings) {
+  if (!channel) return
+  notificationChannelTesting.value = channel
+  try {
+    await api.testNotificationChannel(channel, probe)
+    notifySuccess(t('settings.channels.testSent', { channel }))
+  } catch (error) {
+    notifyError('view', errorText(error, 'settings.channels.testFailed'))
+  } finally {
+    notificationChannelTesting.value = null
+  }
+}
+
+async function discoverTelegramChatIDs() {
+  if (!notificationChannels.value) return
+  notificationChannelTesting.value = 'telegram-chat-id'
+  try {
+    const result = await api.discoverTelegramChatIDs(notificationChannels.value.telegram)
+    if (result.chat_ids.length === 0) {
+      notifyError('view', t('settings.channels.telegram.noChatID'))
+    } else {
+      notificationChannels.value.telegram.chat_id = result.chat_ids[0]
+      notifySuccess(t('settings.channels.telegram.chatIDFound', { id: result.chat_ids[0] }))
+    }
+  } catch (error) {
+    notifyError('view', errorText(error, 'settings.channels.telegram.chatIDFailed'))
+  } finally {
+    notificationChannelTesting.value = null
+  }
+}
+
 async function triggerNotifierDebug(action: string) {
   const payload: NotificationDebugRequest = { action }
   if (action.startsWith('call_')) {
@@ -1087,6 +1155,13 @@ function handleViewLoadError(view: ViewID, error: unknown) {
 
 async function loadView(view: ViewID) {
   if (!isActiveView(view)) return
+  const minInterval =
+    view === 'overview'
+      ? OVERVIEW_REFRESH_MIN_INTERVAL_MS
+      : view === 'settings'
+        ? SETTINGS_REFRESH_MIN_INTERVAL_MS
+        : VIEW_REFRESH_MIN_INTERVAL_MS
+  if (Date.now() - (lastViewRefreshAt.get(view) || 0) < minInterval) return
   const existing = viewLoadInFlight.get(view)
   if (existing) {
     queuedViewRefreshes.add(view)
@@ -1388,6 +1463,13 @@ provide(viewContextKey, {
   openNotificationSettings,
   requestNotificationPermission,
   saveNotificationPreferences,
+  notificationChannels,
+  notificationChannelsBusy,
+  notificationChannelTesting,
+  loadNotificationChannels,
+  saveNotificationChannels,
+  testNotificationChannel,
+  discoverTelegramChatIDs,
 })
 
 onMounted(async () => {

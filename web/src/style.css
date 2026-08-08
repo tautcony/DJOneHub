@@ -2637,10 +2637,11 @@ button:disabled {
     position: fixed;
     z-index: 30;
     top: 14px;
-    left: 14px;
+    right: 14px;
     margin: 0;
   }
   .mobile-nav-visible .mobile-menu-toggle-main {
+    right: auto;
     left: 198px;
   }
   .mobile-menu-toggle .anticon {
@@ -2656,7 +2657,8 @@ button:disabled {
     grid-column: 1;
     width: 100%;
     max-width: none;
-    padding: 64px 18px 44px;
+    /* The menu control is fixed and floats above the content. */
+    padding: 28px 18px 44px;
   }
   .page-header {
     margin: -4px -6px 18px;
@@ -2665,6 +2667,14 @@ button:disabled {
   .page-header .ant-page-header-heading {
     display: grid;
     gap: 14px;
+    padding-right: 48px;
+  }
+  .page-header .ant-page-header-heading-left {
+    display: grid;
+    gap: 4px;
+  }
+  .page-header .ant-page-header-heading-sub-title {
+    margin-inline-start: 0;
   }
   .page-header .ant-page-header-heading-extra {
     justify-content: flex-start;

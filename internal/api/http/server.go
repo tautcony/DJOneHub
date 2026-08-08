@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,6 +29,7 @@ import (
 	"github.com/iniwex5/vohive/internal/application/vowifi"
 	"github.com/iniwex5/vohive/internal/backend"
 	derrors "github.com/iniwex5/vohive/internal/domain/errors"
+	"github.com/iniwex5/vohive/internal/notify"
 	"github.com/iniwex5/vohive/internal/platform/startup"
 	"github.com/iniwex5/vohive/internal/runtime"
 	"github.com/iniwex5/vohive/internal/storage"
@@ -58,8 +60,21 @@ type Config struct {
 	OpenNotificationSettings      func() bool
 	NotificationPreferences       func() notification.NotificationPreferences
 	SetNotificationPreferences    func(notification.NotificationPreferences) error
-	StartupStatus                 func() startup.Status
-	SetStartupEnabled             func(bool) error
+	// NotificationChannels returns the remote notification channel settings
+	// with every secret already redacted; it is safe to serialize as-is.
+	NotificationChannels func() notify.Settings
+	// SetNotificationChannels persists the settings and hot-reloads the
+	// channels. Secrets submitted as notify.SecretPlaceholder are restored
+	// from the stored values by the implementation.
+	SetNotificationChannels func(context.Context, notify.Settings) error
+	// TestNotificationChannel delivers a probe message through one channel so
+	// the settings page can verify a configuration end to end. probe holds the
+	// channel's current form configuration and may be an empty Settings when
+	// the caller wants to test the already-saved (live) configuration.
+	TestNotificationChannel func(context.Context, string, notify.Settings) error
+	DiscoverTelegramChatIDs func(context.Context, notify.TelegramSettings) ([]int64, error)
+	StartupStatus           func() startup.Status
+	SetStartupEnabled       func(bool) error
 	// LoopbackPort is the port the server binds on loopback. It anchors the
 	// temporary boundary's Origin/Host checks; set via SetLoopbackPort before
 	// serving. The guard fails closed when it is unset.
@@ -134,6 +149,9 @@ func (s *Server) Handler() nethttp.Handler {
 	mux.HandleFunc("/api/v1/notifications/permissions/request", s.requestNotificationPermission)
 	mux.HandleFunc("/api/v1/notifications/permissions/open-settings", s.openNotificationSettings)
 	mux.HandleFunc("/api/v1/notifications/preferences", s.notificationPreferences)
+	mux.HandleFunc("/api/v1/notifications/channels", s.notificationChannels)
+	mux.HandleFunc("/api/v1/notifications/channels/actions/test", s.testNotificationChannel)
+	mux.HandleFunc("/api/v1/notifications/channels/telegram/chat-ids", s.discoverTelegramChatIDs)
 	mux.HandleFunc("/api/v1/settings/startup", s.startupSettings)
 	mux.HandleFunc("/api/v1/calls", s.calls)
 	mux.HandleFunc("/api/v1/calls/actions/dial", s.callDial)
@@ -1189,6 +1207,106 @@ func (s *Server) notificationPreferences(w nethttp.ResponseWriter, r *nethttp.Re
 			"error": derrors.New(derrors.InvalidRequest, "method not allowed", false, map[string]any{"method": "GET, PUT"}),
 		})
 	}
+}
+
+// notificationChannels reads and writes the remote notification channel
+// settings (Telegram, Feishu, Webhook, Bark, email, Pushplus). They sit beside
+// the macOS native notification preferences: a user may enable any combination
+// and every enabled surface receives the same event.
+//
+// GET always returns redacted secrets. PUT accepts notify.SecretPlaceholder in
+// a secret field to mean "keep the stored value", so the settings page never
+// has to hold a plaintext secret.
+func (s *Server) notificationChannels(w nethttp.ResponseWriter, r *nethttp.Request) {
+	if !s.protected(w, r) {
+		return
+	}
+	if s.config.NotificationChannels == nil {
+		writeError(w, derrors.New(derrors.Unavailable, "notification channels are unavailable", false, nil))
+		return
+	}
+	switch r.Method {
+	case nethttp.MethodGet:
+		writeJSON(w, nethttp.StatusOK, map[string]any{"channels": s.config.NotificationChannels()})
+	case nethttp.MethodPut:
+		var settings notify.Settings
+		if err := decodeJSON(r, &settings); err != nil {
+			writeError(w, derrors.New(derrors.InvalidRequest, "invalid JSON request", false, nil))
+			return
+		}
+		if s.config.SetNotificationChannels == nil {
+			writeError(w, derrors.New(derrors.Unavailable, "notification channels are read-only", false, nil))
+			return
+		}
+		if err := s.config.SetNotificationChannels(r.Context(), settings); err != nil {
+			writeError(w, derrors.New(derrors.InvalidRequest, err.Error(), false, nil))
+			return
+		}
+		writeJSON(w, nethttp.StatusOK, map[string]any{"channels": s.config.NotificationChannels()})
+	default:
+		w.Header().Set("Allow", nethttp.MethodGet+", "+nethttp.MethodPut)
+		writeJSON(w, nethttp.StatusMethodNotAllowed, map[string]any{
+			"error": derrors.New(derrors.InvalidRequest, "method not allowed", false, map[string]any{"method": "GET, PUT"}),
+		})
+	}
+}
+
+// testNotificationChannel sends a probe message through a single channel. The
+// caller may include the channel's current form configuration ("probe") so a
+// channel can be tested before it is enabled or persisted; when omitted the
+// live (already-saved) configuration is used.
+func (s *Server) testNotificationChannel(w nethttp.ResponseWriter, r *nethttp.Request) {
+	var request struct {
+		Channel string           `json:"channel"`
+		Probe   *notify.Settings `json:"probe,omitempty"`
+	}
+	if !s.commandJSON(w, r, &request) {
+		return
+	}
+	if s.config.TestNotificationChannel == nil {
+		writeError(w, derrors.New(derrors.Unavailable, "notification channels are unavailable", false, nil))
+		return
+	}
+	channel := strings.TrimSpace(request.Channel)
+	if channel == "" {
+		writeError(w, derrors.New(derrors.InvalidRequest, "channel is required", false, nil))
+		return
+	}
+	var probe notify.Settings
+	if request.Probe != nil {
+		probe = *request.Probe
+	}
+	if err := s.config.TestNotificationChannel(r.Context(), channel, probe); err != nil {
+		var configErr *notify.ChannelConfigError
+		if errors.As(err, &configErr) {
+			writeError(w, derrors.New(derrors.InvalidRequest, err.Error(), false, map[string]any{"channel": channel}))
+			return
+		}
+		writeError(w, derrors.New(derrors.Unavailable, err.Error(), true, map[string]any{"channel": channel}))
+		return
+	}
+	writeJSON(w, nethttp.StatusOK, map[string]any{"channel": channel, "delivered": true})
+}
+
+func (s *Server) discoverTelegramChatIDs(w nethttp.ResponseWriter, r *nethttp.Request) {
+	if !s.commandOnly(w, r) {
+		return
+	}
+	if s.config.DiscoverTelegramChatIDs == nil {
+		writeError(w, derrors.New(derrors.Unavailable, "telegram chat ID discovery is unavailable", false, nil))
+		return
+	}
+	var settings notify.TelegramSettings
+	if err := decodeJSON(r, &settings); err != nil {
+		writeError(w, derrors.New(derrors.InvalidRequest, "invalid JSON request", false, nil))
+		return
+	}
+	ids, err := s.config.DiscoverTelegramChatIDs(r.Context(), settings)
+	if err != nil {
+		writeError(w, derrors.New(derrors.Unavailable, err.Error(), true, nil))
+		return
+	}
+	writeJSON(w, nethttp.StatusOK, map[string]any{"chat_ids": ids})
 }
 
 func (s *Server) currentStartupStatus() startup.Status {

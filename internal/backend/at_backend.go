@@ -80,6 +80,14 @@ func (a *ATBackend) ESIMStorage(ctx context.Context) (ESIMStorageInfo, error) {
 	return port.ESIMStorage(ctx)
 }
 
+func (a *ATBackend) ESIMSnapshot(ctx context.Context) (ESIMSnapshot, error) {
+	port, ok := a.esimPort.(ESIMSnapshotPort)
+	if !ok {
+		return ESIMSnapshot{}, commandUnsupported("esim", "esim_snapshot")
+	}
+	return port.ESIMSnapshot(ctx)
+}
+
 func (a *ATBackend) Download(ctx context.Context, activationCode, confirmationCode, matchingID string, opts *ESIMDownloadOptions) error {
 	if a.esimPort == nil {
 		return commandUnsupported("esim", "esim_download")

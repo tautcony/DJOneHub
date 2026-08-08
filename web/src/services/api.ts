@@ -8,6 +8,9 @@ import type {
   NetworkTrafficDaily,
   NetworkTrafficRange,
   NetworkStatus,
+  NotificationChannelsResponse,
+  NotificationChannelTestResponse,
+  NotificationChannelsSettings,
   NotificationDebugInfo,
   NotificationDebugRequest,
   NotificationDebugResponse,
@@ -198,6 +201,22 @@ export const api = {
     request<StartupStatus>('/settings/startup', {
       method: 'PUT',
       body: JSON.stringify({ enabled }),
+    }),
+  notificationChannels: () => request<NotificationChannelsResponse>('/notifications/channels'),
+  updateNotificationChannels: (settings: NotificationChannelsSettings) =>
+    request<NotificationChannelsResponse>('/notifications/channels', {
+      method: 'PUT',
+      body: JSON.stringify(settings),
+    }),
+  testNotificationChannel: (channel: string, probe: NotificationChannelsSettings) =>
+    request<NotificationChannelTestResponse>('/notifications/channels/actions/test', {
+      method: 'POST',
+      body: JSON.stringify({ channel, probe }),
+    }),
+  discoverTelegramChatIDs: (settings: NotificationChannelsSettings['telegram']) =>
+    request<{ chat_ids: number[] }>('/notifications/channels/telegram/chat-ids', {
+      method: 'POST',
+      body: JSON.stringify(settings),
     }),
   operation: (id: string) => request<OperationStatus>(`/operations/${encodeURIComponent(id)}`),
   calls: () => request<CallStatus>('/calls'),

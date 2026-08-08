@@ -15,8 +15,10 @@ replace github.com/iniwex5/netlink => ./third_party/netlink
 require (
 	github.com/damonto/euicc-go v1.1.3-0.20260628013808-8d873a2dfc98
 	github.com/electricbubble/gadb v0.1.0
+	github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1
 	github.com/gorilla/websocket v1.5.3
 	github.com/iniwex5/quectel-qmi-go v0.6.0
+	github.com/larksuite/oapi-sdk-go/v3 v3.9.10
 	github.com/lestrrat-go/file-rotatelogs v2.4.0+incompatible
 	github.com/warthog618/sms v0.3.0
 	go.bug.st/serial v1.6.4
@@ -31,6 +33,7 @@ require (
 	github.com/creack/goselect v0.1.2 // indirect
 	github.com/damonto/uicc-go v0.0.0-20260629073618-7ddada6bb13e // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
+	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/google/uuid v1.3.0 // indirect
 	github.com/iniwex5/netlink v1.3.3 // indirect
 	github.com/jonboulle/clockwork v0.5.0 // indirect

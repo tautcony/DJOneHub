@@ -74,6 +74,19 @@ func (s *Service) Overview(ctx context.Context) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	if snapshotPort, ok := port.(backend.ESIMSnapshotPort); ok {
+		if snapshot, snapshotErr := snapshotPort.ESIMSnapshot(ctx); snapshotErr == nil {
+			result := map[string]any{"card_type": "euicc", "eid": snapshot.EID, "profiles": snapshot.Profiles,
+				"free_nvram_bytes": snapshot.Storage.FreeNvramBytes, "free_nvram": snapshot.Storage.FreeNvram,
+				"device_info": snapshot.DeviceInfo}
+			if s.profiles != nil {
+				if observeErr := s.profiles.ObserveESIM(snapshot.Profiles); observeErr != nil {
+					log.Printf("observe eSIM profiles: %v", observeErr)
+				}
+			}
+			return result, nil
+		}
+	}
 	eid, err := port.EID(ctx)
 	if err != nil {
 		if isEUICCUnavailableProbeError(err) {
@@ -100,6 +113,11 @@ func (s *Service) Overview(ctx context.Context) (map[string]any, error) {
 		if storage, storageErr := storagePort.ESIMStorage(ctx); storageErr == nil {
 			result["free_nvram_bytes"] = storage.FreeNvramBytes
 			result["free_nvram"] = storage.FreeNvram
+		}
+	}
+	if deviceInfoPort, ok := port.(backend.ESIMDeviceInfoPort); ok {
+		if deviceInfo, deviceInfoErr := deviceInfoPort.ESIMDeviceInfo(ctx); deviceInfoErr == nil {
+			result["device_info"] = deviceInfo
 		}
 	}
 	return result, nil

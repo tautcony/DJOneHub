@@ -111,6 +111,14 @@ func (b *overviewContractBackend) ESIMStorage(context.Context) (backend.ESIMStor
 	return backend.ESIMStorageInfo{FreeNvramBytes: 220160, FreeNvram: "215.00 KB"}, nil
 }
 
+func (b *overviewContractBackend) ESIMDeviceInfo(context.Context) (backend.ESIMDeviceInfo, error) {
+	return backend.ESIMDeviceInfo{
+		SKU:          "ESTKme Light",
+		SerialNumber: "3107110a-05534132",
+		Firmware:     "T3VASS0-5.8.11.1",
+	}, nil
+}
+
 func (b *overviewContractBackend) Radio(context.Context) (backend.RadioState, error) {
 	if b.radioErr != nil {
 		return backend.RadioState{}, b.radioErr
@@ -162,10 +170,11 @@ func TestEsimOverviewContractStates(t *testing.T) {
 				t.Fatalf("overview status = %d, body = %s", recorder.Code, recorder.Body.String())
 			}
 			var body struct {
-				CardType string            `json:"card_type"`
-				EID      string            `json:"eid"`
-				Free     string            `json:"free_nvram"`
-				Profiles []backend.Profile `json:"profiles"`
+				CardType string                 `json:"card_type"`
+				EID      string                 `json:"eid"`
+				Free     string                 `json:"free_nvram"`
+				Device   backend.ESIMDeviceInfo `json:"device_info"`
+				Profiles []backend.Profile      `json:"profiles"`
 			}
 			if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
 				t.Fatal(err)
@@ -175,6 +184,9 @@ func TestEsimOverviewContractStates(t *testing.T) {
 			}
 			if body.Free != tc.wantFree {
 				t.Fatalf("free_nvram = %q, want %q", body.Free, tc.wantFree)
+			}
+			if tc.wantType == "euicc" && (body.Device.SKU != "ESTKme Light" || body.Device.Firmware != "T3VASS0-5.8.11.1") {
+				t.Fatalf("device_info = %#v", body.Device)
 			}
 			registered, err := server.config.SimProfiles.List(context.Background())
 			if err != nil {
