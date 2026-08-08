@@ -3409,6 +3409,15 @@ func (m *Manager) RetryNotification(sequenceNumber int64, aidHex string) error {
 			return NewNotificationError(NotificationErrorInternal, fmt.Sprintf("重试发送通知失败: %v", err), err)
 		}
 	}
+	if err := retryWithBackoff(3, 300*time.Millisecond, nil, func() error {
+		err := client.RemoveNotificationFromList(seq)
+		if errors.Is(err, sgp22.ErrNothingToDelete) {
+			return nil
+		}
+		return err
+	}); err != nil {
+		return NewNotificationError(NotificationErrorInternal, fmt.Sprintf("通知已发送，但从 eUICC 删除失败: %v", err), err)
+	}
 	return nil
 }
 

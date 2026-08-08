@@ -2801,6 +2801,7 @@ func testPendingNotification(seq sgp22.SequenceNumber, event sgp22.NotificationE
 
 type lifecycleSmartCardChannel struct {
 	response      []byte
+	responses     [][]byte
 	closeErr      error
 	disconnectErr error
 	channel       byte
@@ -2832,8 +2833,12 @@ func (c *lifecycleSmartCardChannel) OpenLogicalChannel(aid []byte) (byte, error)
 }
 
 func (c *lifecycleSmartCardChannel) Transmit(command []byte) ([]byte, error) {
-	c.transmitCalls.Add(1)
-	resp := append([]byte{}, c.response...)
+	call := int(c.transmitCalls.Add(1)) - 1
+	response := c.response
+	if call < len(c.responses) {
+		response = c.responses[call]
+	}
+	resp := append([]byte{}, response...)
 	resp = append(resp, 0x90, 0x00)
 	return resp, nil
 }
@@ -2883,6 +2888,13 @@ func lifecycleRetrieveNotificationResponse(t *testing.T) []byte {
 
 func emptyRetrieveNotificationResponse() []byte {
 	return bertlv.NewChildren(bertlv.ContextSpecific.Constructed(43)).Bytes()
+}
+
+func notificationRemovedResponse() []byte {
+	return bertlv.NewChildren(
+		bertlv.ContextSpecific.Constructed(48),
+		bertlv.NewValue(bertlv.ContextSpecific.Primitive(0), []byte{0}),
+	).Bytes()
 }
 
 func TestListNotificationsMapsCurrentNotificationItems(t *testing.T) {
@@ -3208,9 +3220,10 @@ func TestRetryNotificationHandlesPendingNotificationBySequence(t *testing.T) {
 		PendingNotification: bertlv.NewValue(bertlv.ContextSpecific.Primitive(0), []byte{0x01}),
 		Notification:        &sgp22.NotificationMetadata{SequenceNumber: 11, ProfileManagementOperation: sgp22.NotificationEventInstall, ICCID: iccid, Address: "install.example.com"},
 	}
-	client, roundTripper := newTestNotificationClient(
+	client, roundTripper, transmitter := newTestNotificationClientWithTransmitter(
 		[]*sgp22.NotificationMetadata{{SequenceNumber: 11, ProfileManagementOperation: sgp22.NotificationEventInstall, ICCID: iccid, Address: "install.example.com"}},
 		map[sgp22.SequenceNumber][]*sgp22.PendingNotification{11: {pending}},
+		nil,
 		nil,
 		nil,
 	)
@@ -3224,10 +3237,44 @@ func TestRetryNotificationHandlesPendingNotificationBySequence(t *testing.T) {
 	if len(roundTripper.handledHosts) != 1 || roundTripper.handledHosts[0] != "install.example.com" {
 		t.Fatalf("handledHosts=%v want [install.example.com]", roundTripper.handledHosts)
 	}
+	if got := fmt.Sprint(transmitter.removed); got != "[11]" {
+		t.Fatalf("removed=%v want [11]", transmitter.removed)
+	}
+}
+
+func TestRetryNotificationReportsCardCleanupFailure(t *testing.T) {
+	iccid, err := sgp22.NewICCID(fixtureICCID19)
+	if err != nil {
+		t.Fatalf("NewICCID() error=%v", err)
+	}
+	pending := testPendingNotification(11, sgp22.NotificationEventInstall, iccid, "install.example.com")
+	client, roundTripper, transmitter := newTestNotificationClientWithTransmitter(
+		nil,
+		map[sgp22.SequenceNumber][]*sgp22.PendingNotification{11: {pending}},
+		nil,
+		map[sgp22.SequenceNumber]error{11: errors.New("remove failed")},
+		nil,
+	)
+	mgr := newManagerWithChannelFactory("dev-esim", func(aid []byte) (*lpa.Client, error) {
+		return client, nil
+	}, nil, nil, nil)
+
+	if err := mgr.RetryNotification(11, ""); err == nil || !strings.Contains(err.Error(), "eUICC") {
+		t.Fatalf("RetryNotification() error=%v, want cleanup failure", err)
+	}
+	if len(roundTripper.handledHosts) != 1 {
+		t.Fatalf("handledHosts=%v want notification delivered before cleanup", roundTripper.handledHosts)
+	}
+	if len(transmitter.removed) != 0 {
+		t.Fatalf("removed=%v want none after cleanup failure", transmitter.removed)
+	}
 }
 
 func TestRetryNotificationClosesRealLPAClientOnSuccess(t *testing.T) {
-	ch := &lifecycleSmartCardChannel{response: lifecycleRetrieveNotificationResponse(t)}
+	ch := &lifecycleSmartCardChannel{responses: [][]byte{
+		lifecycleRetrieveNotificationResponse(t),
+		notificationRemovedResponse(),
+	}}
 	var roundTripper *fakeNotificationRoundTripper
 	mgr := newManagerWithChannelFactory("dev-esim", func(aid []byte) (*lpa.Client, error) {
 		client, rt := newLifecycleNotificationClient(t, ch, nil)
