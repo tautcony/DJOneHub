@@ -60,7 +60,7 @@ func (s *Service) Observe(record storage.SimProfileRecord) error {
 func (s *Service) ObserveESIM(profiles []backend.Profile) error {
 	for _, profile := range profiles {
 		if err := s.Observe(storage.SimProfileRecord{
-			ICCID: profile.ICCID, MSISDN: profile.Phone, ProfileType: storage.SimProfileESIM,
+			ICCID: profile.ICCID, MSISDN: profile.Phone, Name: strings.TrimSpace(profile.Label), ProfileType: storage.SimProfileESIM,
 		}); err != nil {
 			return err
 		}

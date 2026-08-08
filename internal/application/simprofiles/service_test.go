@@ -31,7 +31,7 @@ func TestServiceOwnsUnifiedMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := service.ObserveESIM([]backend.Profile{{
-		ICCID: "8901000000000000001", Phone: "+8613900000001",
+		ICCID: "8901000000000000001", Phone: "+8613900000001", Label: "Remote label",
 	}, {
 		ICCID: "8901000000000000002",
 	}}); err != nil {
@@ -52,6 +52,24 @@ func TestServiceOwnsUnifiedMetadata(t *testing.T) {
 	}
 	if first.Name != "Work" || first.LocalPhone != "+8613800000000" || first.MSISDN != "+8613900000001" || first.ProfileType != storage.SimProfileESIM {
 		t.Fatalf("observed profile = %+v", first)
+	}
+}
+
+func TestServiceObserveESIMUsesLabelOnFirstObservation(t *testing.T) {
+	service := newTestService(t)
+	if err := service.ObserveESIM([]backend.Profile{{ICCID: "8901000000000000003", Label: "Travel eSIM"}}); err != nil {
+		t.Fatal(err)
+	}
+	profiles, err := service.List(context.Background())
+	if err != nil || len(profiles) != 1 || profiles[0].Name != "Travel eSIM" {
+		t.Fatalf("profiles=%+v err=%v, want first-seen label", profiles, err)
+	}
+	if err := service.ObserveESIM([]backend.Profile{{ICCID: "8901000000000000003", Label: "Renamed on card"}}); err != nil {
+		t.Fatal(err)
+	}
+	profiles, err = service.List(context.Background())
+	if err != nil || profiles[0].Name != "Travel eSIM" {
+		t.Fatalf("profiles=%+v err=%v, want local name preserved after first observation", profiles, err)
 	}
 }
 
