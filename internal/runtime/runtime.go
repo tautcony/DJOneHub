@@ -20,18 +20,19 @@ type Config struct {
 }
 
 type Runtime struct {
-	mu        sync.RWMutex
-	state     device.State
-	snapshot  device.Snapshot
-	candidate *device.Candidate
-	backend   backend.ModemBackend
-	ctx       context.Context
-	cancel    context.CancelFunc
-	workerWG  sync.WaitGroup
-	bus       *EventBus
-	locks     *ResourceLocks
-	config    Config
-	retryAt   time.Time
+	mu                    sync.RWMutex
+	state                 device.State
+	snapshot              device.Snapshot
+	candidate             *device.Candidate
+	backend               backend.ModemBackend
+	ctx                   context.Context
+	cancel                context.CancelFunc
+	workerWG              sync.WaitGroup
+	bus                   *EventBus
+	locks                 *ResourceLocks
+	config                Config
+	retryAt               time.Time
+	backendEventConsumers int
 	// scanMu 是扫描与生命周期关闭共享的串行化锁: 轮询扫描、HTTP rescan、
 	// disconnect 与 Stop 全部经过它, 使并发扫描不可能在关闭之后重新安装
 	// 一个已关闭的后端 (design D14)。
@@ -231,6 +232,14 @@ func (r *Runtime) scanLocked(ctx context.Context) error {
 }
 
 func (r *Runtime) consumeBackendEvents(ctx context.Context, b backend.ModemBackend, events <-chan backend.BackendEvent) {
+	r.mu.Lock()
+	r.backendEventConsumers++
+	r.mu.Unlock()
+	defer func() {
+		r.mu.Lock()
+		r.backendEventConsumers--
+		r.mu.Unlock()
+	}()
 	for {
 		select {
 		case <-ctx.Done():
@@ -257,6 +266,24 @@ func (r *Runtime) consumeBackendEvents(ctx context.Context, b backend.ModemBacke
 				return
 			}
 		}
+	}
+}
+
+type Diagnostics struct {
+	Running               bool         `json:"running"`
+	State                 device.State `json:"state"`
+	PollIntervalMS        int64        `json:"poll_interval_ms"`
+	BackendAttached       bool         `json:"backend_attached"`
+	BackendEventConsumers int          `json:"backend_event_consumers"`
+}
+
+func (r *Runtime) Diagnostics() Diagnostics {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return Diagnostics{
+		Running: r.cancel != nil, State: r.state,
+		PollIntervalMS:  r.config.PollInterval.Milliseconds(),
+		BackendAttached: r.backend != nil, BackendEventConsumers: r.backendEventConsumers,
 	}
 }
 

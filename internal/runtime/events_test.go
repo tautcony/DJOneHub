@@ -104,3 +104,68 @@ func TestSubscribeWithWatermarkCountsOverflow(t *testing.T) {
 		t.Fatalf("cumulative = %d, want 1", drops.Cumulative)
 	}
 }
+
+func TestDiagnosticsNamesSubscribersAndOmitsPayload(t *testing.T) {
+	bus := NewEventBus()
+	_, _, unsubscribe := bus.SubscribeNamed("test-consumer", 1)
+	defer unsubscribe()
+	bus.Publish("sms.received", map[string]any{"body": "must-not-leak"})
+	bus.Publish("sms.received", map[string]any{"body": "also-secret"})
+
+	diagnostics := bus.Diagnostics()
+	if diagnostics.Published != 2 || diagnostics.CumulativeDrops != 1 {
+		t.Fatalf("diagnostics = %#v", diagnostics)
+	}
+	if len(diagnostics.Subscribers) != 1 || diagnostics.Subscribers[0].Name != "test-consumer" {
+		t.Fatalf("subscribers = %#v", diagnostics.Subscribers)
+	}
+	if diagnostics.Subscribers[0].Queued != 1 || diagnostics.Subscribers[0].Dropped != 1 {
+		t.Fatalf("subscriber pressure = %#v", diagnostics.Subscribers[0])
+	}
+	if len(diagnostics.Recent) != 2 || diagnostics.Recent[0].Type != "sms.received" {
+		t.Fatalf("recent = %#v", diagnostics.Recent)
+	}
+}
+
+func TestMessageTraceRecordsNamedDeliveryWithoutPayload(t *testing.T) {
+	bus := NewEventBus()
+	_, _, unsubscribe := bus.SubscribeNamed("notification-policy", 1)
+	defer unsubscribe()
+	event := bus.Publish("sms.received", map[string]any{"body": "private"})
+
+	trace, ok := bus.MessageTrace(event.ID)
+	if !ok {
+		t.Fatal("message trace missing")
+	}
+	if trace.Type != "sms.received" || trace.Status != "success" {
+		t.Fatalf("trace = %#v", trace)
+	}
+	wantNodes := []string{"sms-poller", "domain-events", "notification-policy"}
+	if len(trace.Hops) != len(wantNodes) {
+		t.Fatalf("hops = %#v", trace.Hops)
+	}
+	for i, want := range wantNodes {
+		if trace.Hops[i].NodeID != want {
+			t.Fatalf("hop %d node = %q, want %q", i, trace.Hops[i].NodeID, want)
+		}
+		if trace.Hops[i].Detail == "private" {
+			t.Fatal("trace retained event payload")
+		}
+	}
+}
+
+func TestMessageTraceStreamingIsNonBlockingAndReportsUpdates(t *testing.T) {
+	bus := NewEventBus()
+	sub := bus.SubscribeMessageTraces(1)
+	defer sub.Unsubscribe()
+	event := bus.Publish("operation.changed", nil)
+	initial := <-sub.Updates
+	if initial.ID != event.ID {
+		t.Fatalf("initial trace id = %d, want %d", initial.ID, event.ID)
+	}
+	bus.RecordTraceHop(event.ID, "worker", "handle", "success", "")
+	updated := <-sub.Updates
+	if len(updated.Hops) != len(initial.Hops)+1 || updated.Hops[len(updated.Hops)-1].NodeID != "worker" {
+		t.Fatalf("updated trace = %#v", updated)
+	}
+}
