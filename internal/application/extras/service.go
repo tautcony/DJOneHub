@@ -172,6 +172,12 @@ func (s *Service) Stop(ctx context.Context) error {
 	return nil
 }
 
+func (s *Service) Running() bool {
+	s.stopMu.Lock()
+	defer s.stopMu.Unlock()
+	return s.cancel != nil
+}
+
 func (s *Service) callPoller(ctx context.Context) {
 	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
@@ -473,7 +479,7 @@ func (s *Service) Calls(context.Context) Status {
 		copy := *s.active
 		active = &copy
 	}
-	return Status{Active: active, History: append([]CallRecord(nil), s.history...), Polling: true, PollIntervalS: 3, LastPoll: s.lastPoll, LastPollError: s.lastPollError}
+	return Status{Active: active, History: append([]CallRecord(nil), s.history...), Polling: s.Running(), PollIntervalS: 3, LastPoll: s.lastPoll, LastPollError: s.lastPollError}
 }
 
 func (s *Service) Reject(ctx context.Context) error {

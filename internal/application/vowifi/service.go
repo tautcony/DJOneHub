@@ -163,7 +163,7 @@ func (s *Service) Start(ctx context.Context) {
 	s.cancel = cancel
 	s.done = done
 	s.stopMu.Unlock()
-	_, events, unsubscribe := s.runtime.Events().Subscribe(32)
+	_, events, unsubscribe := s.runtime.Events().SubscribeNamed("vowifi-runtime", 32)
 	go func() {
 		defer close(done)
 		defer unsubscribe()
@@ -193,6 +193,12 @@ func (s *Service) Stop(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func (s *Service) Running() bool {
+	s.stopMu.Lock()
+	defer s.stopMu.Unlock()
+	return s.cancel != nil
 }
 
 func (s *Service) followRuntime(ctx context.Context, events <-chan runtime.Event) {

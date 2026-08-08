@@ -30,6 +30,7 @@ import (
 	"github.com/iniwex5/vohive/internal/backend"
 	derrors "github.com/iniwex5/vohive/internal/domain/errors"
 	"github.com/iniwex5/vohive/internal/notify"
+	"github.com/iniwex5/vohive/internal/platform/darwin/native"
 	"github.com/iniwex5/vohive/internal/platform/startup"
 	"github.com/iniwex5/vohive/internal/runtime"
 	"github.com/iniwex5/vohive/internal/storage"
@@ -71,10 +72,12 @@ type Config struct {
 	// the settings page can verify a configuration end to end. probe holds the
 	// channel's current form configuration and may be an empty Settings when
 	// the caller wants to test the already-saved (live) configuration.
-	TestNotificationChannel func(context.Context, string, notify.Settings) error
-	DiscoverTelegramChatIDs func(context.Context, notify.TelegramSettings) ([]int64, error)
-	StartupStatus           func() startup.Status
-	SetStartupEnabled       func(bool) error
+	TestNotificationChannel         func(context.Context, string, notify.Settings) error
+	DiscoverTelegramChatIDs         func(context.Context, notify.TelegramSettings) ([]int64, error)
+	NotificationChannelsDiagnostics func() notify.Diagnostics
+	NativeUIDiagnostics             func() native.Diagnostics
+	StartupStatus                   func() startup.Status
+	SetStartupEnabled               func(bool) error
 	// LoopbackPort is the port the server binds on loopback. It anchors the
 	// temporary boundary's Origin/Host checks; set via SetLoopbackPort before
 	// serving. The guard fails closed when it is unset.
@@ -86,14 +89,15 @@ type Config struct {
 }
 
 type Server struct {
-	config Config
+	config    Config
+	startedAt time.Time
 	// keepalive is captured at construction so tests can shrink the WebSocket
 	// windows per server without racing handler goroutines.
 	keepalive websocketKeepalive
 }
 
 func NewServer(config Config) *Server {
-	return &Server{config: config, keepalive: websocketKeepalive{write: writeWait, pong: pongWait, ping: pingPeriod}}
+	return &Server{config: config, startedAt: time.Now().UTC(), keepalive: websocketKeepalive{write: writeWait, pong: pongWait, ping: pingPeriod}}
 }
 
 // SetLoopbackPort records the bound loopback port used to validate Origin and
@@ -109,6 +113,10 @@ func (s *Server) Handler() nethttp.Handler {
 	mux.HandleFunc("/api/v1/device/status", s.deviceStatus)
 	mux.HandleFunc("/api/v1/device/actions/rescan", s.rescan)
 	mux.HandleFunc("/api/v1/device/actions/reboot", s.reboot)
+	mux.HandleFunc("/api/v1/runtime/diagnostics", s.runtimeDiagnostics)
+	mux.HandleFunc("/api/v1/runtime/traces/stream", s.runtimeTraceStream)
+	mux.HandleFunc("/api/v1/runtime/traces/", s.runtimeTraceByID)
+	mux.HandleFunc("/api/v1/runtime/traces", s.runtimeTraces)
 	mux.HandleFunc("/api/v1/sms/actions/refresh", s.smsRefresh)
 	mux.HandleFunc("/api/v1/sms/actions/send", s.smsSend)
 	mux.HandleFunc("/api/v1/sms/actions/clear", s.smsClear)
@@ -243,7 +251,7 @@ func (s *Server) smsRefresh(w nethttp.ResponseWriter, r *nethttp.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, nethttp.StatusOK, map[string]any{"items": items})
+	writeJSON(w, nethttp.StatusOK, map[string]any{"items": items, "storage": s.config.SMS.StorageUsage(r.Context())})
 }
 
 type sendSMSRequest struct {
@@ -757,7 +765,10 @@ func (s *Server) rawAT(w nethttp.ResponseWriter, r *nethttp.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, nethttp.StatusOK, map[string]string{"response": result})
+	writeJSON(w, nethttp.StatusOK, map[string]any{
+		"response":     result,
+		"sms_messages": rawat.ParseSMSDiagnostics(value.Command, result),
+	})
 }
 
 func (s *Server) firmwareStatus(w nethttp.ResponseWriter, r *nethttp.Request) {
@@ -1463,7 +1474,7 @@ func (s *Server) websocket(w nethttp.ResponseWriter, r *nethttp.Request) {
 	// it with ID > watermark, so the client never sees a gap under
 	// client-side deduplication. The snapshot covers device status only;
 	// operation, SMS, and call events are never discarded as covered.
-	sub := s.config.Runtime.Events().SubscribeWithWatermark(64)
+	sub := s.config.Runtime.Events().SubscribeWithWatermarkNamed("websocket-client", 64)
 	defer sub.Unsubscribe()
 
 	// All event and ping writes go through one writer (gorilla permits only
@@ -1548,13 +1559,27 @@ func writeJSON(w nethttp.ResponseWriter, status int, value any) {
 
 func writeError(w nethttp.ResponseWriter, err error) {
 	structured := toStructuredError(err)
-	log.Printf("http error code=%s error=%v", structured.Code, err)
+	method, path, host, origin := "-", "-", "-", "-"
+	if metadata, ok := w.(interface {
+		RequestMetadata() (method, path, host, origin string)
+	}); ok {
+		method, path, host, origin = metadata.RequestMetadata()
+	}
+	log.Printf("http error method=%s path=%q host=%q origin=%q code=%s error=%v", method, path, host, origin, structured.Code, err)
 	writeJSON(w, errorStatus(structured.Code), map[string]any{"error": structured})
 }
 
 type statusResponseWriter struct {
 	nethttp.ResponseWriter
 	status int
+	method string
+	path   string
+	host   string
+	origin string
+}
+
+func (w *statusResponseWriter) RequestMetadata() (string, string, string, string) {
+	return w.method, w.path, w.host, w.origin
 }
 
 func (w *statusResponseWriter) WriteHeader(status int) {
@@ -1571,6 +1596,18 @@ func (w *statusResponseWriter) Write(payload []byte) (int, error) {
 	return w.ResponseWriter.Write(payload)
 }
 
+// Flush preserves streaming semantics through the request logging wrapper.
+// Without it SSE handlers see a non-streaming ResponseWriter and fail even
+// when the underlying HTTP server supports flushing.
+func (w *statusResponseWriter) Flush() {
+	if w.status == 0 {
+		w.status = nethttp.StatusOK
+	}
+	if flusher, ok := w.ResponseWriter.(nethttp.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
 func logRequests(next nethttp.Handler) nethttp.Handler {
 	return nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
 		// WebSocket upgraders require the original ResponseWriter interfaces.
@@ -1579,7 +1616,13 @@ func logRequests(next nethttp.Handler) nethttp.Handler {
 			return
 		}
 		started := time.Now()
-		recorder := &statusResponseWriter{ResponseWriter: w}
+		recorder := &statusResponseWriter{
+			ResponseWriter: w,
+			method:         r.Method,
+			path:           r.URL.Path,
+			host:           r.Host,
+			origin:         r.Header.Get("Origin"),
+		}
 		next.ServeHTTP(recorder, r)
 		status := recorder.status
 		if status == 0 {

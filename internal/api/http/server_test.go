@@ -107,6 +107,30 @@ func TestServerReturnsOfflineSnapshot(t *testing.T) {
 	}
 }
 
+func TestRuntimeDiagnosticsReturnsTopologyWithoutEventPayloads(t *testing.T) {
+	server := newTestServer(t, nil)
+	server.config.Runtime.Events().Publish("sms.received", map[string]any{"body": "private-message"})
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/runtime/diagnostics", nil)
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), "private-message") {
+		t.Fatalf("diagnostics leaked event payload: %s", recorder.Body.String())
+	}
+	var body runtimeDiagnosticsResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Workers) < 8 || len(body.Channels) < 5 || len(body.Flows) < 4 {
+		t.Fatalf("incomplete diagnostics: workers=%d channels=%d flows=%d", len(body.Workers), len(body.Channels), len(body.Flows))
+	}
+	if body.EventBus.Published != 1 || len(body.EventBus.Recent) != 1 {
+		t.Fatalf("event bus = %#v", body.EventBus)
+	}
+}
+
 func TestServerEnforcesConfiguredAuthentication(t *testing.T) {
 	server := newTestServer(t, AuthenticatorFunc(func(*http.Request) bool { return false }))
 	request := withSameOrigin(httptest.NewRequest(http.MethodPost, "/api/v1/device/actions/rescan", nil))

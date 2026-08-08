@@ -43,12 +43,13 @@ type Bridge struct {
 	driver  uiDriver
 	webURL  string
 
-	mu       sync.Mutex
-	commands chan notification.Command
-	ready    chan struct{}
-	started  bool
-	exited   bool
-	eventSeq atomic.Uint64
+	mu           sync.Mutex
+	commands     chan notification.Command
+	ready        chan struct{}
+	started      bool
+	exited       bool
+	eventSeq     atomic.Uint64
+	commandDrops atomic.Uint64
 
 	permissionMu     sync.RWMutex
 	permissionStatus notification.NotificationPermissionStatus
@@ -321,11 +322,30 @@ func (b *Bridge) enqueueCommand(jsonString string) {
 		// user command must not disappear silently: report it back to Swift
 		// and log it instead of pretending the command was accepted.
 		logger.Warn("native command dropped", "command", command.Name, "reason", "queue_full")
+		b.commandDrops.Add(1)
 		b.Send(notification.EventCommandDropped, notification.CommandDropped{
 			Command: command.Name,
 			Reason:  "queue_full",
 		})
 	}
+}
+
+type Diagnostics struct {
+	Available     bool   `json:"available"`
+	Running       bool   `json:"running"`
+	QueueDepth    int    `json:"queue_depth"`
+	QueueCapacity int    `json:"queue_capacity"`
+	Dropped       uint64 `json:"dropped"`
+}
+
+func (b *Bridge) Diagnostics() Diagnostics {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	out := Diagnostics{Available: b.driver.hasUI(), Running: b.started && !b.exited, Dropped: b.commandDrops.Load()}
+	if b.commands != nil {
+		out.QueueDepth, out.QueueCapacity = len(b.commands), cap(b.commands)
+	}
+	return out
 }
 
 // nativeLogLevels maps the contract log levels to zap levels.

@@ -29,8 +29,8 @@ type Service struct {
 	lastPublished *notification.NetworkUpdateEvent
 	// lastTrafficPublished 记录上一个已发布的流量样本, 用于去重发布。
 	lastTrafficPublished *TrafficUpdateEvent
-	iccid         string
-	iccidChecked  time.Time
+	iccid                string
+	iccidChecked         time.Time
 
 	// stopMu guards the cancel/done pair created by Start, following the
 	// notification service's Stop pattern so shutdown can join both pollers
@@ -134,6 +134,12 @@ func (s *Service) Stop(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func (s *Service) Running() bool {
+	s.stopMu.Lock()
+	defer s.stopMu.Unlock()
+	return s.cancel != nil
 }
 
 func (s *Service) trafficPoller(ctx context.Context) {

@@ -5,8 +5,21 @@ func openAPIDocument() map[string]any {
 		"openapi": "3.0.3",
 		"info":    map[string]any{"title": "DJOneHub API", "version": "1.0.0"},
 		"paths": map[string]any{
-			"/api/v1/device":                      readPath("single-device status"),
-			"/api/v1/device/status":               readPath("single-device status"),
+			"/api/v1/device":              readPath("single-device status"),
+			"/api/v1/device/status":       readPath("single-device status"),
+			"/api/v1/runtime/diagnostics": readPath("runtime workers, message channels and event flow"),
+			"/api/v1/runtime/traces":      readPath("recent payload-free runtime message traces"),
+			"/api/v1/runtime/traces/{trace_id}": map[string]any{
+				"get": map[string]any{"parameters": []any{map[string]any{
+					"name": "trace_id", "in": "path", "required": true, "schema": map[string]any{"type": "integer"},
+				}}, "responses": responses("runtime message trace")},
+			},
+			"/api/v1/runtime/traces/stream": map[string]any{
+				"get": map[string]any{"responses": map[string]any{
+					"200": map[string]any{"description": "server-sent runtime trace stream", "content": map[string]any{"text/event-stream": map[string]any{}}},
+					"401": map[string]any{"$ref": "#/components/responses/Error"},
+				}},
+			},
 			"/api/v1/device/capabilities":         readPath("device capabilities"),
 			"/api/v1/device/actions/rescan":       commandPath("rescan result", false),
 			"/api/v1/device/actions/reboot":       commandPath("reboot accepted", true),

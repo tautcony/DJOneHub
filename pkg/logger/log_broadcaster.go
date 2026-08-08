@@ -3,6 +3,7 @@ package logger
 import (
 	"encoding/json"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap/zapcore"
@@ -19,9 +20,11 @@ type LogEntry struct {
 
 // Broadcaster 日志广播器，将日志条目推送给所有订阅的客户端
 type Broadcaster struct {
-	clients map[chan LogEntry]struct{}
-	mu      sync.RWMutex
-	maxSize int // 每个客户端缓冲区大小
+	clients   map[chan LogEntry]struct{}
+	mu        sync.RWMutex
+	maxSize   int // 每个客户端缓冲区大小
+	published atomic.Uint64
+	dropped   atomic.Uint64
 }
 
 // 全局广播器实例
@@ -54,6 +57,7 @@ func (b *Broadcaster) Unsubscribe(ch chan LogEntry) {
 
 // Broadcast 广播日志条目给所有订阅者
 func (b *Broadcaster) Broadcast(entry LogEntry) {
+	b.published.Add(1)
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
@@ -62,7 +66,24 @@ func (b *Broadcaster) Broadcast(entry LogEntry) {
 		case ch <- entry:
 		default:
 			// 缓冲区满，丢弃旧日志（非阻塞）
+			b.dropped.Add(1)
 		}
+	}
+}
+
+type BroadcasterDiagnostics struct {
+	Subscribers int    `json:"subscribers"`
+	Capacity    int    `json:"capacity"`
+	Published   uint64 `json:"published"`
+	Dropped     uint64 `json:"dropped"`
+}
+
+func (b *Broadcaster) Diagnostics() BroadcasterDiagnostics {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return BroadcasterDiagnostics{
+		Subscribers: len(b.clients), Capacity: b.maxSize,
+		Published: b.published.Load(), Dropped: b.dropped.Load(),
 	}
 }
 

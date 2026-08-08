@@ -207,6 +207,22 @@ func (m *Manager) Cancel(id string) bool {
 	return ok
 }
 
+type Diagnostics struct {
+	Accepting bool          `json:"accepting"`
+	Active    int           `json:"active"`
+	ByState   map[State]int `json:"by_state"`
+}
+
+func (m *Manager) Diagnostics() Diagnostics {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := Diagnostics{Accepting: !m.closed, Active: len(m.cancels), ByState: make(map[State]int)}
+	for _, status := range m.items {
+		out.ByState[status.State]++
+	}
+	return out
+}
+
 func (m *Manager) update(id string, update func(*Status)) {
 	m.mu.Lock()
 	status, ok := m.items[id]

@@ -191,6 +191,7 @@ func newApp(r *runtime.Runtime, err error, platformAdapter transport.NetworkCont
 		network: networkService,
 		ops:     ops,
 	}))
+	notifyManager.SetTraceRecorder(r.Events())
 
 	notifications := notification.New(notification.Config{
 		Events: r.Events(),
@@ -293,9 +294,11 @@ func newApp(r *runtime.Runtime, err error, platformAdapter transport.NetworkCont
 			).Telegram.BotToken
 			return notify.DiscoverTelegramChatIDs(settings)
 		},
-		StartupStatus:     startupManager.Status,
-		SetStartupEnabled: startupManager.SetEnabled,
-		Admission:         app.admitting,
+		NotificationChannelsDiagnostics: notifyManager.Diagnostics,
+		NativeUIDiagnostics:             bridge.Diagnostics,
+		StartupStatus:                   startupManager.Status,
+		SetStartupEnabled:               startupManager.SetEnabled,
+		Admission:                       app.admitting,
 	})
 	return app, nil
 }
