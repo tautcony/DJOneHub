@@ -12,6 +12,7 @@ export type ViewID =
   | 'notifications'
   | 'settings'
   | 'firmware'
+  | 'runtime'
 
 export const viewPaths: Record<ViewID, string> = {
   overview: '/overview',
@@ -25,6 +26,7 @@ export const viewPaths: Record<ViewID, string> = {
   notifications: '/notifications',
   settings: '/settings',
   firmware: '/firmware',
+  runtime: '/runtime',
 }
 
 const viewComponents: Record<ViewID, RouteComponent> = {
@@ -39,6 +41,7 @@ const viewComponents: Record<ViewID, RouteComponent> = {
   notifications: () => import('./views/NotificationsView.vue'),
   settings: () => import('./views/SettingsView.vue'),
   firmware: () => import('./views/FirmwareView.vue'),
+  runtime: () => import('./views/RuntimeView.vue'),
 }
 
 export function viewFromRoute(value: unknown): ViewID {

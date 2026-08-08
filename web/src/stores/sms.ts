@@ -3,7 +3,7 @@ import { defineStore } from 'pinia'
 import { useI18n } from 'vue-i18n'
 import { api } from '../services/api'
 import { useDeviceStore } from './device'
-import type { SMSMessage } from '../types'
+import type { SMSMessage, SMSStorageUsage } from '../types'
 import type { SmsThread } from '../views/context'
 
 // SMS 域状态: 消息列表、会话线程、发送草稿与操作追踪。
@@ -19,6 +19,7 @@ export const useSmsStore = defineStore('sms', () => {
   const to = ref('')
   const body = ref('')
   const operationID = ref('')
+  const storageUsage = ref<SMSStorageUsage[]>([])
 
   const operation = computed(() => (operationID.value ? device.operations[operationID.value] : undefined))
 
@@ -97,7 +98,8 @@ export const useSmsStore = defineStore('sms', () => {
 
   function syncSelection() {
     if (composeNew.value) return
-    const thread = filteredThreads.value.find((item) => item.key === selectedPeer.value) || filteredThreads.value[0]
+    const thread =
+      filteredThreads.value.find((item) => item.key === selectedPeer.value) || filteredThreads.value[0]
     if (!thread) {
       selectedPeer.value = ''
       to.value = ''
@@ -110,6 +112,7 @@ export const useSmsStore = defineStore('sms', () => {
   async function refresh(): Promise<void> {
     const result = await api.smsRefresh()
     const next = Array.isArray(result.items) ? result.items : []
+    storageUsage.value = Array.isArray(result.storage) ? result.storage : []
     items.value = next
     reconcileSent(next)
     syncSelection()
@@ -117,6 +120,7 @@ export const useSmsStore = defineStore('sms', () => {
 
   async function clear(): Promise<void> {
     await api.smsClear()
+    storageUsage.value = storageUsage.value.map((item) => ({ ...item, used: 0 }))
   }
 
   function startNew() {
@@ -164,6 +168,7 @@ export const useSmsStore = defineStore('sms', () => {
     to,
     body,
     operationID,
+    storageUsage,
     operation,
     threads,
     filteredThreads,

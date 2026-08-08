@@ -57,6 +57,12 @@ export interface SMSMessage {
   total_parts?: number
 }
 
+export interface SMSStorageUsage {
+  storage: string
+  used: number
+  total: number
+}
+
 export interface EsimOverview {
   card_type?: 'physical_sim' | 'euicc' | 'unknown'
   eid?: string
@@ -232,6 +238,110 @@ export interface Envelope {
   version: number
   occurred_at: string
   data: unknown
+}
+
+export interface RuntimeWorkerDiagnostics {
+  id: string
+  name: string
+  kind: string
+  state: 'running' | 'idle' | 'stopped' | string
+  detail: string
+  interval_ms?: number
+  queue_depth?: number
+  queue_capacity?: number
+  dropped?: number
+  last_activity?: string
+}
+
+export interface RuntimeChannelDiagnostics {
+  id: string
+  name: string
+  kind: string
+  state: string
+  detail: string
+  published?: number
+  dropped?: number
+  subscribers?: number
+  queue_depth?: number
+  queue_capacity?: number
+}
+
+export interface RuntimeDiagnostics {
+  generated_at: string
+  uptime_seconds: number
+  goroutines: number
+  workers: RuntimeWorkerDiagnostics[]
+  channels: RuntimeChannelDiagnostics[]
+  event_bus: {
+    published: number
+    cumulative_drops: number
+    subscribers: Array<{
+      id: number
+      name: string
+      queued: number
+      capacity: number
+      dropped: number
+      since: string
+    }>
+    event_types: Array<{ type: string; count: number; last_id: number; last_occurred_at: string }>
+    recent: Array<{
+      id: number
+      type: string
+      occurred_at: string
+      subscribers: number
+      delivered: number
+      dropped: number
+    }>
+  }
+  flows: Array<{ id: string; from: string; via: string; to: string[]; event_types: string[] }>
+  topology: RuntimeTopology
+  traces: RuntimeMessageTrace[]
+  channel_recovery: Array<{
+    channel: string
+    attempts: number
+    retryable: boolean
+    last_error: string
+    next_retry?: string
+    last_failed: string
+  }>
+}
+
+export interface RuntimeTopologyNode {
+  id: string
+  name: string
+  kind: 'source' | 'channel' | 'processor' | 'destination' | string
+  state: string
+  detail?: string
+}
+
+export interface RuntimeTopologyEdge {
+  id: string
+  source: string
+  target: string
+  event_types?: string[]
+}
+
+export interface RuntimeTopology {
+  nodes: RuntimeTopologyNode[]
+  edges: RuntimeTopologyEdge[]
+}
+
+export interface RuntimeTraceHop {
+  node_id: string
+  from_node_id?: string
+  action: string
+  state: string
+  at: string
+  detail?: string
+}
+
+export interface RuntimeMessageTrace {
+  id: number
+  type: string
+  started_at: string
+  updated_at: string
+  status: string
+  hops: RuntimeTraceHop[]
 }
 
 export interface NotificationDebugAction {

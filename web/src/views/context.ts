@@ -18,6 +18,7 @@ import type {
   NotificationPreferences,
   OperationStatus,
   SMSMessage,
+  SMSStorageUsage,
   StartupStatus,
   VowifiStatus,
 } from '../types'
@@ -93,6 +94,7 @@ export type ViewContext = {
   smsQuery: Ref<string>
   smsSimFilter: Ref<string>
   smsThreads: ComputedRef<SmsThread[]>
+  smsStorageUsage: Ref<SMSStorageUsage[]>
   smsTo: Ref<string>
   startNewSMS: () => void
 

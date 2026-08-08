@@ -30,6 +30,7 @@ const {
   smsOperation,
   smsQuery,
   smsSimFilter,
+  smsStorageUsage,
   smsThreads,
   smsTo,
   sendSMS,
@@ -56,6 +57,21 @@ const selectedThreadSim = computed(() =>
     ? simProfileLabel(selectedSmsThread.value.iccid, simProfiles.value, maskSensitive)
     : '',
 )
+const storageSummaries = computed(() => {
+  const byStorage = new Map<string, { storage: string; used: number; total: number }>()
+  for (const item of smsStorageUsage.value) {
+    if (!item.storage || item.total <= 0) continue
+    const existing = byStorage.get(item.storage)
+    if (!existing || item.used / item.total > existing.used / existing.total)
+      byStorage.set(item.storage, item)
+  }
+  return [...byStorage.values()].map((item) => ({
+    ...item,
+    percent: Math.min(100, Math.round((item.used / item.total) * 100)),
+    warning: item.used / item.total >= 0.8,
+  }))
+})
+const storageWarning = computed(() => storageSummaries.value.some((item) => item.warning))
 
 // threadListLazy 报告会话数是否超过惰性阈值; visibleThreads 只挂载前 N 行。
 const threadListLazy = computed(() => filteredSmsThreads.value.length > SMS_THREAD_LAZY_THRESHOLD)
@@ -137,6 +153,29 @@ function threadDate(value?: string) {
         </a-button>
       </div>
 
+      <div v-if="storageSummaries.length" class="sms-storage-usage">
+        <div v-for="item in storageSummaries" :key="item.storage" class="sms-storage-row">
+          <div class="sms-storage-copy">
+            <span>{{ t('sms.storageUsage', { storage: item.storage }) }}</span>
+            <strong>{{ item.used }} / {{ item.total }}</strong>
+          </div>
+          <a-progress
+            :percent="item.percent"
+            :show-info="false"
+            :stroke-color="item.warning ? '#c2410c' : '#1677ff'"
+            size="small"
+          />
+        </div>
+        <a-alert
+          v-if="storageWarning"
+          class="sms-storage-warning"
+          type="warning"
+          show-icon
+          :message="t('sms.storageWarning')"
+          :description="t('sms.storageWarningDetail')"
+        />
+      </div>
+
       <a-input-search
         v-model:value="smsQuery"
         class="sms-search"
@@ -186,7 +225,7 @@ function threadDate(value?: string) {
 
         <EmptyState
           v-if="!filteredSmsThreads.length"
-          :title="noSim ? t('sms.noSim') : (smsQuery ? t('sms.noSearchResults') : t('sms.noMessages'))"
+          :title="noSim ? t('sms.noSim') : smsQuery ? t('sms.noSearchResults') : t('sms.noMessages')"
           :detail="noSim ? t('sms.noSimDetail') : t('sms.emptyDetail')"
         />
       </div>
@@ -281,3 +320,62 @@ function threadDate(value?: string) {
     </section>
   </section>
 </template>
+
+<style scoped>
+.sms-storage-usage {
+  flex: 0 0 auto;
+  padding: 4px 16px 5px;
+  border-bottom: 1px solid var(--border-subtle, #e5e7eb);
+  background: #f8fafc;
+}
+
+.sms-storage-row + .sms-storage-row {
+  margin-top: 5px;
+}
+
+.sms-storage-copy {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 1px;
+  color: #475569;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.sms-storage-copy strong {
+  color: #172033;
+  font-variant-numeric: tabular-nums;
+}
+
+.sms-storage-row :deep(.ant-progress) {
+  display: block;
+  margin: 0;
+  line-height: 0;
+}
+
+.sms-storage-row :deep(.ant-progress-outer) {
+  display: block;
+  padding: 0;
+  margin: 0;
+}
+
+.sms-storage-row :deep(.ant-progress-inner),
+.sms-storage-row :deep(.ant-progress-bg) {
+  height: 5px !important;
+}
+
+.sms-storage-warning {
+  margin-top: 6px;
+}
+
+.sms-storage-warning :deep(.ant-alert-message),
+.sms-storage-warning :deep(.ant-alert-description) {
+  line-height: 1.35;
+}
+
+.sms-storage-warning :deep(.ant-alert-content) {
+  min-width: 0;
+}
+</style>

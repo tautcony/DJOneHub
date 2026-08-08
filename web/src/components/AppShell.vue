@@ -15,6 +15,7 @@ import {
   PhoneOutlined,
   ReloadOutlined,
   SettingOutlined,
+  DeploymentUnitOutlined,
   UpOutlined,
   WifiOutlined,
 } from '@ant-design/icons-vue'
@@ -64,6 +65,7 @@ const iconMap: Record<string, Component> = {
   notifications: BellOutlined,
   settings: SettingOutlined,
   firmware: CloudDownloadOutlined,
+  runtime: DeploymentUnitOutlined,
 }
 
 function navIcon(id: string) {

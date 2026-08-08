@@ -8,7 +8,7 @@ import { EditOutlined, ReloadOutlined } from '@ant-design/icons-vue'
 import { api } from './services/api'
 import { APIError } from './services/api'
 import { persistLocale } from './i18n'
-import { AT_PRESETS, parseATResponse } from './services/at'
+import { AT_PRESETS, parseATResponse, type RawATSMSDiagnostic } from './services/at'
 import { useDeviceStore } from './stores/device'
 import { useEsimStore } from './stores/esim'
 import { useNetworkStore } from './stores/network'
@@ -82,6 +82,7 @@ const {
   body: smsBody,
   operation: smsOperation,
   threads: smsThreads,
+  storageUsage: smsStorageUsage,
   filteredThreads: filteredSmsThreads,
   selectedThread: selectedSmsThread,
 } = storeToRefs(sms)
@@ -158,10 +159,15 @@ const notifiedFirmwareOperations = new Set<string>()
 const rawATCommand = ref('')
 const rawATExecutedCommand = ref('')
 const rawATResponse = ref('')
+const rawATSMSMessages = ref<RawATSMSDiagnostic[]>([])
 const rawATPreset = ref('')
 const parsedATResponse = computed(() =>
   rawATResponse.value
-    ? parseATResponse(rawATExecutedCommand.value || rawATCommand.value, rawATResponse.value)
+    ? parseATResponse(
+        rawATExecutedCommand.value || rawATCommand.value,
+        rawATResponse.value,
+        rawATSMSMessages.value,
+      )
     : null,
 )
 const notifierInfo = ref<NotificationDebugInfo | null>(null)
@@ -213,6 +219,7 @@ const navGroups = computed<ShellNavGroup[]>(() => [
       { id: 'firmware', label: t('nav.firmware'), capability: 'raw_at' },
       ...(showNotificationDebug.value ? [{ id: 'notifications', label: t('nav.notifications') }] : []),
       { id: 'sim-profiles', label: t('nav.simProfiles') },
+      { id: 'runtime', label: t('nav.runtime') },
       { id: 'settings', label: t('nav.settings') },
     ],
   },
@@ -1291,6 +1298,7 @@ async function setNetworkMode() {
 
 async function executeRawAT() {
   rawATResponse.value = ''
+  rawATSMSMessages.value = []
   rawATExecutedCommand.value = ''
   if (!device.has('raw_at')) {
     notifyError('view', t('rawAt.unavailableDetail'))
@@ -1298,7 +1306,9 @@ async function executeRawAT() {
   }
   try {
     const command = rawATCommand.value.trim()
-    rawATResponse.value = (await api.rawAT(command)).response
+    const result = await api.rawAT(command)
+    rawATResponse.value = result.response
+    rawATSMSMessages.value = result.sms_messages || []
     rawATExecutedCommand.value = command
   } catch (error) {
     notifyError('view', errorText(error, 'rawAt.unableExecute'))
@@ -1341,6 +1351,7 @@ provide(viewContextKey, {
   smsQuery,
   smsSimFilter,
   smsThreads,
+  smsStorageUsage,
   smsTo,
   startNewSMS,
   closeEsimDownload,

@@ -9,6 +9,21 @@ export interface ParsedATResponse {
   fields: ATField[]
 }
 
+export interface RawATSMSDiagnostic {
+  index: number
+  indexes?: number[]
+  status?: string
+  tpdu_length?: number
+  sender?: string
+  body?: string
+  received_at?: string
+  concat_ref?: number
+  part_number?: number
+  total_parts?: number
+  missing_parts?: number[]
+  decode_error?: string
+}
+
 export interface ATPreset {
   id: string
   command: string
@@ -28,6 +43,11 @@ export const AT_PRESETS: ATPreset[] = [
   { id: 'attach', command: 'AT+CGATT?', labelKey: 'rawAt.presets.attach' },
   { id: 'network', command: 'AT+QNWINFO', labelKey: 'rawAt.presets.network' },
   { id: 'servingCell', command: 'AT+QENG="servingcell"', labelKey: 'rawAt.presets.servingCell' },
+  { id: 'smsStorage', command: 'AT+CPMS?', labelKey: 'rawAt.presets.smsStorage' },
+  { id: 'smsFormat', command: 'AT+CMGF?', labelKey: 'rawAt.presets.smsFormat' },
+  { id: 'smsNotifications', command: 'AT+CNMI?', labelKey: 'rawAt.presets.smsNotifications' },
+  { id: 'smsList', command: 'AT+CMGL=4', labelKey: 'rawAt.presets.smsList' },
+  { id: 'smsCenter', command: 'AT+CSCA?', labelKey: 'rawAt.presets.smsCenter' },
 ]
 
 function linesOf(response: string): string[] {
@@ -40,9 +60,25 @@ function linesOf(response: string): string[] {
 
 function quotedCSV(value: string): string[] {
   const values: string[] = []
-  const pattern = /"([^"]*)"|([^,\s]+)(?=\s*,|\s*$)/g
-  let match: RegExpExecArray | null
-  while ((match = pattern.exec(value)) !== null) values.push(match[1] ?? match[2])
+  let field = ''
+  let quoted = false
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index]
+    if (char === '"') {
+      if (quoted && value[index + 1] === '"') {
+        field += '"'
+        index += 1
+      } else {
+        quoted = !quoted
+      }
+    } else if (char === ',' && !quoted) {
+      values.push(field.trim())
+      field = ''
+    } else {
+      field += char
+    }
+  }
+  values.push(field.trim())
   return values
 }
 
@@ -148,6 +184,92 @@ function parsePacketAttach(lines: string[]): ATField[] {
   return fields
 }
 
+function parseCPMS(lines: string[]): ATField[] {
+  const value = responseValue(lines, /^\+CPMS:\s*/)
+  if (!value) return []
+  const values = quotedCSV(value)
+  const labels = [
+    'rawAt.fields.smsReadStorage',
+    'rawAt.fields.smsWriteStorage',
+    'rawAt.fields.smsReceiveStorage',
+  ]
+  const fields: ATField[] = []
+  for (let index = 0; index < 3 && index * 3 < values.length; index += 1) {
+    const [storage, used, total] = values.slice(index * 3, index * 3 + 3)
+    if (!storage && used === undefined && total === undefined) continue
+    const usage = used !== undefined && total !== undefined ? `${used || '0'} / ${total || '0'}` : ''
+    fields.push({ labelKey: labels[index], value: [storage || '—', usage].filter(Boolean).join(' · ') })
+  }
+  return fields
+}
+
+function parseCMGF(lines: string[]): ATField[] {
+  const value = responseValue(lines, /^\+CMGF:\s*/)
+  if (!value) return []
+  return [
+    {
+      labelKey: 'rawAt.fields.smsFormat',
+      value,
+      valueKey:
+        value === '0' ? 'rawAt.values.smsPduMode' : value === '1' ? 'rawAt.values.smsTextMode' : undefined,
+    },
+  ]
+}
+
+function parseCNMI(lines: string[]): ATField[] {
+  const value = responseValue(lines, /^\+CNMI:\s*/)
+  if (!value) return []
+  const [mode, message, cellBroadcast, statusReport, buffer] = quotedCSV(value)
+  return [
+    { labelKey: 'rawAt.fields.smsNotificationMode', value: mode || '—' },
+    { labelKey: 'rawAt.fields.smsMessageNotification', value: message || '—' },
+    { labelKey: 'rawAt.fields.smsCellBroadcast', value: cellBroadcast || '—' },
+    { labelKey: 'rawAt.fields.smsStatusReport', value: statusReport || '—' },
+    { labelKey: 'rawAt.fields.smsNotificationBuffer', value: buffer || '—' },
+  ]
+}
+
+function smsStatusValue(status: string): string | undefined {
+  const normalized = status.trim().toUpperCase()
+  if (normalized === '0' || normalized === 'REC UNREAD') return 'rawAt.values.smsUnread'
+  if (normalized === '1' || normalized === 'REC READ') return 'rawAt.values.smsRead'
+  if (normalized === '2' || normalized === 'STO UNSENT') return 'rawAt.values.smsUnsent'
+  if (normalized === '3' || normalized === 'STO SENT') return 'rawAt.values.smsSent'
+  return undefined
+}
+
+function parseCMGL(lines: string[]): ATField[] {
+  let count = 0
+  for (const line of lines) if (/^\+CMGL:/i.test(line)) count += 1
+  return [{ labelKey: 'rawAt.fields.smsRecordCount', value: String(count) }]
+}
+
+function parseCMGR(lines: string[]): ATField[] {
+  const headerIndex = lines.findIndex((line) => /^\+CMGR:/i.test(line))
+  if (headerIndex < 0) return []
+  const [status, alpha, length] = quotedCSV(lines[headerIndex].replace(/^\+CMGR:\s*/i, ''))
+  const fields: ATField[] = [
+    {
+      labelKey: 'rawAt.fields.smsRecordStatus',
+      value: status || '—',
+      valueKey: smsStatusValue(status || ''),
+    },
+  ]
+  if (alpha) fields.push({ labelKey: 'rawAt.fields.smsAlpha', value: alpha })
+  if (length) fields.push({ labelKey: 'rawAt.fields.smsPduLength', value: length })
+  return fields
+}
+
+function parseCSCA(lines: string[]): ATField[] {
+  const value = responseValue(lines, /^\+CSCA:\s*/)
+  if (!value) return []
+  const [address, type] = quotedCSV(value)
+  return [
+    { labelKey: 'rawAt.fields.smsCenter', value: address || '—' },
+    { labelKey: 'rawAt.fields.numberType', value: type || '—' },
+  ]
+}
+
 function parseGeneric(lines: string[]): ATField[] {
   return lines
     .filter(
@@ -160,7 +282,39 @@ function parseGeneric(lines: string[]): ATField[] {
     }))
 }
 
-export function parseATResponse(command: string, response: string): ParsedATResponse {
+function decodedSMSFields(messages: RawATSMSDiagnostic[]): ATField[] {
+  const fields: ATField[] = []
+  for (const [position, message] of messages.entries()) {
+    const indexes = message.indexes?.length ? message.indexes : [message.index]
+    fields.push({
+      labelKey: 'rawAt.fields.smsDecodedMessage',
+      value: `#${position + 1} · ${indexes.join(', ')}`,
+    })
+    if (message.sender) fields.push({ labelKey: 'rawAt.fields.smsSender', value: message.sender })
+    if (message.received_at)
+      fields.push({
+        labelKey: 'rawAt.fields.smsReceivedAt',
+        value: new Date(message.received_at).toLocaleString(),
+      })
+    if (message.body) fields.push({ labelKey: 'rawAt.fields.smsBody', value: message.body })
+    if (message.total_parts)
+      fields.push({
+        labelKey: 'rawAt.fields.smsConcat',
+        value: message.missing_parts?.length
+          ? `${message.total_parts - message.missing_parts.length}/${message.total_parts} · ref ${message.concat_ref || '—'} · missing: ${message.missing_parts.join(', ')}`
+          : `${message.total_parts}/${message.total_parts} · ref ${message.concat_ref || '—'}`,
+      })
+    if (message.decode_error)
+      fields.push({ labelKey: 'rawAt.fields.smsDecodeError', value: message.decode_error })
+  }
+  return fields
+}
+
+export function parseATResponse(
+  command: string,
+  response: string,
+  smsMessages: RawATSMSDiagnostic[] = [],
+): ParsedATResponse {
   const lines = linesOf(response)
   const normalized = command.trim().toUpperCase()
   const hasError = lines.some((line) => line === 'ERROR' || /^\+C(?:ME|MS) ERROR/i.test(line))
@@ -183,7 +337,14 @@ export function parseATResponse(command: string, response: string): ParsedATResp
   else if (normalized === 'AT+CGMR') fields = parseNamedValue(lines, /^\+CGMR:\s*/, 'rawAt.fields.firmware')
   else if (normalized.startsWith('AT+QENG='))
     fields = parseNamedValue(lines, /^\+QENG:\s*/, 'rawAt.fields.servingCell')
+  else if (normalized === 'AT+CPMS?') fields = parseCPMS(lines)
+  else if (normalized === 'AT+CMGF?') fields = parseCMGF(lines)
+  else if (normalized === 'AT+CNMI?') fields = parseCNMI(lines)
+  else if (/^AT\+CMGL=/.test(normalized)) fields = parseCMGL(lines)
+  else if (/^AT\+CMGR=\d+$/.test(normalized)) fields = parseCMGR(lines)
+  else if (normalized === 'AT+CSCA?') fields = parseCSCA(lines)
   if (!fields.length) fields = parseGeneric(lines)
+  if (smsMessages.length) fields = [...fields, ...decodedSMSFields(smsMessages)]
 
   return { statusKey, fields }
 }

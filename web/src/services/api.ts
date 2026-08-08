@@ -21,9 +21,12 @@ import type {
   StartupStatus,
   OperationStatus,
   SMSMessage,
+  SMSStorageUsage,
   VowifiStatus,
   FirmwareStatus,
+  RuntimeDiagnostics,
 } from '../types'
+import type { RawATSMSDiagnostic } from './at'
 
 const base = '/api/v1'
 
@@ -56,6 +59,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  runtimeDiagnostics: () => request<RuntimeDiagnostics>('/runtime/diagnostics'),
   status: () => request<DeviceStatus>('/device/status'),
   capabilities: () =>
     request<{ backend?: string; backend_reason?: string; capabilities: Record<string, string> }>(
@@ -63,7 +67,8 @@ export const api = {
     ),
   rescan: () => request<{ state: unknown }>('/device/actions/rescan', { method: 'POST' }),
   reboot: () => request<{ accepted: boolean }>('/device/actions/reboot', { method: 'POST' }),
-  smsRefresh: () => request<{ items: SMSMessage[] }>('/sms/actions/refresh', { method: 'POST' }),
+  smsRefresh: () =>
+    request<{ items: SMSMessage[]; storage?: SMSStorageUsage[] }>('/sms/actions/refresh', { method: 'POST' }),
   smsClear: () => request<{ state: string }>('/sms/actions/clear', { method: 'POST' }),
   sendSMS: (to: string, body: string) =>
     request<{ operation_id: string }>('/sms/actions/send', {
@@ -137,7 +142,7 @@ export const api = {
   networkCheck: () =>
     request<{ ok: boolean; summary: string; detail?: string }>('/network/actions/check', { method: 'POST' }),
   rawAT: (command: string) =>
-    request<{ response: string }>('/device/actions/raw-at', {
+    request<{ response: string; sms_messages?: RawATSMSDiagnostic[] }>('/device/actions/raw-at', {
       method: 'POST',
       body: JSON.stringify({ command }),
     }),

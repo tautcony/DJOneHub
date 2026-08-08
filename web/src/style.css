@@ -3370,7 +3370,7 @@ button:disabled {
   display: block;
   width: calc(100% - 32px) !important;
   max-width: calc(100% - 32px);
-  margin: 0 16px 12px;
+  margin: 10px 16px 10px;
 }
 .sms-search .ant-input-group-wrapper,
 .sms-search .ant-input-wrapper {
@@ -3380,6 +3380,23 @@ button:disabled {
 .sms-search .ant-input-affix-wrapper,
 .sms-search .ant-input-search-button {
   height: 36px;
+}
+.sms-search .ant-input-group .ant-input-affix-wrapper {
+  border-start-start-radius: 6px !important;
+  border-start-end-radius: 0 !important;
+  border-end-start-radius: 6px !important;
+  border-end-end-radius: 0 !important;
+}
+.sms-search .ant-input-group .ant-input-affix-wrapper:hover,
+.sms-search .ant-input-group .ant-input-affix-wrapper:focus-within {
+  z-index: 1;
+}
+.sms-search .ant-input-group-addon .ant-input-search-button {
+  margin-left: -1px;
+  border-start-start-radius: 0 !important;
+  border-start-end-radius: 6px !important;
+  border-end-start-radius: 0 !important;
+  border-end-end-radius: 6px !important;
 }
 .sms-sim-filter {
   display: block;
