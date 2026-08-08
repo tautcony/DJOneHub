@@ -17,6 +17,7 @@ func TestSimProfileObservationPreservesLocalMetadata(t *testing.T) {
 	time.Sleep(2 * time.Millisecond)
 	if err := store.UpsertSimProfileObserved(SimProfileRecord{
 		ICCID: "89860120010000000001", IMSI: "460001234", MSISDN: "+8613900000000",
+		Name:        "Observed name",
 		ProfileType: SimProfilePhysical,
 	}); err != nil {
 		t.Fatalf("observe: %v", err)

@@ -931,7 +931,7 @@ func (s *SQLiteStore) UpsertSimProfileObserved(record SimProfileRecord) error {
 			iccid, imsi, msisdn, name, local_phone, notes, tags, profile_type,
 			first_seen_at, last_seen_at, updated_at
 		)
-		VALUES(?, ?, ?, '', '', '', '', ?, ?, ?, ?)
+		VALUES(?, ?, ?, ?, '', '', '', ?, ?, ?, ?)
 		ON CONFLICT(iccid) DO UPDATE SET
 			imsi = CASE WHEN excluded.imsi = '' THEN sim_profiles.imsi ELSE excluded.imsi END,
 			msisdn = CASE WHEN excluded.msisdn = '' THEN sim_profiles.msisdn ELSE excluded.msisdn END,
@@ -942,7 +942,7 @@ func (s *SQLiteStore) UpsertSimProfileObserved(record SimProfileRecord) error {
 			END,
 			last_seen_at = excluded.last_seen_at,
 			updated_at = excluded.updated_at
-	`, iccid, strings.TrimSpace(record.IMSI), strings.TrimSpace(record.MSISDN), profileType, now.Format(time.RFC3339Nano),
+	`, iccid, strings.TrimSpace(record.IMSI), strings.TrimSpace(record.MSISDN), strings.TrimSpace(record.Name), profileType, now.Format(time.RFC3339Nano),
 		now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
 	if err != nil {
 		return fmt.Errorf("upsert sim profile observation: %w", err)
@@ -1064,7 +1064,8 @@ func (s *SQLiteStore) ListSimProfiles() ([]SimProfileRecord, error) {
 
 // UpsertNotificationHistory 写入一条 eUICC 通知历史。去重键
 // (sequence_number, iccid, event)；已存在时更新状态/地址/更新时间，
-// 首次观察时间保持第一次写入不变。
+// 首次观察时间保持第一次写入不变。卡片列表同步写入 pending 时，不覆盖
+// 用户操作已经记录的终态。
 func (s *SQLiteStore) UpsertNotificationHistory(record NotificationHistoryRecord) error {
 	if record.SequenceNumber <= 0 || strings.TrimSpace(record.Event) == "" {
 		return fmt.Errorf("notification sequence and event are required")
@@ -1085,7 +1086,11 @@ func (s *SQLiteStore) UpsertNotificationHistory(record NotificationHistoryRecord
 		ON CONFLICT(sequence_number, iccid, event) DO UPDATE SET
 			address = excluded.address,
 			aid = excluded.aid,
-			state = excluded.state,
+			state = CASE
+				WHEN excluded.state = 'pending' AND esim_notification_history.state <> 'pending'
+				THEN esim_notification_history.state
+				ELSE excluded.state
+			END,
 			updated_at = excluded.updated_at
 	`, record.SequenceNumber, record.Event, record.ICCID, record.Address, record.AID,
 		string(state), observedAt.UTC().Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))

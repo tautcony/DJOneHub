@@ -82,6 +82,30 @@ func TestNotificationHistoryUpsertRequiresKey(t *testing.T) {
 	}
 }
 
+func TestNotificationHistoryPendingSyncDoesNotOverwriteTerminalState(t *testing.T) {
+	store := openTestStore(t)
+	record := NotificationHistoryRecord{
+		SequenceNumber: 24,
+		Event:          "install",
+		ICCID:          "8986012001000000000",
+		State:          NotificationStateProcessed,
+	}
+	if err := store.UpsertNotificationHistory(record); err != nil {
+		t.Fatalf("upsert processed: %v", err)
+	}
+	record.State = NotificationStatePending
+	if err := store.UpsertNotificationHistory(record); err != nil {
+		t.Fatalf("sync pending: %v", err)
+	}
+	records, err := store.ListNotificationHistory(0)
+	if err != nil {
+		t.Fatalf("list history: %v", err)
+	}
+	if len(records) != 1 || records[0].State != NotificationStateProcessed {
+		t.Fatalf("history=%#v want processed state preserved", records)
+	}
+}
+
 func TestMarkNotificationHistoryAbsent(t *testing.T) {
 	store := openTestStore(t)
 	for _, record := range []NotificationHistoryRecord{
