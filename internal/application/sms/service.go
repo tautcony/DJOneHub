@@ -2,11 +2,13 @@ package sms
 
 import (
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -55,6 +57,61 @@ type Service struct {
 	stopMu sync.Mutex
 	cancel context.CancelFunc
 	done   chan struct{}
+}
+
+type StorageUsage struct {
+	Storage string `json:"storage"`
+	Used    int    `json:"used"`
+	Total   int    `json:"total"`
+}
+
+// StorageUsage queries SMS storage counters without changing the selected
+// storage. It is best-effort because non-AT backends may not expose CPMS.
+func (s *Service) StorageUsage(ctx context.Context) []StorageUsage {
+	b, err := s.devices.RequireCapability(domain.CapabilityRawAT, "sms_storage_usage")
+	if err != nil {
+		return nil
+	}
+	raw, ok := b.(backend.RawATBackend)
+	if !ok {
+		return nil
+	}
+	release, err := s.runtime.Acquire(ctx, runtime.ResourceAT)
+	if err != nil {
+		return nil
+	}
+	defer release()
+	response, err := raw.RawAT(ctx, "AT+CPMS?")
+	if err != nil {
+		return nil
+	}
+	return parseStorageUsage(response)
+}
+
+func parseStorageUsage(response string) []StorageUsage {
+	for _, line := range strings.Split(strings.ReplaceAll(response, "\r", ""), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(strings.ToUpper(line), "+CPMS:") {
+			continue
+		}
+		reader := csv.NewReader(strings.NewReader(strings.TrimSpace(line[len("+CPMS:"):])))
+		reader.FieldsPerRecord = -1
+		fields, err := reader.Read()
+		if err != nil {
+			return nil
+		}
+		out := make([]StorageUsage, 0, 3)
+		for i := 0; i+2 < len(fields) && i < 9; i += 3 {
+			used, usedErr := strconv.Atoi(strings.TrimSpace(fields[i+1]))
+			total, totalErr := strconv.Atoi(strings.TrimSpace(fields[i+2]))
+			if usedErr != nil || totalErr != nil || total < 0 || used < 0 {
+				continue
+			}
+			out = append(out, StorageUsage{Storage: strings.Trim(strings.TrimSpace(fields[i]), `"`), Used: used, Total: total})
+		}
+		return out
+	}
+	return nil
 }
 
 func NewService(devices *device.Service, ops *operation.Manager, runtime *runtime.Runtime, store ...*storage.SQLiteStore) *Service {
@@ -212,6 +269,12 @@ func (s *Service) Stop(ctx context.Context) error {
 	}
 	s.unregisterConsumer()
 	return nil
+}
+
+func (s *Service) Running() bool {
+	s.stopMu.Lock()
+	defer s.stopMu.Unlock()
+	return s.cancel != nil
 }
 
 // unregisterConsumer detaches the +CMTI hook so no inbound delivery reaches a
