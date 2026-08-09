@@ -28,6 +28,7 @@ import EmptyState from '../components/EmptyState.vue'
 import RuntimeTraceEdge from '../components/RuntimeTraceEdge.vue'
 import StatusLight from '../components/StatusLight.vue'
 import { api } from '../services/api'
+import { formatBytes } from '../utils/format'
 import type {
   RuntimeDiagnostics,
   RuntimeMessageTrace,
@@ -163,6 +164,93 @@ function traceLatency(trace: RuntimeMessageTrace) {
   return `${Math.max(0, new Date(trace.updated_at).getTime() - new Date(trace.started_at).getTime())}ms`
 }
 
+function traceStateLabel(value: unknown) {
+  const state = String(value || '')
+  const deviceKey = `status.deviceStates.${state}`
+  if (te(deviceKey)) return t(deviceKey)
+  const operationKey = `operation.states.${state}`
+  if (te(operationKey)) return t(operationKey)
+  return statusLabel(state)
+}
+
+function traceStateColor(value: unknown) {
+  const state = String(value || '')
+  if (state === 'ready' || state === 'succeeded') return 'green'
+  if (state === 'absent' || state === 'disconnected' || state === 'failed') return 'red'
+  if (state === 'degraded' || state === 'cancelled') return 'orange'
+  return 'blue'
+}
+
+function traceStateChange(trace: RuntimeMessageTrace) {
+  const previous = trace.fields?.previous_state
+  const current = trace.fields?.state
+  return previous !== undefined && current !== undefined ? { previous, current } : null
+}
+
+function traceFieldLabel(key: string) {
+  const translationKey = `runtime.traceFields.${key}`
+  return te(translationKey) ? t(translationKey) : key.replaceAll('_', ' ')
+}
+
+function traceFieldValue(key: string, value: unknown) {
+  if (key === 'state') return traceStateLabel(value)
+  if (key === 'update' && value === 'backend_metadata') return t('runtime.traceValues.backendMetadata')
+  if (typeof value === 'boolean') return t(`runtime.boolean.${value}`)
+  if (typeof value === 'number' && key.endsWith('_bytes')) return formatBytes(value)
+  if (typeof value === 'number' && key === 'progress') return `${value}%`
+  if (typeof value === 'number' && key === 'signal_dbm') return `${value} dBm`
+  if (typeof value === 'string' && key.endsWith('_at')) {
+    const date = new Date(value)
+    if (!Number.isNaN(date.getTime())) return date.toLocaleString([], { hour12: false })
+  }
+  if (value && typeof value === 'object') return JSON.stringify(value)
+  return String(value ?? '—')
+}
+
+function traceFieldEntries(trace: RuntimeMessageTrace) {
+  const hasChange = !!traceStateChange(trace)
+  const priority = [
+    'update',
+    'derived_from',
+    'backend_event',
+    'state',
+    'operation',
+    'type',
+    'progress',
+    'index',
+    'count',
+  ]
+  return Object.entries(trace.fields || {})
+    .filter(([key]) => key !== 'previous_state' && (!hasChange || key !== 'state'))
+    .sort(([left], [right]) => {
+      const leftRank = priority.indexOf(left)
+      const rightRank = priority.indexOf(right)
+      return (leftRank < 0 ? priority.length : leftRank) - (rightRank < 0 ? priority.length : rightRank)
+    })
+}
+
+function traceSummary(trace: RuntimeMessageTrace) {
+  const change = traceStateChange(trace)
+  if (change) return `${traceStateLabel(change.previous)} → ${traceStateLabel(change.current)}`
+  if (trace.type === 'network.updated') {
+    const fields = trace.fields || {}
+    const summaryKeys = ['network_mode', 'mode', 'signal_dbm', 'registered'].filter(
+      (key) => fields[key] !== undefined,
+    )
+    if (summaryKeys.length) {
+      return summaryKeys
+        .map((key) => `${traceFieldLabel(key)}: ${traceFieldValue(key, fields[key])}`)
+        .join(' · ')
+    }
+  }
+  const fields = traceFieldEntries(trace)
+  if (!fields.length) return t('runtime.noContent')
+  return fields
+    .slice(0, 2)
+    .map(([key, value]) => `${traceFieldLabel(key)}: ${traceFieldValue(key, value)}`)
+    .join(' · ')
+}
+
 function hopDelta(trace: RuntimeMessageTrace, index: number) {
   if (index === 0) return '+0ms'
   const previous = new Date(trace.hops[index - 1].at).getTime()
@@ -178,25 +266,31 @@ function upsertTrace(trace: RuntimeMessageTrace) {
 
 function layoutNodes(topologyNodes: RuntimeTopologyNode[], topologyEdges: RuntimeTopologyEdge[]) {
   const graph = new dagre.graphlib.Graph().setDefaultEdgeLabel(() => ({}))
-  graph.setGraph({ rankdir: 'LR', ranksep: 92, nodesep: 32, marginx: 32, marginy: 32 })
+  graph.setGraph({ rankdir: 'LR', ranksep: 92, nodesep: 32, marginx: 32, marginy: 72 })
   topologyNodes.forEach((node) => graph.setNode(node.id, { width: 184, height: 72 }))
   topologyEdges.forEach((edge) => graph.setEdge(edge.source, edge.target))
   dagre.layout(graph)
-  const laneX: Record<string, number> = {
-    source: 0,
-    channel: 320,
-    processor: 640,
-    destination: 960,
-  }
-  return topologyNodes.map((node): Node => {
+
+  const processorOrder = ['vowifi-runtime', 'browser-websocket', 'notification-policy']
+  const processorSlots = processorOrder
+    .map((id) => graph.node(id))
+    .filter(Boolean)
+    .map((point) => point.y)
+    .sort((left, right) => left - right)
+  processorOrder.forEach((id, index) => {
+    const point = graph.node(id)
+    if (point && processorSlots[index] !== undefined) point.y = processorSlots[index]
+  })
+  const notificationPolicy = graph.node('notification-policy')
+  const notificationQueue = graph.node('notification-queue')
+  if (notificationPolicy && notificationQueue) notificationQueue.y = notificationPolicy.y
+
+  const nodes = topologyNodes.map((node): Node => {
     const point = graph.node(node.id)
     const selected = selectedPathNodes.value.has(node.id)
     return {
       id: node.id,
-      // Dagre ranks by graph depth, which can move a direct event source into
-      // a later visual column when another source has a longer path. Keep the
-      // four semantic lanes stable and use Dagre only for vertical spacing.
-      position: { x: (laneX[node.kind] ?? laneX.processor) - 92, y: point.y - 36 },
+      position: { x: point.x - 92, y: point.y - 36 },
       sourcePosition: Position.Right,
       targetPosition: Position.Left,
       data: { ...node, label: translatedNode(node), selected },
@@ -208,11 +302,36 @@ function layoutNodes(topologyNodes: RuntimeTopologyNode[], topologyEdges: Runtim
       ].filter(Boolean),
     }
   })
+
+  const laneKeys = ['source', 'channel', 'processor', 'queue', 'destination']
+  const rankCenters = Array.from(
+    new Set(topologyNodes.map((node) => Math.round(graph.node(node.id).x))),
+  ).sort((left, right) => left - right)
+  const laneNodes = rankCenters.map((x, index): Node => ({
+    id: `runtime-lane-${index}`,
+    type: 'lane',
+    position: { x: x - 92, y: 20 },
+    selectable: false,
+    focusable: false,
+    connectable: false,
+    draggable: false,
+    data: { label: t(`runtime.lanes.${laneKeys[index] || 'processor'}`) },
+  }))
+
+  return [...nodes, ...laneNodes]
 }
 
 const graphNodes = computed(() => {
   const topology = diagnostics.value?.topology
   return topology ? layoutNodes(topology.nodes, topology.edges) : []
+})
+const topologySignature = computed(() => {
+  const topology = diagnostics.value?.topology
+  if (!topology) return ''
+  return [
+    ...topology.nodes.map((node) => node.id),
+    ...topology.edges.map((edge) => `${edge.source}>${edge.target}`),
+  ].join('|')
 })
 
 const graphEdges = computed((): Edge[] => {
@@ -397,13 +516,10 @@ function handleVisibility() {
   }
 }
 
-watch(
-  () => diagnostics.value?.topology,
-  async () => {
-    await nextTick()
-    void flowInstance?.fitView({ padding: 0.12, duration: 250 })
-  },
-)
+watch(topologySignature, async () => {
+  await nextTick()
+  void flowInstance?.fitView({ padding: 0.12, duration: 250 })
+})
 
 onMounted(() => {
   void refresh()
@@ -488,9 +604,11 @@ onBeforeUnmount(() => {
             <span>{{ statusLabel(source.state) }}</span>
           </div>
           <small>{{ sourceInterval(source.interval_ms) }} · {{ translatedWorkerDetail(source) }}</small>
-          <div class="runtime-source-events">
-            <code v-for="eventName in source.event_types || []" :key="eventName">{{ eventName }}</code>
-          </div>
+          <a-space v-if="source.event_types?.length" :size="[4, 4]" wrap>
+            <a-tag v-for="eventName in source.event_types" :key="eventName" :bordered="false">
+              {{ eventName }}
+            </a-tag>
+          </a-space>
         </article>
       </div>
       <EmptyState v-else :title="t('runtime.noEventSources')" />
@@ -547,13 +665,10 @@ onBeforeUnmount(() => {
               <small>{{ statusLabel(data.state) }}</small>
             </div>
           </template>
+          <template #node-lane="{ data }">
+            <div class="runtime-lane-label">{{ data.label }}</div>
+          </template>
         </VueFlow>
-        <div class="runtime-lanes" aria-hidden="true">
-          <span>{{ t('runtime.lanes.source') }}</span
-          ><span>{{ t('runtime.lanes.channel') }}</span
-          ><span>{{ t('runtime.lanes.processor') }}</span
-          ><span>{{ t('runtime.lanes.destination') }}</span>
-        </div>
       </div>
     </section>
 
@@ -578,6 +693,7 @@ onBeforeUnmount(() => {
           <span>#{{ trace.id }}</span>
           <span>{{ trace.hops.length }} {{ t('runtime.hops') }}</span>
           <span>{{ traceLatency(trace) }}</span>
+          <span class="runtime-trace-summary">{{ traceSummary(trace) }}</span>
           <ArrowRightOutlined />
         </button>
       </div>
@@ -596,6 +712,32 @@ onBeforeUnmount(() => {
             statusLabel(selectedTrace.status)
           }}</a-tag>
         </div>
+        <a-descriptions
+          v-if="traceStateChange(selectedTrace) || traceFieldEntries(selectedTrace).length"
+          :title="t('runtime.eventContent')"
+          :column="1"
+          size="small"
+          bordered
+        >
+          <a-descriptions-item v-if="traceStateChange(selectedTrace)" :label="t('runtime.stateChange')">
+            <a-space :size="6">
+              <a-tag :color="traceStateColor(traceStateChange(selectedTrace)?.previous)">
+                {{ traceStateLabel(traceStateChange(selectedTrace)?.previous) }}
+              </a-tag>
+              <ArrowRightOutlined />
+              <a-tag :color="traceStateColor(traceStateChange(selectedTrace)?.current)">
+                {{ traceStateLabel(traceStateChange(selectedTrace)?.current) }}
+              </a-tag>
+            </a-space>
+          </a-descriptions-item>
+          <a-descriptions-item
+            v-for="[key, value] in traceFieldEntries(selectedTrace)"
+            :key="key"
+            :label="traceFieldLabel(key)"
+          >
+            {{ traceFieldValue(key, value) }}
+          </a-descriptions-item>
+        </a-descriptions>
         <dl class="runtime-detail-metrics">
           <div>
             <dt>{{ t('runtime.started') }}</dt>
@@ -660,9 +802,11 @@ onBeforeUnmount(() => {
           <strong>{{ selectedEdge.source }}</strong
           ><ArrowRightOutlined /><strong>{{ selectedEdge.target }}</strong>
         </div>
-        <div class="runtime-event-types">
-          <code v-for="type in selectedEdge.event_types" :key="type">{{ type }}</code>
-        </div>
+        <a-space v-if="selectedEdge.event_types?.length" :size="[4, 4]" wrap>
+          <a-tag v-for="type in selectedEdge.event_types" :key="type" color="blue">
+            {{ type }}
+          </a-tag>
+        </a-space>
         <dl class="runtime-detail-metrics">
           <div>
             <dt>{{ t('runtime.recent') }}</dt>
@@ -708,17 +852,6 @@ onBeforeUnmount(() => {
 .runtime-source > small {
   color: var(--ui-text-secondary);
   line-height: 1.45;
-}
-.runtime-source-events {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-}
-.runtime-source-events code {
-  padding: 2px 5px;
-  color: var(--ui-text-secondary);
-  background: var(--ui-surface-muted);
-  font-size: 11px;
 }
 .runtime-header {
   display: flex;
@@ -925,15 +1058,14 @@ onBeforeUnmount(() => {
   border-radius: 4px;
   background: var(--ui-surface);
 }
-.runtime-lanes {
-  position: absolute;
-  inset: 8px 190px auto 52px;
-  z-index: 4;
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
+.runtime-canvas :deep(.vue-flow__node-lane) {
   pointer-events: none;
+}
+.runtime-lane-label {
+  width: 184px;
   color: var(--ui-text-tertiary);
-  font-size: 9px;
+  font-size: 10px;
+  font-weight: 600;
   text-align: center;
   text-transform: uppercase;
 }
@@ -943,7 +1075,7 @@ onBeforeUnmount(() => {
 }
 .runtime-trace-list button {
   display: grid;
-  grid-template-columns: 18px 84px minmax(180px, 1fr) 64px 76px 68px 18px;
+  grid-template-columns: 18px 84px minmax(180px, 1fr) 64px 76px 68px minmax(160px, 0.9fr) 18px;
   gap: 10px;
   align-items: center;
   width: 100%;
@@ -966,9 +1098,14 @@ onBeforeUnmount(() => {
 .runtime-trace-list span {
   font-variant-numeric: tabular-nums;
 }
+.runtime-trace-summary {
+  overflow: hidden;
+  color: var(--ui-text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .runtime-trace-list code,
 .runtime-detail code,
-.runtime-event-types code,
 .runtime-related-trace code {
   color: var(--ui-primary-active);
   font-size: 11px;
@@ -1074,17 +1211,6 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 10px;
 }
-.runtime-event-types {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-.runtime-event-types code {
-  padding: 3px 6px;
-  border: 1px solid var(--ui-border);
-  border-radius: 4px;
-  background: var(--ui-surface-muted);
-}
 @media (max-width: 900px) {
   .runtime-header,
   .runtime-toolbar {
@@ -1105,13 +1231,10 @@ onBeforeUnmount(() => {
   .runtime-canvas {
     height: 560px;
   }
-  .runtime-lanes {
-    display: none;
-  }
   .runtime-trace-list button {
-    grid-template-columns: 18px 76px minmax(0, 1fr) 18px;
+    grid-template-columns: 18px 76px minmax(0, 1fr) minmax(120px, auto) 18px;
   }
-  .runtime-trace-list button > span {
+  .runtime-trace-list button > span:not(.runtime-trace-summary) {
     display: none;
   }
 }

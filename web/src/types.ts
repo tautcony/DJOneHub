@@ -343,6 +343,7 @@ export interface RuntimeMessageTrace {
   started_at: string
   updated_at: string
   status: string
+  fields?: Record<string, unknown>
   hops: RuntimeTraceHop[]
 }
 
