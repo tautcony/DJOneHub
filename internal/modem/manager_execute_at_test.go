@@ -471,3 +471,67 @@ func TestManagerExecuteATReturnsResponseWhenRunning(t *testing.T) {
 		t.Fatalf("ExecuteAT() resp = %q, want %q", resp, "OK")
 	}
 }
+
+func TestManagerExecuteATRawRequestsTerminalResponse(t *testing.T) {
+	m, err := New(config.DeviceConfig{
+		ID:            "dev-at-raw",
+		DeviceBackend: "at",
+		ATPort:        "/dev/ttyUSB6",
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	m.running = true
+	m.healthy = true
+
+	go func() {
+		req := <-m.cmdChan
+		if !req.includeTerminal {
+			t.Errorf("raw command did not request terminal response")
+		}
+		req.respChan <- "OK"
+	}()
+
+	resp, err := m.ExecuteATRaw("AT", time.Second)
+	if err != nil {
+		t.Fatalf("ExecuteATRaw() error = %v", err)
+	}
+	if resp != "OK" {
+		t.Fatalf("ExecuteATRaw() resp = %q, want %q", resp, "OK")
+	}
+}
+
+func TestHandleCommandRawResponseIncludesObservedTerminalLine(t *testing.T) {
+	m, err := New(config.DeviceConfig{
+		ID:            "dev-at-raw-handle",
+		DeviceBackend: "at",
+		ATPort:        "/dev/ttyUSB6",
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	m.port = &timeoutSerialPort{}
+	m.running = true
+	m.healthy = true
+
+	req := commandRequest{
+		cmd:             "AT",
+		includeTerminal: true,
+		timeout:         time.Second,
+		respChan:        make(chan string, 1),
+		errChan:         make(chan error, 1),
+	}
+	go func() { m.rxChan <- rxMsg{Data: "OK"} }()
+	m.handleCommand(req)
+
+	select {
+	case response := <-req.respChan:
+		if response != "OK" {
+			t.Fatalf("raw response=%q, want OK", response)
+		}
+	case err := <-req.errChan:
+		t.Fatalf("handleCommand() error = %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for raw response")
+	}
+}

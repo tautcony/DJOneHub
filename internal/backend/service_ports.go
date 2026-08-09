@@ -14,6 +14,9 @@ var (
 	_ ESIMStoragePort  = (*BusinessAdapter)(nil)
 	_ ESIMSnapshotPort = (*ATBackend)(nil)
 	_ ESIMSnapshotPort = (*CommandBackend)(nil)
+	_ NetworkPort      = (*ATBackend)(nil)
+	_ NetworkPort      = (*CommandBackend)(nil)
+	_ NetworkPort      = (*BusinessAdapter)(nil)
 )
 
 type Profile struct {

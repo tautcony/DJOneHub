@@ -100,6 +100,18 @@ func parseCPINInserted(resp string) (bool, bool) {
 	return false, false
 }
 
+func parseCPINState(resp string) (string, bool) {
+	line, ok := findLineWithPrefix(resp, "+CPIN:")
+	if !ok {
+		return "", false
+	}
+	state := strings.Trim(strings.TrimSpace(strings.TrimPrefix(line, "+CPIN:")), "\"")
+	if state == "" {
+		return "", false
+	}
+	return strings.ToUpper(state), true
+}
+
 func parseIMSI(resp string) string {
 	for _, line := range splitLines(resp) {
 		s := strings.TrimSpace(line)

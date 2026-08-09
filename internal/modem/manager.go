@@ -33,12 +33,13 @@ type rxMsg struct {
 
 // commandRequest AT 命令请求结构
 type commandRequest struct {
-	cmd          string
-	respChan     chan string
-	errChan      chan error
-	timeout      time.Duration
-	silent       bool
-	highPriority bool
+	cmd             string
+	respChan        chan string
+	errChan         chan error
+	timeout         time.Duration
+	silent          bool
+	highPriority    bool
+	includeTerminal bool
 
 	// 交互式模式支持
 	interactive bool   // 是否为交互式命令 (如发送短信)
@@ -89,26 +90,30 @@ type Manager struct {
 	atQuarantineDeadline time.Time
 
 	// 设备信息 (从 AT 指令获取)
-	imei        string
-	firmware    string
-	iccid       string
-	imsi        string
-	operator    string
-	simInserted bool
-	signalDBM   int
-	signalRSRQ  int
-	signalRSRP  int
+	imei             string
+	firmware         string
+	iccid            string
+	imsi             string
+	operator         string
+	simInserted      bool
+	simInsertedKnown bool
+	simState         string
+	simStateKnown    bool
+	signalDBM        int
+	signalRSRQ       int
+	signalRSRP       int
 
 	// 网络信息
-	regStatus     int    // 网络注册状态 (0-5)
-	regStatusText string // 注册状态文本
-	lac           string // 位置区代码
-	cellID        string // 小区 ID
-	apn           string // 接入点
-	imsStatus     int    // IMS 注册状态
-	networkMode   string // 网络模式 (LTE/WCDMA/GSM等)
-	networkDuplex string // 网络双工方式 (FDD/TDD)
-	usbnetMode    int    // USBNET 模式 (0: QMI, 1: ECM)
+	regStatus          int    // 网络注册状态 (0-5)
+	regStatusText      string // 注册状态文本
+	registrationStates map[string]int
+	lac                string // 位置区代码
+	cellID             string // 小区 ID
+	apn                string // 接入点
+	imsStatus          int    // IMS 注册状态
+	networkMode        string // 网络模式 (LTE/WCDMA/GSM等)
+	networkDuplex      string // 网络双工方式 (FDD/TDD)
+	usbnetMode         int    // USBNET 模式 (0: QMI, 1: ECM)
 
 	infoMu sync.RWMutex
 
@@ -201,6 +206,7 @@ func New(cfg config.DeviceConfig) (*Manager, error) {
 		reassembler:                smscodec.NewReassembler(),
 		ussdChan:                   make(chan USSDResult, 1),
 		apduSessions:               make(map[int]apduSessionInfo),
+		registrationStates:         make(map[string]int),
 		atTimeoutWatchdogThreshold: watchdogThreshold,
 		reqPool: sync.Pool{
 			New: func() interface{} {
@@ -630,6 +636,9 @@ RespLoop:
 
 			if line == "OK" {
 				m.resetATTimeoutWatchdog()
+				if req.includeTerminal {
+					fullResponse = append(fullResponse, line)
+				}
 				if !req.silent {
 					logger.Debug(fmt.Sprintf("[%s] AT 执行成功", m.cfg.ID),
 						"cmd", req.cmd,
@@ -649,6 +658,8 @@ RespLoop:
 				}
 				req.errChan <- fmt.Errorf("设备返回错误: %s", strings.Join(fullResponse, "\n"))
 				break RespLoop
+			} else if isResponseLineForCommand(req.cmd, line) {
+				fullResponse = append(fullResponse, line)
 			} else if m.isURC(line) {
 				// URC 判定先于提示符分支：包含 > 的 URC/USSD 行被分发为 URC，
 				// 绝不会终止当前命令。
@@ -699,6 +710,25 @@ RespLoop:
 // isBarePrompt 报告 line 是否为裸提示符行（"> " 或 ">"）。
 func isBarePrompt(line string) bool {
 	return strings.TrimSpace(line) == ">"
+}
+
+func isResponseLineForCommand(command, line string) bool {
+	command = strings.ToUpper(strings.TrimSpace(command))
+	line = strings.ToUpper(strings.TrimSpace(line))
+	prefix := ""
+	switch command {
+	case "AT+CEREG?":
+		prefix = "+CEREG:"
+	case "AT+CGREG?":
+		prefix = "+CGREG:"
+	case "AT+CREG?":
+		prefix = "+CREG:"
+	case "AT+QSIMSTAT?":
+		prefix = "+QSIMSTAT:"
+	case "AT+CPIN?":
+		prefix = "+CPIN:"
+	}
+	return prefix != "" && strings.HasPrefix(line, prefix)
 }
 
 // enterQuarantine 将命令流隔离：新命令不被接受，直到被隔离命令的终结响应
@@ -1342,6 +1372,87 @@ func (m *Manager) dispatchSIMStatusURC(inserted *bool, state string) {
 	}
 }
 
+func (m *Manager) observeRegistration(domain string, stat int) bool {
+	domain = strings.ToUpper(strings.TrimSpace(domain))
+	if domain == "" || stat < 0 {
+		return false
+	}
+	m.infoMu.Lock()
+	defer m.infoMu.Unlock()
+	if m.registrationStates == nil {
+		m.registrationStates = make(map[string]int)
+	}
+	if previous, known := m.registrationStates[domain]; known && previous == stat {
+		return false
+	}
+	m.registrationStates[domain] = stat
+	m.regStatus = stat
+	m.regStatusText = m.getRegStatusText(stat)
+	return true
+}
+
+func (m *Manager) observeSIMInserted(inserted bool) bool {
+	m.infoMu.Lock()
+	defer m.infoMu.Unlock()
+	if m.simInsertedKnown && m.simInserted == inserted {
+		return false
+	}
+	m.simInserted = inserted
+	m.simInsertedKnown = true
+	return true
+}
+
+func (m *Manager) observeSIMState(state string) bool {
+	state = strings.ToUpper(strings.Trim(strings.TrimSpace(state), "\""))
+	if state == "" {
+		return false
+	}
+	m.infoMu.Lock()
+	defer m.infoMu.Unlock()
+	if m.simStateKnown && m.simState == state {
+		return false
+	}
+	m.simState = state
+	m.simStateKnown = true
+	return true
+}
+
+func urcIntField(fields []any, name string) (int, bool) {
+	for i := 0; i+1 < len(fields); i += 2 {
+		if key, _ := fields[i].(string); key == name {
+			value, ok := fields[i+1].(int)
+			return value, ok
+		}
+	}
+	return 0, false
+}
+
+func urcStringField(fields []any, name string) (string, bool) {
+	for i := 0; i+1 < len(fields); i += 2 {
+		if key, _ := fields[i].(string); key == name {
+			value, ok := fields[i+1].(string)
+			return value, ok
+		}
+	}
+	return "", false
+}
+
+func (m *Manager) acceptStateURC(fr urcFormatResult) bool {
+	switch fr.Key {
+	case "+CREG", "+CGREG", "+CEREG":
+		stat, ok := urcIntField(fr.Fields, "stat")
+		return ok && stat >= 0 && m.observeRegistration(fr.Key, stat)
+	case "+CPIN":
+		state, ok := urcStringField(fr.Fields, "state")
+		return ok && m.observeSIMState(state)
+	case "+QSIMSTAT":
+		inserted, ok := urcIntField(fr.Fields, "inserted")
+		return ok && inserted >= 0 && m.observeSIMInserted(inserted == 1)
+	default:
+		return true
+	}
+}
+
 // handleURC 处理 URC
 func (m *Manager) handleURC(line string) {
 	s := strings.TrimSpace(line)
@@ -1350,6 +1461,9 @@ func (m *Manager) handleURC(line string) {
 	}
 
 	fr := m.formatURC(s)
+	if !m.acceptStateURC(fr) {
+		return
+	}
 	msg := fmt.Sprintf("[%s] %s", m.cfg.ID, fr.Msg)
 	logFields := filterSensitiveLogFields(fr.Fields)
 	switch fr.Level {
@@ -1743,21 +1857,28 @@ func (m *Manager) decodePDU(raw string) (sender, content string, timestamp time.
 
 // ExecuteAT 执行 AT 命令 (普通优先级)
 func (m *Manager) ExecuteAT(cmd string, timeout time.Duration) (string, error) {
-	return m.executeAT(cmd, timeout, false, false)
+	return m.executeAT(cmd, timeout, false, false, false)
 }
 
 // ExecuteATSilent 静默执行 AT 命令 (普通优先级)
 func (m *Manager) ExecuteATSilent(cmd string, timeout time.Duration) (string, error) {
-	return m.executeAT(cmd, timeout, true, false)
+	return m.executeAT(cmd, timeout, true, false, false)
 }
 
 // ExecuteATHigh 执行 AT 命令 (高优先级)
 func (m *Manager) ExecuteATHigh(cmd string, timeout time.Duration) (string, error) {
-	return m.executeAT(cmd, timeout, false, true)
+	return m.executeAT(cmd, timeout, false, true, false)
+}
+
+// ExecuteATRaw preserves the terminal response line for raw command output.
+// Regular protocol queries continue to receive payload-only responses so
+// their existing parsers do not change behavior.
+func (m *Manager) ExecuteATRaw(cmd string, timeout time.Duration) (string, error) {
+	return m.executeAT(cmd, timeout, false, false, true)
 }
 
 // executeAT 内部通用的 AT 命令执行逻辑
-func (m *Manager) executeAT(cmd string, timeout time.Duration, silent, highPriority bool) (string, error) {
+func (m *Manager) executeAT(cmd string, timeout time.Duration, silent, highPriority, includeTerminal bool) (string, error) {
 	if !m.HasATPort() {
 		return "", errors.New("当前设备没有可用 AT 端口")
 	}
@@ -1775,6 +1896,7 @@ func (m *Manager) executeAT(cmd string, timeout time.Duration, silent, highPrior
 	req.timeout = timeout
 	req.silent = silent
 	req.highPriority = highPriority
+	req.includeTerminal = includeTerminal
 	req.interactive = false
 	req.waitPrompt = false
 	req.followUp = ""

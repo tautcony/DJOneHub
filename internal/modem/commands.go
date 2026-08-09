@@ -29,6 +29,7 @@ func (m *Manager) QueryFirmware() (string, error) {
 func (m *Manager) QuerySIMInserted() (bool, error) {
 	if resp, err := m.ExecuteATSilent("AT+QSIMSTAT?", 2*time.Second); err == nil {
 		if inserted, ok := parseQSIMSTATInserted(resp); ok {
+			m.observeSIMInserted(inserted)
 			return inserted, nil
 		}
 	}
@@ -36,7 +37,11 @@ func (m *Manager) QuerySIMInserted() (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	if state, ok := parseCPINState(resp); ok {
+		m.observeSIMState(state)
+	}
 	if inserted, ok := parseCPINInserted(resp); ok {
+		m.observeSIMInserted(inserted)
 		return inserted, nil
 	}
 	return false, nil
@@ -95,6 +100,7 @@ func (m *Manager) QueryRegistration() (int, string, string, string, error) {
 		if !ok {
 			continue
 		}
+		m.observeRegistration(strings.TrimSuffix(query.prefix, ":"), regStatus)
 		if !found {
 			fallbackStatus, fallbackLAC, fallbackCellID = regStatus, lac, cellID
 			found = true

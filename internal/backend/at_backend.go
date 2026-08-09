@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -161,7 +162,7 @@ func (a *ATBackend) RawAT(ctx context.Context, command string) (string, error) {
 	if timeout <= 0 {
 		return "", ctx.Err()
 	}
-	return a.modem.ExecuteAT(command, timeout)
+	return a.modem.ExecuteATRaw(command, timeout)
 }
 
 // Events adapts the manager's modem-reset signal to the runtime backend event
@@ -290,6 +291,63 @@ func (a *ATBackend) GetServingSystem(ctx context.Context) (*ServingSystem, error
 	}
 
 	return ss, nil
+}
+
+// Status implements NetworkPort for serial AT transports. The AT backend is
+// used by both Linux and Windows COM discovery, so network pages must not
+// depend on a separate platform network controller.
+func (a *ATBackend) Status(ctx context.Context) (map[string]any, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	mode, err := a.modem.QueryUSBNetMode()
+	if err != nil {
+		return nil, err
+	}
+	result := map[string]any{"mode": strconv.Itoa(mode)}
+	if radio, radioErr := a.GetServingSystem(ctx); radioErr == nil {
+		result["network_mode"] = radio.NetworkMode
+		result["radio_band"] = radio.RadioBand
+		result["registered"] = radio.RegStatus == 1 || radio.RegStatus == 5
+	}
+	if signal, signalErr := a.GetSignalInfo(ctx); signalErr == nil {
+		result["signal_dbm"] = signal.RSSI
+		result["signal_rsrp"] = signal.RSRP
+		result["signal_rsrq"] = signal.RSRQ
+		result["signal_sinr"] = signal.SINR
+	}
+	return result, nil
+}
+
+func (a *ATBackend) SetMode(ctx context.Context, mode string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	value, err := strconv.Atoi(strings.TrimSpace(mode))
+	if err != nil || value < 0 || value > 3 {
+		return fmt.Errorf("usbnet mode must be an integer from 0 to 3")
+	}
+	return a.modem.SetUSBNetMode(value)
+}
+
+func (a *ATBackend) Traffic(context.Context) (map[string]any, error) {
+	// The serial AT channel has no host byte counters. Keep the contract
+	// stable; host counters are supplied by platform-specific controllers.
+	return map[string]any{"rx_bytes": uint64(0), "tx_bytes": uint64(0)}, nil
+}
+
+func (a *ATBackend) Check(ctx context.Context) (map[string]any, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	radio, err := a.GetServingSystem(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if radio.RegStatus == 1 || radio.RegStatus == 5 {
+		return map[string]any{"ok": true, "summary": "cellular registration is ready", "detail": radio.NetworkMode}, nil
+	}
+	return map[string]any{"ok": false, "summary": "cellular network is not registered"}, nil
 }
 
 func (a *ATBackend) IsSimInserted(ctx context.Context) (bool, error) {
