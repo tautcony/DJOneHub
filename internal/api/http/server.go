@@ -30,7 +30,7 @@ import (
 	"github.com/iniwex5/vohive/internal/backend"
 	derrors "github.com/iniwex5/vohive/internal/domain/errors"
 	"github.com/iniwex5/vohive/internal/notify"
-	"github.com/iniwex5/vohive/internal/platform/darwin/native"
+	"github.com/iniwex5/vohive/internal/platform/native"
 	"github.com/iniwex5/vohive/internal/platform/startup"
 	"github.com/iniwex5/vohive/internal/runtime"
 	"github.com/iniwex5/vohive/internal/storage"

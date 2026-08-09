@@ -28,7 +28,7 @@ import (
 	"github.com/iniwex5/vohive/internal/modem"
 	"github.com/iniwex5/vohive/internal/notify"
 	"github.com/iniwex5/vohive/internal/platform/darwin"
-	"github.com/iniwex5/vohive/internal/platform/darwin/native"
+	"github.com/iniwex5/vohive/internal/platform/native"
 	"github.com/iniwex5/vohive/internal/platform/linux"
 	"github.com/iniwex5/vohive/internal/platform/startup"
 	"github.com/iniwex5/vohive/internal/platform/unsupported"
@@ -173,7 +173,7 @@ func newApp(r *runtime.Runtime, err error, platformAdapter transport.NetworkCont
 	extraService := extras.NewService(devices, ops, r, database)
 	notificationPreferences := notification.DefaultNotificationPreferences()
 	_ = notificationPreferencesStore.Read(&notificationPreferences)
-	notificationPreferences = notificationPreferences.Normalize()
+	notificationPreferences = normalizeNotificationPreferencesForPlatform(notificationPreferences)
 	bridge := native.New(nil)
 	startupManager := startup.New()
 	bridge.SetNotificationPreferences(notificationPreferences)
@@ -260,6 +260,7 @@ func newApp(r *runtime.Runtime, err error, platformAdapter transport.NetworkCont
 			if err := preferences.Validate(); err != nil {
 				return err
 			}
+			preferences = normalizeNotificationPreferencesForPlatform(preferences)
 			if err := notificationPreferencesStore.Write(&preferences); err != nil {
 				return err
 			}
@@ -301,6 +302,21 @@ func newApp(r *runtime.Runtime, err error, platformAdapter transport.NetworkCont
 		Admission:                       app.admitting,
 	})
 	return app, nil
+}
+
+func normalizeNotificationPreferencesForPlatform(preferences notification.NotificationPreferences) notification.NotificationPreferences {
+	preferences = preferences.Normalize()
+	if goruntime.GOOS != "windows" {
+		return preferences
+	}
+	// Windows currently exposes only the native Toast surface. Keep the
+	// persisted preference aligned with that capability until a Windows
+	// self-drawn surface is introduced.
+	preferences.IncomingCall = notification.NotificationPresentationSystem
+	preferences.MissedCall = notification.NotificationPresentationSystem
+	preferences.SMS = notification.NotificationPresentationSystem
+	preferences.DeviceOffline = notification.NotificationPresentationSystem
+	return preferences
 }
 
 // admitting reports whether the shutdown admission gate is still open.

@@ -71,7 +71,12 @@ func TestSetADBCommand(t *testing.T) {
 	service := NewService(nil, nil, nil, Config{Store: store})
 
 	executable := filepath.Join(t.TempDir(), "adb")
-	if err := os.WriteFile(executable, []byte("#!/bin/sh\n"), 0o755); err != nil {
+	contents := []byte("#!/bin/sh\n")
+	if goruntime.GOOS == "windows" {
+		executable += ".cmd"
+		contents = []byte("@echo off\r\n")
+	}
+	if err := os.WriteFile(executable, contents, 0o755); err != nil {
 		t.Fatal(err)
 	}
 

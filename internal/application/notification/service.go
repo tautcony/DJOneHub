@@ -330,6 +330,7 @@ func (s *Service) applyCall(call CallEvent) {
 	var op *sinkOp
 	s.mu.Lock()
 	if _, seen := s.seenCalls[call.ID]; seen {
+		logger.Info("[notification] suppress duplicate call", "call_id", call.ID, "state", call.State, "number", call.Number, "reason", "already_seen")
 		if call.ID == s.activeCallID && (call.State != s.activeCallState || call.Number != s.activeCallNumber) {
 			c := call
 			op = &sinkOp{
@@ -344,6 +345,7 @@ func (s *Service) applyCall(call CallEvent) {
 			logger.Info("[notification] queue update_call", "call_id", call.ID, "state", call.State, "number", call.Number)
 		}
 	} else {
+		logger.Info("[notification] evaluate new call", "call_id", call.ID, "direction", call.Direction, "state", call.State)
 		s.seenCalls[call.ID] = struct{}{}
 		if call.Direction == "incoming" && (call.State == "incoming" || call.State == "waiting") {
 			c := call

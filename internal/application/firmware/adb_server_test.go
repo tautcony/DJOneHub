@@ -4,6 +4,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"testing"
 	"time"
@@ -41,9 +42,11 @@ func TestListADBDevicesStartsServerOnRefusedConnection(t *testing.T) {
 	}
 	marker := filepath.Join(t.TempDir(), "starts.txt")
 	script := filepath.Join(t.TempDir(), "fake-adb")
-	content := "#!/bin/sh\n" +
-		"echo start >> " + marker + "\n" +
-		"exit 1\n"
+	content := "#!/bin/sh\n" + "echo start >> " + marker + "\n" + "exit 1\n"
+	if goruntime.GOOS == "windows" {
+		script += ".cmd"
+		content = "@echo off\r\necho start >> \"" + marker + "\"\r\nexit /b 1\r\n"
+	}
 	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
 		t.Fatal(err)
 	}
