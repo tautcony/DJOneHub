@@ -54,14 +54,18 @@ func traceSource(eventType string) string {
 		return "sms-poller"
 	case strings.HasPrefix(eventType, "call."):
 		return "call-poller"
-	case strings.HasPrefix(eventType, "network."), strings.HasPrefix(eventType, "traffic."):
+	case strings.HasPrefix(eventType, "network."):
 		return "network-poller"
+	case strings.HasPrefix(eventType, "traffic."):
+		return "traffic-poller"
 	case strings.HasPrefix(eventType, "operation."):
 		return "operations"
 	case strings.HasPrefix(eventType, "vowifi."):
 		return "vowifi-runtime"
-	case strings.HasPrefix(eventType, "backend."), strings.HasPrefix(eventType, "sim."), strings.HasPrefix(eventType, "device."):
-		return "backend-io"
+	case strings.HasPrefix(eventType, "backend."), strings.HasPrefix(eventType, "sim."):
+		return "backend-events"
+	case strings.HasPrefix(eventType, "device."):
+		return "runtime-scan"
 	default:
 		return "application"
 	}

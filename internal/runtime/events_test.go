@@ -169,3 +169,20 @@ func TestMessageTraceStreamingIsNonBlockingAndReportsUpdates(t *testing.T) {
 		t.Fatalf("updated trace = %#v", updated)
 	}
 }
+
+func TestTraceSourceMatchesObservableEventSourceTopology(t *testing.T) {
+	tests := map[string]string{
+		"device.status.changed": "runtime-scan",
+		"backend.sim.changed":   "backend-events",
+		"sim.updated":           "backend-events",
+		"sms.received":          "sms-poller",
+		"network.updated":       "network-poller",
+		"traffic.updated":       "traffic-poller",
+		"call.incoming":         "call-poller",
+	}
+	for eventType, want := range tests {
+		if got := traceSource(eventType); got != want {
+			t.Errorf("traceSource(%q) = %q, want %q", eventType, got, want)
+		}
+	}
+}

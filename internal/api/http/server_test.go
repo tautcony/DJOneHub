@@ -3,7 +3,6 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -11,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"testing"
 	"time"
@@ -125,6 +125,42 @@ func TestRuntimeDiagnosticsReturnsTopologyWithoutEventPayloads(t *testing.T) {
 	}
 	if len(body.Workers) < 8 || len(body.Channels) < 5 || len(body.Flows) < 4 {
 		t.Fatalf("incomplete diagnostics: workers=%d channels=%d flows=%d", len(body.Workers), len(body.Channels), len(body.Flows))
+	}
+	eventSources := map[string]workerDiagnostics{}
+	for _, worker := range body.Workers {
+		if worker.EventSource {
+			eventSources[worker.ID] = worker
+		}
+	}
+	for _, id := range []string{"runtime-scan", "backend-events", "sms-poller", "network-poller", "traffic-poller", "call-poller"} {
+		source, ok := eventSources[id]
+		if !ok || len(source.EventTypes) == 0 {
+			t.Fatalf("event source %q missing or has no event types: %#v", id, source)
+		}
+	}
+	for _, id := range []string{"backend-io", "notification-policy", "notification-delivery"} {
+		if _, ok := eventSources[id]; ok {
+			t.Fatalf("mechanism worker %q reported as event source", id)
+		}
+	}
+	topologyNodes := map[string]bool{}
+	for _, node := range body.Topology.Nodes {
+		topologyNodes[node.ID] = true
+	}
+	for _, id := range []string{"runtime-scan", "backend-events", "traffic-poller"} {
+		if !topologyNodes[id] {
+			t.Fatalf("event source topology node %q missing", id)
+		}
+	}
+	topologyEdges := map[string]bool{}
+	for _, edge := range body.Topology.Edges {
+		topologyEdges[edge.ID] = true
+	}
+	for _, source := range []string{"runtime-scan", "backend-events", "sms-poller", "network-poller", "traffic-poller", "call-poller"} {
+		id := source + "--domain-events"
+		if !topologyEdges[id] {
+			t.Fatalf("event source topology edge %q missing", id)
+		}
 	}
 	if body.EventBus.Published != 1 || len(body.EventBus.Recent) != 1 {
 		t.Fatalf("event bus = %#v", body.EventBus)
@@ -894,31 +930,37 @@ func TestWebSocketStaysOpenWhenSnapshotFails(t *testing.T) {
 	}
 	defer conn.Close()
 
-	// The server subscribes after the upgrade; publish repeatedly until the
-	// event is observed so the test is not sensitive to that ordering.
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		r.Events().Publish("device.status.changed", map[string]any{"state": "degraded"})
-		_ = conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
-		_, payload, err := conn.ReadMessage()
-		if err == nil {
-			var envelope struct {
-				Type string `json:"type"`
+	// The server subscribes after the upgrade. Keep publishing while one read
+	// waits; Gorilla WebSocket read errors are terminal and must not be retried.
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				r.Events().Publish("device.status.changed", map[string]any{"state": "degraded"})
+			case <-done:
+				return
 			}
-			if err := json.Unmarshal(payload, &envelope); err != nil {
-				t.Fatalf("bad envelope: %v", err)
-			}
-			if envelope.Type != "device.status.changed" {
-				t.Fatalf("envelope type = %q", envelope.Type)
-			}
-			return
 		}
-		var netErr net.Error
-		if !errors.As(err, &netErr) || !netErr.Timeout() {
-			t.Fatalf("websocket closed instead of staying open: %v", err)
-		}
+	}()
+
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, payload, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("websocket closed instead of delivering an event: %v", err)
 	}
-	t.Fatal("no event delivered within deadline")
+	var envelope struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(payload, &envelope); err != nil {
+		t.Fatalf("bad envelope: %v", err)
+	}
+	if envelope.Type != "device.status.changed" {
+		t.Fatalf("envelope type = %q", envelope.Type)
+	}
 }
 
 // settingsJSONStore is a minimal storage.ValueStore keeping one JSON document.
@@ -955,7 +997,12 @@ func TestFirmwareADBSettingsAPI(t *testing.T) {
 	handler := server.Handler()
 
 	executable := filepath.Join(t.TempDir(), "adb")
-	if err := os.WriteFile(executable, []byte("#!/bin/sh\n"), 0o755); err != nil {
+	contents := []byte("#!/bin/sh\n")
+	if goruntime.GOOS == "windows" {
+		executable += ".cmd"
+		contents = []byte("@echo off\r\n")
+	}
+	if err := os.WriteFile(executable, contents, 0o755); err != nil {
 		t.Fatal(err)
 	}
 

@@ -12,7 +12,7 @@ import (
 	"github.com/iniwex5/vohive/internal/application/notification"
 	"github.com/iniwex5/vohive/internal/application/operation"
 	"github.com/iniwex5/vohive/internal/notify"
-	"github.com/iniwex5/vohive/internal/platform/darwin/native"
+	"github.com/iniwex5/vohive/internal/platform/native"
 	appRuntime "github.com/iniwex5/vohive/internal/runtime"
 	"github.com/iniwex5/vohive/pkg/logger"
 )
@@ -24,6 +24,8 @@ type workerDiagnostics struct {
 	State         string    `json:"state"`
 	Detail        string    `json:"detail"`
 	IntervalMS    int64     `json:"interval_ms,omitempty"`
+	EventSource   bool      `json:"event_source,omitempty"`
+	EventTypes    []string  `json:"event_types,omitempty"`
 	QueueDepth    int       `json:"queue_depth,omitempty"`
 	QueueCapacity int       `json:"queue_capacity,omitempty"`
 	Dropped       uint64    `json:"dropped,omitempty"`
@@ -128,13 +130,13 @@ func (s *Server) runtimeDiagnostics(w nethttp.ResponseWriter, r *nethttp.Request
 		remoteState = "recovering"
 	}
 	workers := []workerDiagnostics{
-		{ID: "runtime-scan", Name: "Device discovery", Kind: "poller", State: workerState(runtimeStats.Running), Detail: "Discovers the managed modem and owns backend lifecycle.", IntervalMS: runtimeStats.PollIntervalMS},
-		{ID: "backend-events", Name: "Backend event consumer", Kind: "consumer", State: workerState(runtimeStats.BackendEventConsumers > 0), Detail: fmt.Sprintf("%d active backend event stream(s).", runtimeStats.BackendEventConsumers)},
+		{ID: "runtime-scan", Name: "Device discovery", Kind: "poller", State: workerState(runtimeStats.Running), Detail: "Discovers the managed modem and owns backend lifecycle.", IntervalMS: runtimeStats.PollIntervalMS, EventSource: true, EventTypes: []string{"device.status.changed", "device.offline"}},
+		{ID: "backend-events", Name: "Backend event consumer", Kind: "consumer", State: workerState(runtimeStats.BackendEventConsumers > 0), Detail: fmt.Sprintf("%d active backend event stream(s).", runtimeStats.BackendEventConsumers), EventSource: true, EventTypes: []string{"backend.*", "sim.updated", "sms.updated", "esim.updated", "network.updated", "vowifi.updated"}},
 		{ID: "backend-io", Name: "Backend I/O", Kind: "transport", State: workerState(runtimeStats.BackendAttached), Detail: "Owns modem command queues, transport reads and URC/indication dispatch."},
-		{ID: "sms-poller", Name: "SMS refresh", Kind: "poller", State: workerState(smsRunning), Detail: "Refreshes modem storage and publishes new-message events.", IntervalMS: 3000},
-		{ID: "network-poller", Name: "Network status", Kind: "poller", State: workerState(networkRunning), Detail: "Refreshes radio registration and signal state.", IntervalMS: 15000},
-		{ID: "traffic-poller", Name: "Traffic sampler", Kind: "poller", State: workerState(networkRunning), Detail: "Samples interface counters; unchanged samples are suppressed.", IntervalMS: 1000},
-		{ID: "call-poller", Name: "Call monitor", Kind: "poller", State: workerState(callsRunning), Detail: "Reads CLCC and emits call lifecycle events.", IntervalMS: 3000},
+		{ID: "sms-poller", Name: "SMS refresh", Kind: "poller", State: workerState(smsRunning), Detail: "Refreshes modem storage and publishes new-message events.", IntervalMS: 3000, EventSource: true, EventTypes: []string{"sms.received", "sms.updated"}},
+		{ID: "network-poller", Name: "Network status", Kind: "poller", State: workerState(networkRunning), Detail: "Refreshes radio registration and signal state.", IntervalMS: 15000, EventSource: true, EventTypes: []string{"network.updated"}},
+		{ID: "traffic-poller", Name: "Traffic sampler", Kind: "poller", State: workerState(networkRunning), Detail: "Samples interface counters; unchanged samples are suppressed.", IntervalMS: 1000, EventSource: true, EventTypes: []string{"traffic.updated"}},
+		{ID: "call-poller", Name: "Call monitor", Kind: "poller", State: workerState(callsRunning), Detail: "Reads CLCC and emits call lifecycle events.", IntervalMS: 3000, EventSource: true, EventTypes: []string{"call.*"}},
 		{ID: "notification-policy", Name: "Notification policy", Kind: "consumer", State: workerState(notificationStats.Running), Detail: "Deduplicates domain events and selects user-facing notifications."},
 		{ID: "notification-delivery", Name: "Notification delivery", Kind: "queue", State: workerState(notificationStats.Running), Detail: "Serializes native and remote notification sink calls.", QueueDepth: notificationStats.QueueDepth, QueueCapacity: notificationStats.QueueCapacity, Dropped: notificationStats.Dropped},
 		{ID: "vowifi-runtime", Name: "VoWiFi recovery", Kind: "consumer", State: workerState(vowifiRunning), Detail: "Observes device and network events and schedules recovery operations."},
@@ -204,9 +206,11 @@ func runtimeTopology(workers []workerDiagnostics, channels []channelDiagnostics,
 		return topologyNodeDiagnostics{ID: id, Name: name, Kind: kind, State: state, Detail: details[id]}
 	}
 	nodes := []topologyNodeDiagnostics{
-		node("backend-io", "Backend / device", "source", "stopped"),
+		node("runtime-scan", "Device discovery", "source", "stopped"),
+		node("backend-events", "Backend event stream", "source", "stopped"),
 		node("sms-poller", "SMS poller", "source", "stopped"),
 		node("network-poller", "Network poller", "source", "stopped"),
+		node("traffic-poller", "Traffic sampler", "source", "stopped"),
 		node("call-poller", "Call poller", "source", "stopped"),
 		node("operations", "HTTP / operations", "source", "idle"),
 		node("application", "Application services", "source", "running"),
@@ -240,9 +244,11 @@ func runtimeTopology(workers []workerDiagnostics, channels []channelDiagnostics,
 		return topologyEdgeDiagnostics{ID: source + "--" + target, Source: source, Target: target, EventTypes: eventTypes}
 	}
 	edges := []topologyEdgeDiagnostics{
-		edge("backend-io", "domain-events", "device.*", "backend.*", "sim.*"),
+		edge("runtime-scan", "domain-events", "device.status.changed", "device.offline"),
+		edge("backend-events", "domain-events", "backend.*", "sim.*", "sms.*", "esim.*", "network.*", "vowifi.*"),
 		edge("sms-poller", "domain-events", "sms.*"),
-		edge("network-poller", "domain-events", "network.*", "traffic.*"),
+		edge("network-poller", "domain-events", "network.*"),
+		edge("traffic-poller", "domain-events", "traffic.*"),
 		edge("call-poller", "domain-events", "call.*"),
 		edge("operations", "domain-events", "operation.*", "esim.*"),
 		edge("application", "domain-events", "*"),

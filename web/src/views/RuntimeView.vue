@@ -76,6 +76,7 @@ const dropped = computed(() => diagnostics.value?.event_bus.cumulative_drops || 
 const runningWorkers = computed(
   () => diagnostics.value?.workers.filter((worker) => worker.state === 'running').length || 0,
 )
+const eventSources = computed(() => diagnostics.value?.workers.filter((worker) => worker.event_source) || [])
 const selectedTrace = computed(() => traces.value.find((trace) => trace.id === selectedTraceID.value) || null)
 const selectedNode = computed(
   () => diagnostics.value?.topology.nodes.find((node) => node.id === selectedNodeID.value) || null,
@@ -126,6 +127,16 @@ function translatedNode(node: RuntimeTopologyNode) {
   return node.name
 }
 
+function translatedWorker(worker: { id: string; name: string }) {
+  const key = `runtime.workerNames.${worker.id}`
+  return te(key) ? t(key) : worker.name
+}
+
+function translatedWorkerDetail(worker: { id: string; detail: string }) {
+  const key = `runtime.workerDetails.${worker.id}`
+  return te(key) ? t(key) : worker.detail
+}
+
 function statusTone(state: string) {
   if (state === 'running' || state === 'success') return 'success'
   if (state === 'failed' || state === 'dropped') return 'danger'
@@ -171,12 +182,21 @@ function layoutNodes(topologyNodes: RuntimeTopologyNode[], topologyEdges: Runtim
   topologyNodes.forEach((node) => graph.setNode(node.id, { width: 184, height: 72 }))
   topologyEdges.forEach((edge) => graph.setEdge(edge.source, edge.target))
   dagre.layout(graph)
+  const laneX: Record<string, number> = {
+    source: 0,
+    channel: 320,
+    processor: 640,
+    destination: 960,
+  }
   return topologyNodes.map((node): Node => {
     const point = graph.node(node.id)
     const selected = selectedPathNodes.value.has(node.id)
     return {
       id: node.id,
-      position: { x: point.x - 92, y: point.y - 36 },
+      // Dagre ranks by graph depth, which can move a direct event source into
+      // a later visual column when another source has a longer path. Keep the
+      // four semantic lanes stable and use Dagre only for vertical spacing.
+      position: { x: (laneX[node.kind] ?? laneX.processor) - 92, y: point.y - 36 },
       sourcePosition: Position.Right,
       targetPosition: Position.Left,
       data: { ...node, label: translatedNode(node), selected },
@@ -354,6 +374,12 @@ function nodeDetail(node: RuntimeTopologyNode) {
   return t('runtime.channelFailed', { error: recovery.last_error })
 }
 
+function sourceInterval(interval?: number) {
+  if (!interval) return t('runtime.onEvent')
+  if (interval % 1000 === 0) return t('runtime.every', { value: `${interval / 1000}s` })
+  return t('runtime.every', { value: `${interval}ms` })
+}
+
 function tracesForNode(id: string) {
   return traces.value.filter((trace) => trace.hops.some((hop) => hop.node_id === id))
 }
@@ -446,6 +472,29 @@ onBeforeUnmount(() => {
         ><strong :class="{ danger: dropped > 0 }">{{ dropped }}</strong>
       </article>
     </div>
+
+    <section v-if="diagnostics" class="runtime-sources-section">
+      <div class="runtime-section-title">
+        <div>
+          <ClockCircleOutlined /><strong>{{ t('runtime.eventSources') }}</strong>
+        </div>
+        <span>{{ eventSources.length }}</span>
+      </div>
+      <div v-if="eventSources.length" class="runtime-source-list">
+        <article v-for="source in eventSources" :key="source.id" class="runtime-source">
+          <div class="runtime-source-head">
+            <StatusLight :tone="statusTone(source.state)" :pulse="source.state === 'running'" />
+            <strong>{{ translatedWorker(source) }}</strong>
+            <span>{{ statusLabel(source.state) }}</span>
+          </div>
+          <small>{{ sourceInterval(source.interval_ms) }} · {{ translatedWorkerDetail(source) }}</small>
+          <div class="runtime-source-events">
+            <code v-for="eventName in source.event_types || []" :key="eventName">{{ eventName }}</code>
+          </div>
+        </article>
+      </div>
+      <EmptyState v-else :title="t('runtime.noEventSources')" />
+    </section>
 
     <section v-if="diagnostics" class="runtime-canvas-section">
       <div class="runtime-toolbar">
@@ -629,6 +678,47 @@ onBeforeUnmount(() => {
 .runtime-view {
   display: grid;
   gap: 16px;
+}
+.runtime-sources-section {
+  display: grid;
+  gap: 12px;
+}
+.runtime-source-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 10px;
+}
+.runtime-source {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--ui-border);
+  background: var(--ui-surface);
+}
+.runtime-source-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.runtime-source-head span {
+  margin-left: auto;
+  color: var(--ui-text-secondary);
+  font-size: 12px;
+}
+.runtime-source > small {
+  color: var(--ui-text-secondary);
+  line-height: 1.45;
+}
+.runtime-source-events {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.runtime-source-events code {
+  padding: 2px 5px;
+  color: var(--ui-text-secondary);
+  background: var(--ui-surface-muted);
+  font-size: 11px;
 }
 .runtime-header {
   display: flex;

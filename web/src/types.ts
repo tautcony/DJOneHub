@@ -247,6 +247,8 @@ export interface RuntimeWorkerDiagnostics {
   state: 'running' | 'idle' | 'stopped' | string
   detail: string
   interval_ms?: number
+  event_source?: boolean
+  event_types?: string[]
   queue_depth?: number
   queue_capacity?: number
   dropped?: number
