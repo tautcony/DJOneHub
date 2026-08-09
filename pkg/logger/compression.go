@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	rotatelogs "github.com/lestrrat-go/file-rotatelogs"
@@ -21,6 +22,33 @@ func newCompressionHandler(filename string, maxAgeDays int) rotatelogs.Handler {
 		filename: filename,
 		maxAge:   time.Duration(maxAgeDays) * 24 * time.Hour,
 	}
+}
+
+type rotationHandler struct {
+	handlers        []rotatelogs.Handler
+	initialComplete chan struct{}
+	initialOnce     sync.Once
+}
+
+func (h *rotationHandler) Handle(event rotatelogs.Event) {
+	for _, handler := range h.handlers {
+		handler.Handle(event)
+	}
+	h.initialOnce.Do(func() { close(h.initialComplete) })
+}
+
+func newRotationHandler(filename string, maxAgeDays int, compress bool) *rotationHandler {
+	handlers := make([]rotatelogs.Handler, 0, 2)
+	if compress {
+		handlers = append(handlers, newCompressionHandler(filename, maxAgeDays))
+	}
+	if handler := newPlatformRotationHandler(filename); handler != nil {
+		handlers = append(handlers, handler)
+	}
+	if len(handlers) == 0 {
+		return nil
+	}
+	return &rotationHandler{handlers: handlers, initialComplete: make(chan struct{})}
 }
 
 func (h compressionHandler) Handle(event rotatelogs.Event) {
@@ -59,7 +87,15 @@ func compressLogFile(source string) error {
 	if err != nil {
 		return err
 	}
-	defer input.Close()
+	inputClosed := false
+	closeInput := func() error {
+		if inputClosed {
+			return nil
+		}
+		inputClosed = true
+		return input.Close()
+	}
+	defer closeInput()
 
 	temporary, err := os.CreateTemp(filepath.Dir(target), "."+filepath.Base(target)+".tmp-*")
 	if err != nil {
@@ -80,6 +116,10 @@ func compressLogFile(source string) error {
 		return err
 	}
 	if err = writer.Close(); err != nil {
+		cleanup()
+		return err
+	}
+	if err = closeInput(); err != nil {
 		cleanup()
 		return err
 	}

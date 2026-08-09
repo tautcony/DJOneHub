@@ -30,6 +30,7 @@ func TestCompressLogFileCreatesGzipAndRemovesSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer f.Close()
 	reader, err := gzip.NewReader(f)
 	if err != nil {
 		t.Fatal(err)

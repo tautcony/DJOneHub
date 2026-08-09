@@ -31,12 +31,13 @@ func TestSetupRoutesDeviceLayerLogsToConfiguredOutput(t *testing.T) {
 	directory := t.TempDir()
 	path := filepath.Join(directory, "app.log")
 	Setup(LogConfig{Filename: path, Debug: true})
+	t.Cleanup(closeCurrentRotator)
 
 	Info("device layer log line", "device", "test-device")
 
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		data, err := os.ReadFile(path)
+		data, err := readConfiguredLog(path)
 		if err == nil && strings.Contains(string(data), "device layer log line") {
 			return
 		}
@@ -54,12 +55,13 @@ func TestSetupRedirectsStandardLogToFile(t *testing.T) {
 	directory := t.TempDir()
 	path := filepath.Join(directory, "app.log")
 	Setup(LogConfig{Filename: path, Debug: true})
+	t.Cleanup(closeCurrentRotator)
 
 	log.Printf("legacy standard log line %d", 42)
 
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		data, err := os.ReadFile(path)
+		data, err := readConfiguredLog(path)
 		if err == nil && strings.Contains(string(data), "legacy standard log line 42") {
 			return
 		}
@@ -68,6 +70,20 @@ func TestSetupRedirectsStandardLogToFile(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+func readConfiguredLog(filename string) ([]byte, error) {
+	data, err := os.ReadFile(filename)
+	if err == nil {
+		return data, nil
+	}
+	ext := filepath.Ext(filename)
+	base := strings.TrimSuffix(filename, ext)
+	matches, globErr := filepath.Glob(base + "-*" + ext)
+	if globErr != nil || len(matches) == 0 {
+		return nil, err
+	}
+	return os.ReadFile(matches[len(matches)-1])
 }
 
 func TestClassifyLineParsesShortfileCaller(t *testing.T) {

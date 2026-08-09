@@ -16,22 +16,30 @@ type proxyEnvironmentSetting struct {
 }
 
 func inspectProxyEnvironment() ([]proxyEnvironmentSetting, string) {
+	return inspectProxyEnvironmentWithLookup(os.Getenv)
+}
+
+func inspectProxyEnvironmentWithLookup(getenv func(string) string) ([]proxyEnvironmentSetting, string) {
 	settings := make([]proxyEnvironmentSetting, 0, 2)
 	for _, names := range [][2]string{{"HTTP_PROXY", "http_proxy"}, {"HTTPS_PROXY", "https_proxy"}} {
-		name, value := firstEnvironmentValue(names[0], names[1])
+		name, value := firstEnvironmentValueWithLookup(getenv, names[0], names[1])
 		if value == "" {
 			continue
 		}
 		endpoint, err := sanitizedProxyEndpoint(value)
 		settings = append(settings, proxyEnvironmentSetting{name: name, endpoint: endpoint, err: err})
 	}
-	noProxyName, _ := firstEnvironmentValue("NO_PROXY", "no_proxy")
+	noProxyName, _ := firstEnvironmentValueWithLookup(getenv, "NO_PROXY", "no_proxy")
 	return settings, noProxyName
 }
 
 func firstEnvironmentValue(names ...string) (string, string) {
+	return firstEnvironmentValueWithLookup(os.Getenv, names...)
+}
+
+func firstEnvironmentValueWithLookup(getenv func(string) string, names ...string) (string, string) {
 	for _, name := range names {
-		if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+		if value := strings.TrimSpace(getenv(name)); value != "" {
 			return name, value
 		}
 	}

@@ -13,9 +13,12 @@ import (
 )
 
 var (
-	logMu sync.RWMutex
-	Log   = zap.NewNop()
-	Sugar = Log.Sugar()
+	logMu          sync.RWMutex
+	rotationMu     sync.Mutex
+	currentRotator *rotatelogs.RotateLogs
+	currentHandler *rotationHandler
+	Log            = zap.NewNop()
+	Sugar          = Log.Sugar()
 )
 
 func ZapLogger() *zap.Logger {
@@ -188,14 +191,24 @@ func Setup(cfg LogConfig) {
 
 	// 文件输出 (使用 file-rotatelogs 按天进行轮转)
 	options := []rotatelogs.Option{
-		rotatelogs.WithLinkName(cfg.Filename), // 维持软链（如 logs/app.log）
 		rotatelogs.WithMaxAge(time.Duration(cfg.MaxAge) * 24 * time.Hour),
 		rotatelogs.WithRotationTime(24 * time.Hour), // 每天切割
 	}
-	if cfg.Compress {
-		options = append(options, rotatelogs.WithHandler(newCompressionHandler(cfg.Filename, cfg.MaxAge)))
+	options = append(options, currentLogOptions(cfg.Filename)...)
+	handler := newRotationHandler(cfg.Filename, cfg.MaxAge, cfg.Compress)
+	if handler != nil {
+		options = append(options, rotatelogs.WithHandler(handler))
 	}
 	rl, err := rotatelogs.New(logPattern, options...)
+	if err == nil {
+		rotationMu.Lock()
+		previous := currentRotator
+		previousHandler := currentHandler
+		currentRotator = rl
+		currentHandler = handler
+		rotationMu.Unlock()
+		closeRotator(previous, previousHandler)
+	}
 
 	var fileWriter zapcore.WriteSyncer
 	if err != nil {
@@ -228,6 +241,27 @@ func Setup(cfg LogConfig) {
 	Log = log
 	Sugar = sugar
 	logMu.Unlock()
+}
+
+func closeCurrentRotator() {
+	rotationMu.Lock()
+	rotator := currentRotator
+	handler := currentHandler
+	currentRotator = nil
+	currentHandler = nil
+	rotationMu.Unlock()
+	closeRotator(rotator, handler)
+}
+
+func closeRotator(rotator *rotatelogs.RotateLogs, handler *rotationHandler) {
+	if rotator == nil {
+		return
+	}
+	hasCurrentFile := rotator.CurrentFileName() != ""
+	_ = rotator.Close()
+	if hasCurrentFile && handler != nil {
+		<-handler.initialComplete
+	}
 }
 
 func getLogLevel(debug bool) zapcore.LevelEnabler {

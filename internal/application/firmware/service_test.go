@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -142,8 +143,14 @@ func TestEDLInvocationSupportsPythonAndUV(t *testing.T) {
 	}
 
 	binDirectory := t.TempDir()
-	uvPath := filepath.Join(binDirectory, "uv")
-	if err := os.WriteFile(uvPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+	uvName := "uv"
+	uvContents := []byte("#!/bin/sh\n")
+	if runtime.GOOS == "windows" {
+		uvName = "uv.cmd"
+		uvContents = []byte("@echo off\r\n")
+	}
+	uvPath := filepath.Join(binDirectory, uvName)
+	if err := os.WriteFile(uvPath, uvContents, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDirectory+string(os.PathListSeparator)+os.Getenv("PATH"))

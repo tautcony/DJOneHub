@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"testing"
 
@@ -13,6 +14,7 @@ import (
 )
 
 func TestDiscoverSysfsCorrelatesATQMIAndNetworkPorts(t *testing.T) {
+	requireLinuxSysfsPathHost(t)
 	root := t.TempDir()
 	deviceRoot := filepath.Join(root, "1-2")
 	interfaceRoot := filepath.Join(deviceRoot, "1-2:1.0")
@@ -58,6 +60,7 @@ func TestDiscoverSysfsCorrelatesATQMIAndNetworkPorts(t *testing.T) {
 // interface directory. The default selection is the first sorted port, the
 // full list is kept for AT probing.
 func TestDiscoverSysfsOptionDriverMultiPort(t *testing.T) {
+	requireLinuxSysfsPathHost(t)
 	root := t.TempDir()
 	deviceRoot := filepath.Join(root, "1-4.1")
 	ports := []string{"ttyUSB0", "ttyUSB1", "ttyUSB2", "ttyUSB3"}
@@ -157,6 +160,7 @@ func TestIsBusySerialErr(t *testing.T) {
 }
 
 func TestDiscoverSysfsAllowsControlDeviceWithoutAT(t *testing.T) {
+	requireLinuxSysfsPathHost(t)
 	root := t.TempDir()
 	deviceRoot := filepath.Join(root, "2-1")
 	interfaceRoot := filepath.Join(deviceRoot, "2-1:1.0")
@@ -174,6 +178,13 @@ func TestDiscoverSysfsAllowsControlDeviceWithoutAT(t *testing.T) {
 	}
 	if len(candidates) != 1 || candidates[0].ATPort != "" {
 		t.Fatalf("candidates=%#v", candidates)
+	}
+}
+
+func requireLinuxSysfsPathHost(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows cannot represent Linux sysfs interface names containing colons")
 	}
 }
 

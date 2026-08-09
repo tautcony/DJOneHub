@@ -3,14 +3,16 @@ package main
 import "testing"
 
 func TestInspectProxyEnvironmentPrefersUppercaseAndSanitizesCredentials(t *testing.T) {
-	t.Setenv("HTTP_PROXY", "http://user:secret@proxy.example.com:8080/path")
-	t.Setenv("http_proxy", "http://lower.example.com:8080")
-	t.Setenv("HTTPS_PROXY", "proxy.example.com:8443")
-	t.Setenv("https_proxy", "")
-	t.Setenv("NO_PROXY", "localhost,.example.com")
-	t.Setenv("no_proxy", "")
+	environment := map[string]string{
+		"HTTP_PROXY":  "http://user:secret@proxy.example.com:8080/path",
+		"http_proxy":  "http://lower.example.com:8080",
+		"HTTPS_PROXY": "proxy.example.com:8443",
+		"NO_PROXY":    "localhost,.example.com",
+	}
 
-	settings, noProxyName := inspectProxyEnvironment()
+	settings, noProxyName := inspectProxyEnvironmentWithLookup(func(name string) string {
+		return environment[name]
+	})
 	if len(settings) != 2 {
 		t.Fatalf("len(settings) = %d, want 2", len(settings))
 	}
