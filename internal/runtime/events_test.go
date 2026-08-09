@@ -127,11 +127,11 @@ func TestDiagnosticsNamesSubscribersAndOmitsPayload(t *testing.T) {
 	}
 }
 
-func TestMessageTraceRecordsNamedDeliveryWithoutPayload(t *testing.T) {
+func TestMessageTraceRecordsNamedDeliveryWithSafeFields(t *testing.T) {
 	bus := NewEventBus()
 	_, _, unsubscribe := bus.SubscribeNamed("notification-policy", 1)
 	defer unsubscribe()
-	event := bus.Publish("sms.received", map[string]any{"body": "private"})
+	event := bus.Publish("sms.received", map[string]any{"index": 7, "body": "private", "sender": "10086"})
 
 	trace, ok := bus.MessageTrace(event.ID)
 	if !ok {
@@ -139,6 +139,9 @@ func TestMessageTraceRecordsNamedDeliveryWithoutPayload(t *testing.T) {
 	}
 	if trace.Type != "sms.received" || trace.Status != "success" {
 		t.Fatalf("trace = %#v", trace)
+	}
+	if trace.Fields["index"] != float64(7) || trace.Fields["body"] != nil || trace.Fields["sender"] != nil {
+		t.Fatalf("trace fields are not safely projected: %#v", trace.Fields)
 	}
 	wantNodes := []string{"sms-poller", "domain-events", "notification-policy"}
 	if len(trace.Hops) != len(wantNodes) {
@@ -167,6 +170,18 @@ func TestMessageTraceStreamingIsNonBlockingAndReportsUpdates(t *testing.T) {
 	updated := <-sub.Updates
 	if len(updated.Hops) != len(initial.Hops)+1 || updated.Hops[len(updated.Hops)-1].NodeID != "worker" {
 		t.Fatalf("updated trace = %#v", updated)
+	}
+}
+
+func TestDerivedTraceIdentifiesItsSourceEvent(t *testing.T) {
+	bus := NewEventBus()
+	event := bus.publishDerived("sms.updated", map[string]any{"count": 3}, "backend.sms.changed")
+	trace, ok := bus.MessageTrace(event.ID)
+	if !ok {
+		t.Fatal("derived message trace missing")
+	}
+	if trace.Fields["derived_from"] != "backend.sms.changed" || trace.Fields["count"] != float64(3) {
+		t.Fatalf("derived trace fields = %#v", trace.Fields)
 	}
 }
 

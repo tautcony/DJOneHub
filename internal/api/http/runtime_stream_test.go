@@ -13,7 +13,7 @@ import (
 	appRuntime "github.com/iniwex5/vohive/internal/runtime"
 )
 
-func TestRuntimeTraceStreamPublishesPayloadFreeUpdates(t *testing.T) {
+func TestRuntimeTraceStreamPublishesSafeDiagnosticFields(t *testing.T) {
 	server := newTestServer(t, nil)
 	httpServer := httptest.NewServer(server.Handler())
 	defer httpServer.Close()
@@ -37,7 +37,7 @@ func TestRuntimeTraceStreamPublishesPayloadFreeUpdates(t *testing.T) {
 			break
 		}
 	}
-	event := server.config.Runtime.Events().Publish("sms.received", map[string]any{"body": "must-not-stream"})
+	event := server.config.Runtime.Events().Publish("sms.received", map[string]any{"index": 7, "body": "must-not-stream"})
 	server.config.Runtime.Events().RecordTraceHop(event.ID, "notification-policy", "handle", "success", "sms.received")
 	server.config.Runtime.Events().RecordTraceHop(event.ID, "notification-queue", "enqueue", "success", "show_sms")
 
@@ -59,6 +59,9 @@ func TestRuntimeTraceStreamPublishesPayloadFreeUpdates(t *testing.T) {
 		}
 		if trace.Type != "sms.received" || len(trace.Hops) != 4 {
 			t.Fatalf("trace = %#v", trace)
+		}
+		if trace.Fields["index"] != float64(7) || trace.Fields["body"] != nil {
+			t.Fatalf("unsafe or missing trace fields: %#v", trace.Fields)
 		}
 		return
 	}

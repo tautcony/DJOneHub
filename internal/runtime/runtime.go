@@ -224,7 +224,9 @@ func (r *Runtime) scanLocked(ctx context.Context) error {
 	r.snapshot.Generation++
 	snapshot := r.snapshot
 	r.mu.Unlock()
-	r.bus.Publish("device.status.changed", snapshot)
+	fields := traceFields("device.status.changed", snapshot)
+	fields["update"] = "backend_metadata"
+	r.bus.publish("device.status.changed", snapshot, fields)
 	if events, eventErr := b.Events(ctx); eventErr == nil && events != nil {
 		go r.consumeBackendEvents(ctx, b, events)
 	}
@@ -248,18 +250,19 @@ func (r *Runtime) consumeBackendEvents(ctx context.Context, b backend.ModemBacke
 			if !ok {
 				return
 			}
-			r.bus.Publish("backend."+event.Type, event.Data)
+			backendEventType := "backend." + event.Type
+			r.bus.publish(backendEventType, event.Data, map[string]any{"backend_event": event.Type})
 			switch {
 			case event.Type == "sim.changed":
-				r.bus.Publish("sim.updated", event.Data)
+				r.bus.publishDerived("sim.updated", event.Data, backendEventType)
 			case event.Type == "sms.received" || event.Type == "sms.changed":
-				r.bus.Publish("sms.updated", event.Data)
+				r.bus.publishDerived("sms.updated", event.Data, backendEventType)
 			case event.Type == "esim.changed":
-				r.bus.Publish("esim.updated", event.Data)
+				r.bus.publishDerived("esim.updated", event.Data, backendEventType)
 			case event.Type == "network.changed":
-				r.bus.Publish("network.updated", event.Data)
+				r.bus.publishDerived("network.updated", event.Data, backendEventType)
 			case event.Type == "vowifi.changed":
-				r.bus.Publish("vowifi.updated", event.Data)
+				r.bus.publishDerived("vowifi.updated", event.Data, backendEventType)
 			}
 			if event.Type == "device.removed" || event.Type == "transport.closed" {
 				r.disconnect(derrors.New(derrors.DeviceOffline, "backend reported device removal", true, nil))
@@ -303,9 +306,14 @@ func (r *Runtime) transition(next device.State, identity device.Identity, lastEr
 	snapshot := r.snapshot
 	r.mu.Unlock()
 	if previous != next {
-		r.bus.Publish("device.status.changed", snapshot)
+		statusFields := traceFields("device.status.changed", snapshot)
+		statusFields["previous_state"] = string(previous)
+		r.bus.publish("device.status.changed", snapshot, statusFields)
 		if isOfflineState(state) {
-			r.bus.Publish("device.offline", device.OfflineEvent{State: state, LastError: lastError, Reason: lastError})
+			offline := device.OfflineEvent{State: state, LastError: lastError, Reason: lastError}
+			offlineFields := traceFields("device.offline", offline)
+			offlineFields["previous_state"] = string(previous)
+			r.bus.publish("device.offline", offline, offlineFields)
 		}
 	}
 	return nil

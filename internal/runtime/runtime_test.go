@@ -51,7 +51,7 @@ func (f *fakeBackend) Events(context.Context) (<-chan backend.BackendEvent, erro
 	return make(chan backend.BackendEvent), nil
 }
 func (f *fakeBackend) SetInboundSMSHandler(backend.InboundSMSHandler) {}
-func (f *fakeBackend) Close() error                                  { f.closed = true; return nil }
+func (f *fakeBackend) Close() error                                   { f.closed = true; return nil }
 
 type fakeFactory struct {
 	b   backend.ModemBackend
@@ -109,6 +109,22 @@ func TestRuntimeDisconnectsWhenDeviceDisappears(t *testing.T) {
 	}
 	if !b.closed {
 		t.Fatal("backend was not closed")
+	}
+	traces := r.Events().RecentMessageTraces()
+	if len(traces) < 4 {
+		t.Fatalf("disconnect traces = %#v", traces)
+	}
+	changes := traces[len(traces)-4:]
+	want := [][3]string{
+		{"device.status.changed", "ready", "disconnected"},
+		{"device.offline", "ready", "disconnected"},
+		{"device.status.changed", "disconnected", "absent"},
+		{"device.offline", "disconnected", "absent"},
+	}
+	for i, expected := range want {
+		if changes[i].Type != expected[0] || changes[i].Fields["previous_state"] != expected[1] || changes[i].Fields["state"] != expected[2] {
+			t.Fatalf("disconnect trace %d = %#v, want %v", i, changes[i], expected)
+		}
 	}
 }
 

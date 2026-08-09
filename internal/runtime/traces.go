@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -20,15 +21,16 @@ type TraceHop struct {
 	Detail     string    `json:"detail,omitempty"`
 }
 
-// MessageTrace intentionally contains no event payload. It is kept only in a
-// bounded in-memory ring and is safe to expose through runtime diagnostics.
+// MessageTrace contains only allowlisted diagnostic fields, never the original
+// event payload. It is kept in a bounded in-memory ring.
 type MessageTrace struct {
-	ID        uint64     `json:"id"`
-	Type      string     `json:"type"`
-	StartedAt time.Time  `json:"started_at"`
-	UpdatedAt time.Time  `json:"updated_at"`
-	Status    string     `json:"status"`
-	Hops      []TraceHop `json:"hops"`
+	ID        uint64         `json:"id"`
+	Type      string         `json:"type"`
+	StartedAt time.Time      `json:"started_at"`
+	UpdatedAt time.Time      `json:"updated_at"`
+	Status    string         `json:"status"`
+	Fields    map[string]any `json:"fields,omitempty"`
+	Hops      []TraceHop     `json:"hops"`
 }
 
 type TraceSubscription struct {
@@ -71,14 +73,17 @@ func traceSource(eventType string) string {
 	}
 }
 
-func (s *TraceStore) start(event Event, deliveries []TraceHop) {
+func (s *TraceStore) start(event Event, deliveries []TraceHop, fields map[string]any) {
 	now := event.OccurredAt
 	hops := []TraceHop{
 		{NodeID: traceSource(event.Type), Action: "publish", State: "success", At: now},
 		{NodeID: "domain-events", FromNodeID: traceSource(event.Type), Action: "fan-out", State: "success", At: now},
 	}
 	hops = append(hops, deliveries...)
-	trace := &MessageTrace{ID: event.ID, Type: event.Type, StartedAt: now, UpdatedAt: now, Status: "success", Hops: hops}
+	trace := &MessageTrace{
+		ID: event.ID, Type: event.Type, StartedAt: now, UpdatedAt: now,
+		Status: "success", Fields: cloneTraceFields(fields), Hops: hops,
+	}
 	for _, hop := range deliveries {
 		if hop.State == "dropped" || hop.State == "failed" {
 			trace.Status = hop.State
@@ -191,8 +196,79 @@ func (s *TraceStore) subscribersLocked() []chan MessageTrace {
 }
 
 func cloneTrace(trace MessageTrace) MessageTrace {
+	trace.Fields = cloneTraceFields(trace.Fields)
 	trace.Hops = append([]TraceHop(nil), trace.Hops...)
 	return trace
+}
+
+func cloneTraceFields(fields map[string]any) map[string]any {
+	if len(fields) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(fields))
+	for key, value := range fields {
+		out[key] = value
+	}
+	return out
+}
+
+// traceFields projects event payloads to a small diagnostic allowlist. Message
+// bodies, phone numbers, subscriber identities and free-form error text never
+// enter the trace store.
+func traceFields(eventType string, data any) map[string]any {
+	allowed := traceFieldAllowlist(eventType)
+	if len(allowed) == 0 || data == nil {
+		return nil
+	}
+	encoded, err := json.Marshal(data)
+	if err != nil {
+		return nil
+	}
+	var values map[string]any
+	if err := json.Unmarshal(encoded, &values); err != nil {
+		return nil
+	}
+	out := make(map[string]any, len(allowed))
+	for _, key := range allowed {
+		if value, ok := values[key]; ok {
+			out[key] = value
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func traceFieldAllowlist(eventType string) []string {
+	switch {
+	case eventType == "device.status.changed":
+		return []string{"state", "generation", "backend"}
+	case eventType == "device.offline":
+		return []string{"state"}
+	case eventType == "network.updated":
+		return []string{"mode", "network_mode", "registered", "sim_inserted", "sim_known", "radio_band", "signal_dbm", "signal_rsrp", "signal_rsrq", "signal_snr"}
+	case eventType == "network.traffic.updated" || eventType == "traffic.updated":
+		return []string{"rx_bytes", "tx_bytes", "daily_rx_bytes", "daily_tx_bytes", "daily_available", "sampled_at"}
+	case eventType == "sms.received":
+		return []string{"index", "received_at", "recorded_at"}
+	case eventType == "sms.updated":
+		return []string{"count", "cleared", "operation"}
+	case strings.HasPrefix(eventType, "call."):
+		return []string{"id", "direction", "state", "started_at", "ended_at", "connected_at", "missed"}
+	case strings.HasPrefix(eventType, "operation."):
+		return []string{"operation_id", "type", "state", "progress", "started_at", "finished_at"}
+	case eventType == "at.updated":
+		return []string{"completed"}
+	case eventType == "esim.updated":
+		return []string{"operation"}
+	case eventType == "vowifi.updated" || eventType == "vowifi.state.changed":
+		return []string{"state", "operation"}
+	case eventType == "device.rebooted":
+		return []string{"accepted"}
+	default:
+		return nil
+	}
 }
 
 func publishTrace(subscribers []chan MessageTrace, trace MessageTrace) {

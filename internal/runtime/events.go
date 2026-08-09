@@ -47,12 +47,16 @@ func NewEventBus() *EventBus {
 // subscriber whose buffer is full has the event dropped and counted, so a slow
 // consumer can stall nothing and silent loss stays diagnosable.
 func (b *EventBus) Publish(eventType string, data any) Event {
+	return b.publish(eventType, data, traceFields(eventType, data))
+}
+
+func (b *EventBus) publish(eventType string, data any, fields map[string]any) Event {
 	b.mu.Lock()
 	b.seq++
 	event := Event{ID: b.seq, Type: eventType, Version: 1, OccurredAt: time.Now().UTC(), Data: data}
-	// Create the payload-free trace before any subscriber can receive the
+	// Create the safely projected trace before any subscriber can receive the
 	// event. A fast consumer can therefore append downstream hops immediately.
-	b.traces.start(event, nil)
+	b.traces.start(event, nil, fields)
 	delivered := 0
 	dropped := 0
 	deliveries := make([]TraceHop, 0, len(b.subs))
@@ -93,6 +97,15 @@ func (b *EventBus) Publish(eventType string, data any) Event {
 		b.traces.recordHop(event.ID, hop)
 	}
 	return event
+}
+
+func (b *EventBus) publishDerived(eventType string, data any, sourceEvent string) Event {
+	fields := traceFields(eventType, data)
+	if fields == nil {
+		fields = make(map[string]any, 1)
+	}
+	fields["derived_from"] = sourceEvent
+	return b.publish(eventType, data, fields)
 }
 
 func (b *EventBus) RecordTraceHop(eventID uint64, nodeID, action, state, detail string) {
