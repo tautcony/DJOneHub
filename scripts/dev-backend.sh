@@ -4,7 +4,7 @@ set -eu
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "${ROOT_DIR}"
 
-LISTEN=${DJONEHUB_LISTEN:-127.0.0.1:7576}
+LISTEN=${DJONEHUB_LISTEN:-127.0.0.1:7575}
 
 if [ "$(uname -s)" = "Darwin" ]; then
 	# UserNotifications requires a real .app bundle. A raw `go run` executable

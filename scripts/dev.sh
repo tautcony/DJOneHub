@@ -7,7 +7,7 @@ ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 # readiness probe polls the port the backend will actually bind. A `-listen`
 # flag passed through (scripts/dev.sh -listen 127.0.0.1:7575) wins over the
 # DJONEHUB_LISTEN default.
-LISTEN=${DJONEHUB_LISTEN:-127.0.0.1:7576}
+LISTEN=${DJONEHUB_LISTEN:-127.0.0.1:7575}
 prev=
 for arg in "$@"; do
 	if [ "${prev}" = "-listen" ]; then
