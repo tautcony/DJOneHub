@@ -34,7 +34,19 @@ The SMS view SHALL provide a control that invokes the already-wired clear-module
 
 ### Requirement: UI SHALL render asynchronous operations and events
 
-The frontend SHALL associate `operation_id` values with progress and terminal WebSocket events and SHALL resynchronize from a snapshot after a disconnected or out-of-order event stream.
+The frontend SHALL associate `operation_id` values with progress and terminal WebSocket events and SHALL resynchronize from a snapshot after a disconnected or out-of-order event stream. The Runtime view SHALL render a dedicated event-source list from runtime diagnostics. The list SHALL include source state, polling interval, and emitted event types alongside the existing topology and message traces. The view SHALL distinguish these sources from transport and cleanup mechanisms.
+
+#### Scenario: Event-source list is shown
+- **WHEN** runtime diagnostics are available
+- **THEN** the page lists each event-producing worker and its interval and event families
+
+#### Scenario: Event-source state changes
+- **WHEN** a source becomes stopped or degraded
+- **THEN** its displayed state updates on the next diagnostics refresh without changing the topology contract
+
+#### Scenario: No event sources are available
+- **WHEN** diagnostics are unavailable or contain no event sources
+- **THEN** the page shows the existing unavailable/empty state without rendering mechanism timers as sources
 
 #### Scenario: eSIM progress arrives
 - **WHEN** an eSIM operation is accepted by REST and progress events arrive over WebSocket

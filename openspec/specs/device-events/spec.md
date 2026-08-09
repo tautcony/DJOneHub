@@ -48,7 +48,15 @@ The event endpoint SHALL validate the Origin and Host headers during WebSocket u
 
 ### Requirement: Event publishing SHALL be non-blocking and account for drops
 
-The event bus SHALL publish events to all subscribers without ever blocking the publishing call, SHALL count events dropped for a slow subscriber, and SHALL expose cumulative and active-subscriber drop counts through the existing notification-debug diagnostics response so silent loss is diagnosable. Unsubscribing SHALL remove active-subscriber diagnostic state.
+The event bus SHALL publish events to all subscribers without ever blocking the publishing call, SHALL count events dropped for a slow subscriber, and SHALL expose cumulative and active-subscriber drop counts through the existing notification-debug diagnostics response so silent loss is diagnosable. Unsubscribing SHALL remove active-subscriber diagnostic state. Runtime diagnostics SHALL identify every periodic worker that produces domain events. The diagnostics SHALL include the worker interval and event families.
+
+#### Scenario: Event sources are observable
+- **WHEN** the runtime diagnostics endpoint is queried
+- **THEN** device discovery, backend event consumption, SMS refresh, network refresh, traffic sampling, and call monitoring are marked as event sources with their configured interval where applicable and emitted event types
+
+#### Scenario: Mechanism timers are excluded
+- **WHEN** transport keepalive, SSE flush, cleanup, retry, or UI refresh mechanisms run
+- **THEN** they are not reported as periodic domain-event sources
 
 #### Scenario: Slow subscriber
 - **WHEN** a subscriber's buffer is full while a new event is published
@@ -93,4 +101,3 @@ The event endpoint SHALL sanitize every event and snapshot payload of the public
 #### Scenario: Device status is sanitized
 - **WHEN** a REST status or WebSocket snapshot payload is projected through the allowlist
 - **THEN** the `snapshot`, `identity`, `radio`, and `sim` object structure remains present with device identity values intact, while error and reason text is replaced with fallback text
-
