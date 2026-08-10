@@ -3,10 +3,19 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Terminal } from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
-import { CloudDownloadOutlined, CodeOutlined, FolderOpenOutlined, LockOutlined, ReloadOutlined, ThunderboltOutlined } from '@ant-design/icons-vue'
+import {
+  CloudDownloadOutlined,
+  CodeOutlined,
+  FolderOpenOutlined,
+  LockOutlined,
+  ReloadOutlined,
+  ThunderboltOutlined,
+} from '@ant-design/icons-vue'
 import EmptyState from '../components/EmptyState.vue'
 import Panel from '../components/Panel.vue'
+import StatusLight from '../components/StatusLight.vue'
 import type { OperationStatus } from '../types'
+import { confirmDanger } from '../utils/confirm'
 import { useViewContext } from './context'
 
 const { t } = useI18n()
@@ -67,7 +76,9 @@ const modeColor = computed(() => {
 })
 type ADBDeviceStatus = { serial: string; state: string; online: boolean }
 const adbDevices = computed<ADBDeviceStatus[]>(() => firmware.value?.adb.devices || [])
-const selectedADBDevice = computed(() => adbDevices.value.find((item) => item.serial === selectedADBSerial.value))
+const selectedADBDevice = computed(() =>
+  adbDevices.value.find((item) => item.serial === selectedADBSerial.value),
+)
 const selectedADBOnline = computed(() => selectedADBDevice.value?.online === true)
 const adbConfigLabel = computed(() => {
   if (firmware.value?.adb.enabled_known) {
@@ -242,11 +253,17 @@ watch(
 )
 
 watch(vid, (value) => {
-  const normalized = value.toUpperCase().replace(/[^0-9A-F]/g, '').slice(0, 4)
+  const normalized = value
+    .toUpperCase()
+    .replace(/[^0-9A-F]/g, '')
+    .slice(0, 4)
   if (value !== normalized) vid.value = normalized
 })
 watch(pid, (value) => {
-  const normalized = value.toUpperCase().replace(/[^0-9A-F]/g, '').slice(0, 4)
+  const normalized = value
+    .toUpperCase()
+    .replace(/[^0-9A-F]/g, '')
+    .slice(0, 4)
   if (value !== normalized) pid.value = normalized
 })
 
@@ -274,14 +291,24 @@ async function chooseEDLDirectory() {
   if (directory) edlPath.value = directory
 }
 
-function enterEDL() {
+async function enterEDL() {
   if (!selectedADBOnline.value || busy.value) return
-  if (window.confirm(t('firmware.mode.edlConfirm'))) void runFirmwareAction('edl', selectedADBSerial.value)
+  const confirmed = await confirmDanger({
+    title: t('firmware.mode.edlConfirm'),
+    confirmLabel: t('common.confirm'),
+    cancelLabel: t('common.cancel'),
+  })
+  if (confirmed) await runFirmwareAction('edl', selectedADBSerial.value)
 }
 
-function toggleADBMode(action: 'enable' | 'disable') {
+async function toggleADBMode(action: 'enable' | 'disable') {
   if (busy.value) return
-  if (window.confirm(t('firmware.mode.adbModeConfirm'))) void runFirmwareAction(action)
+  const confirmed = await confirmDanger({
+    title: t('firmware.mode.adbModeConfirm'),
+    confirmLabel: t('common.confirm'),
+    cancelLabel: t('common.cancel'),
+  })
+  if (confirmed) await runFirmwareAction(action)
 }
 
 async function openShell() {
@@ -374,13 +401,16 @@ function chooseUSBID(nextVID: string, nextPID: string) {
   pid.value = nextPID
 }
 
-function updateUSBID() {
+async function updateUSBID() {
   if (!vid.value.trim() || !pid.value.trim() || busy.value) return
   const nextVID = vid.value.trim().toUpperCase()
   const nextPID = pid.value.trim().toUpperCase()
-  if (window.confirm(t('firmware.usbIDConfirm', { vid: nextVID, pid: nextPID }))) {
-    void updateFirmwareUSBID(nextVID, nextPID)
-  }
+  const confirmed = await confirmDanger({
+    title: t('firmware.usbIDConfirm', { vid: nextVID, pid: nextPID }),
+    confirmLabel: t('common.confirm'),
+    cancelLabel: t('common.cancel'),
+  })
+  if (confirmed) await updateFirmwareUSBID(nextVID, nextPID)
 }
 
 window.addEventListener('resize', resizeShellTerminal)
@@ -404,13 +434,29 @@ onBeforeUnmount(() => {
           </a-button>
         </div>
       </template>
-      <EmptyState v-if="!firmware" :title="t('firmware.unavailable')" :detail="t('firmware.unavailableDetail')" />
+      <EmptyState
+        v-if="!firmware"
+        :title="t('firmware.unavailable')"
+        :detail="t('firmware.unavailableDetail')"
+      />
       <div v-else class="firmware-status-grid">
         <dl class="firmware-fields">
-          <div><dt>{{ t('firmware.manufacturer') }}</dt><dd>{{ firmware.manufacturer || t('common.empty') }}</dd></div>
-          <div><dt>{{ t('firmware.model') }}</dt><dd>{{ firmware.model || t('common.empty') }}</dd></div>
-          <div><dt>{{ t('firmware.version') }}</dt><dd>{{ firmware.firmware || t('common.empty') }}</dd></div>
-          <div><dt>{{ t('firmware.usbId') }}</dt><dd class="mono">{{ firmware.usb_id || t('common.empty') }}</dd></div>
+          <div>
+            <dt>{{ t('firmware.manufacturer') }}</dt>
+            <dd>{{ firmware.manufacturer || t('common.empty') }}</dd>
+          </div>
+          <div>
+            <dt>{{ t('firmware.model') }}</dt>
+            <dd>{{ firmware.model || t('common.empty') }}</dd>
+          </div>
+          <div>
+            <dt>{{ t('firmware.version') }}</dt>
+            <dd>{{ firmware.firmware || t('common.empty') }}</dd>
+          </div>
+          <div>
+            <dt>{{ t('firmware.usbId') }}</dt>
+            <dd class="mono">{{ firmware.usb_id || t('common.empty') }}</dd>
+          </div>
         </dl>
         <div v-if="usbConfigFields.length" class="firmware-usb-config">
           <div class="firmware-usb-config-heading">
@@ -418,9 +464,16 @@ onBeforeUnmount(() => {
             <small>{{ t('firmware.usbConfigLegend') }}</small>
           </div>
           <div class="firmware-usb-config-strip" role="list">
-            <a-tooltip v-for="field in usbConfigFields" :key="field.key" :title="usbConfigTooltip(field.key, field.value)">
+            <a-tooltip
+              v-for="field in usbConfigFields"
+              :key="field.key"
+              :title="usbConfigTooltip(field.key, field.value)"
+            >
               <span
-                :class="['firmware-usb-config-item', field.value === '1' ? 'enabled' : field.value === '0' ? 'disabled' : 'unknown']"
+                :class="[
+                  'firmware-usb-config-item',
+                  field.value === '1' ? 'enabled' : field.value === '0' ? 'disabled' : 'unknown',
+                ]"
                 role="listitem"
                 tabindex="0"
               >
@@ -438,21 +491,21 @@ onBeforeUnmount(() => {
       <Panel :eyebrow="t('firmware.adbEyebrow')" :title="t('firmware.adbTitle')">
         <div class="firmware-adb-summary">
           <div class="firmware-adb-status">
-            <span :class="['status-dot', { live: firmware?.adb.enabled }]" />
+            <StatusLight :tone="firmware?.adb.enabled ? 'success' : 'neutral'" />
             <div class="firmware-adb-status-copy">
               <span>{{ t('firmware.adb.usbComposition') }}</span>
               <strong>{{ adbConfigLabel }}</strong>
             </div>
           </div>
           <div class="firmware-adb-status">
-            <span :class="['status-dot', { live: firmware?.adb.server_available }]" />
+            <StatusLight :tone="firmware?.adb.server_available ? 'success' : 'neutral'" />
             <div class="firmware-adb-status-copy">
               <span>{{ t('firmware.adb.adbClient') }}</span>
               <strong>{{ adbClientLabel }}</strong>
             </div>
           </div>
           <div class="firmware-adb-status">
-            <span :class="['status-dot', { live: adbDevices.some((item) => item.online) }]" />
+            <StatusLight :tone="adbDevices.some((item) => item.online) ? 'success' : 'neutral'" />
             <div class="firmware-adb-status-copy">
               <span>{{ t('firmware.adb.adbDevice') }}</span>
               <strong>{{ adbAccessibleLabel }}</strong>
@@ -478,7 +531,11 @@ onBeforeUnmount(() => {
           <div class="firmware-adb-command-source">{{ adbCommandSourceLabel }}</div>
         </div>
         <div class="firmware-adb-device-controls">
-          <a-select v-model:value="selectedADBSerial" :disabled="busy || !adbDevices.length" :placeholder="t('firmware.adb.selectDevice')">
+          <a-select
+            v-model:value="selectedADBSerial"
+            :disabled="busy || !adbDevices.length"
+            :placeholder="t('firmware.adb.selectDevice')"
+          >
             <a-select-option v-for="item in adbDevices" :key="item.serial" :value="item.serial">
               {{ item.serial }} · {{ item.state }}
             </a-select-option>
@@ -491,23 +548,48 @@ onBeforeUnmount(() => {
           </a-button>
         </div>
         <div class="panel-actions firmware-actions">
-          <a-button type="primary" :loading="busy" :disabled="!device.has('raw_at') || busy" @click="runFirmwareAction('unlock')">
+          <a-button
+            type="primary"
+            :loading="busy"
+            :disabled="!device.has('raw_at') || busy"
+            @click="runFirmwareAction('unlock')"
+          >
             <LockOutlined />{{ t('firmware.unlock') }}
           </a-button>
-          <a-button :loading="busy" :disabled="!device.has('raw_at') || busy" @click="toggleADBMode('enable')">
+          <a-button
+            :loading="busy"
+            :disabled="!device.has('raw_at') || busy"
+            @click="toggleADBMode('enable')"
+          >
             {{ t('firmware.enableADB') }}
           </a-button>
-          <a-button danger :loading="busy" :disabled="!device.has('raw_at') || busy" @click="toggleADBMode('disable')">
+          <a-button
+            danger
+            :loading="busy"
+            :disabled="!device.has('raw_at') || busy"
+            @click="toggleADBMode('disable')"
+          >
             {{ t('firmware.disableADB') }}
           </a-button>
         </div>
       </Panel>
 
       <Panel :eyebrow="t('firmware.backupEyebrow')" :title="t('firmware.backupTitle')">
-        <a-alert v-if="firmware && !firmware.backup.available && !edlPath.trim()" type="warning" show-icon :message="t('firmware.edlUnavailable')" />
+        <a-alert
+          v-if="firmware && !firmware.backup.available && !edlPath.trim()"
+          type="warning"
+          show-icon
+          :message="t('firmware.edlUnavailable')"
+        />
         <a-form layout="vertical" class="form firmware-form" @submit.prevent="startBackup">
           <a-form-item :label="t('firmware.edlPath')">
-            <a-input v-model:value="edlPath" readonly allow-clear :placeholder="t('firmware.edlPathPlaceholder')" :disabled="busy">
+            <a-input
+              v-model:value="edlPath"
+              readonly
+              allow-clear
+              :placeholder="t('firmware.edlPathPlaceholder')"
+              :disabled="busy"
+            >
               <template #suffix>
                 <a-tooltip :title="t('firmware.selectEDLDirectory')">
                   <button
@@ -535,7 +617,12 @@ onBeforeUnmount(() => {
             />
           </a-form-item>
           <a-form-item :label="t('firmware.outputDirectory')">
-            <a-input :value="backupDirectory" readonly :placeholder="t('firmware.outputDirectoryPlaceholder')" :disabled="busy">
+            <a-input
+              :value="backupDirectory"
+              readonly
+              :placeholder="t('firmware.outputDirectoryPlaceholder')"
+              :disabled="busy"
+            >
               <template #suffix>
                 <a-tooltip :title="t('firmware.selectDirectory')">
                   <button
@@ -554,7 +641,12 @@ onBeforeUnmount(() => {
           <a-form-item :label="t('firmware.outputFile')">
             <a-input :value="backupFileName" readonly />
           </a-form-item>
-          <a-button type="primary" html-type="submit" :loading="busy" :disabled="!edlAvailable || !backupDirectory.trim()">
+          <a-button
+            type="primary"
+            html-type="submit"
+            :loading="busy"
+            :disabled="!edlAvailable || !backupDirectory.trim()"
+          >
             <CloudDownloadOutlined />{{ t('firmware.startBackup') }}
           </a-button>
         </a-form>
@@ -562,11 +654,27 @@ onBeforeUnmount(() => {
 
       <Panel :eyebrow="t('firmware.usbIDEyebrow')" :title="t('firmware.usbIDTitle')">
         <div class="firmware-usb-presets">
-          <button type="button" :class="['firmware-preset', { active: vid.toUpperCase() === '2CA3' && pid.toUpperCase() === '4006' }]" @click="chooseUSBID('2CA3', '4006')">
-            <strong>{{ t('firmware.djiMode') }}</strong><span>2CA3:4006</span>
+          <button
+            type="button"
+            :class="[
+              'firmware-preset',
+              { active: vid.toUpperCase() === '2CA3' && pid.toUpperCase() === '4006' },
+            ]"
+            @click="chooseUSBID('2CA3', '4006')"
+          >
+            <strong>{{ t('firmware.djiMode') }}</strong
+            ><span>2CA3:4006</span>
           </button>
-          <button type="button" :class="['firmware-preset', { active: vid.toUpperCase() === '2C7C' && pid.toUpperCase() === '0125' }]" @click="chooseUSBID('2C7C', '0125')">
-            <strong>{{ t('firmware.ec25Mode') }}</strong><span>2C7C:0125</span>
+          <button
+            type="button"
+            :class="[
+              'firmware-preset',
+              { active: vid.toUpperCase() === '2C7C' && pid.toUpperCase() === '0125' },
+            ]"
+            @click="chooseUSBID('2C7C', '0125')"
+          >
+            <strong>{{ t('firmware.ec25Mode') }}</strong
+            ><span>2C7C:0125</span>
           </button>
         </div>
         <a-form layout="vertical" class="form firmware-form" @submit.prevent="updateUSBID">
@@ -581,20 +689,54 @@ onBeforeUnmount(() => {
       </Panel>
     </div>
 
-    <a-modal v-model:open="firmwareOperationModalOpen" :title="t('firmware.operationTitle')" :width="760" destroy-on-close @ok="closeOperationModal">
+    <a-modal
+      v-model:open="firmwareOperationModalOpen"
+      :title="t('firmware.operationTitle')"
+      :width="760"
+      destroy-on-close
+      @ok="closeOperationModal"
+    >
       <div class="firmware-operation">
-        <div v-if="firmwareOperationSnapshot" class="firmware-operation-heading"><strong>{{ firmwareOperationSnapshot.message || t('firmware.operationWaiting') }}</strong><span>{{ firmwareOperationSnapshot.progress }}%</span></div>
-        <a-progress v-if="firmwareOperationSnapshot" :percent="firmwareOperationSnapshot.progress" :status="firmwareOperationSnapshot.state === 'failed' ? 'exception' : firmwareOperationSnapshot.state === 'succeeded' ? 'success' : 'active'" :show-info="false" />
+        <div v-if="firmwareOperationSnapshot" class="firmware-operation-heading">
+          <strong>{{ firmwareOperationSnapshot.message || t('firmware.operationWaiting') }}</strong
+          ><span>{{ firmwareOperationSnapshot.progress }}%</span>
+        </div>
+        <a-progress
+          v-if="firmwareOperationSnapshot"
+          :percent="firmwareOperationSnapshot.progress"
+          :status="
+            firmwareOperationSnapshot.state === 'failed'
+              ? 'exception'
+              : firmwareOperationSnapshot.state === 'succeeded'
+                ? 'success'
+                : 'active'
+          "
+          :show-info="false"
+        />
         <div ref="operationTerminalElement" class="firmware-operation-terminal" />
-        <a-alert v-if="firmwareOperationSnapshot?.error" type="error" show-icon :message="firmwareOperationSnapshot.error.message" />
+        <a-alert
+          v-if="firmwareOperationSnapshot?.error"
+          type="error"
+          show-icon
+          :message="firmwareOperationSnapshot.error.message"
+        />
       </div>
     </a-modal>
 
-    <a-modal v-model:open="shellOpen" :title="t('firmware.adb.shellTitle')" :footer="null" :width="840" destroy-on-close @cancel="closeShell">
+    <a-modal
+      v-model:open="shellOpen"
+      :title="t('firmware.adb.shellTitle')"
+      :footer="null"
+      :width="840"
+      destroy-on-close
+      @cancel="closeShell"
+    >
       <div class="firmware-shell">
         <div class="firmware-shell-status">
-          <span :class="['status-dot', { live: shellConnected }]" />
-          <span>{{ shellConnected ? t('firmware.adb.shellConnected') : t('firmware.adb.shellConnecting') }}</span>
+          <StatusLight :tone="shellConnected ? 'success' : 'info'" :pulse="!shellConnected" />
+          <span>{{
+            shellConnected ? t('firmware.adb.shellConnected') : t('firmware.adb.shellConnecting')
+          }}</span>
         </div>
         <div ref="shellTerminalElement" class="firmware-shell-terminal" @click="focusShellTerminal" />
       </div>

@@ -33,16 +33,13 @@ const {
       ><LoadingState v-if="!loadedViews.network" /><template v-else
         ><div class="detail-list">
           <FieldRow :label="t('network.usbMode')" :value="usbNetworkModeLabel(network?.mode)" /><FieldRow
-			:label="t('network.radioMode')"
-			:value="network?.network_mode"
-		  /><FieldRow
-			:label="t('network.band')"
-			:value="network?.radio_band"
-			monospace
-		  /><FieldRow :label="t('network.interface')" :value="network?.interface" monospace /><FieldRow
-            :label="t('network.defaultRoute')"
-            :value="network?.default_route"
-          /><FieldRow
+            :label="t('network.radioMode')"
+            :value="network?.network_mode"
+          /><FieldRow :label="t('network.band')" :value="network?.radio_band" monospace /><FieldRow
+            :label="t('network.interface')"
+            :value="network?.interface"
+            monospace
+          /><FieldRow :label="t('network.defaultRoute')" :value="network?.default_route" /><FieldRow
             :label="t('network.systemDefaultRoute')"
             :value="network?.system_default_route"
           /><FieldRow
@@ -55,7 +52,10 @@ const {
           /><FieldRow
             :label="t('network.currentDownload')"
             :value="`${formatBytes(networkTraffic.rxRate)}/s`"
-          /><FieldRow :label="t('network.currentUpload')" :value="`${formatBytes(networkTraffic.txRate)}/s`" />
+          /><FieldRow
+            :label="t('network.currentUpload')"
+            :value="`${formatBytes(networkTraffic.txRate)}/s`"
+          />
         </div>
         <div class="panel-actions network-actions">
           <a-button :disabled="!device.has('network_status')" @click="checkNetwork"

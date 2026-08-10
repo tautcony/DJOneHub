@@ -14,7 +14,7 @@ const activeTab = ref('appearance')
 <template>
   <section>
     <Panel class="settings-panel" :eyebrow="t('settings.eyebrow')" :title="t('settings.title')">
-      <a-tabs v-model:activeKey="activeTab" class="settings-tabs">
+      <a-tabs v-model:active-key="activeTab" class="settings-tabs">
         <a-tab-pane key="appearance" :tab="t('settings.tab.appearance')">
           <AppearanceSettings />
         </a-tab-pane>

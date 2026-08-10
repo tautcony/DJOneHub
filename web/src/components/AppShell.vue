@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ref, watch } from 'vue'
 import type { Component } from 'vue'
 import {
   ApiOutlined,
@@ -8,7 +9,6 @@ import {
   CodeOutlined,
   CreditCardOutlined,
   DashboardOutlined,
-  DownOutlined,
   GlobalOutlined,
   MailOutlined,
   MenuOutlined,
@@ -16,7 +16,6 @@ import {
   ReloadOutlined,
   SettingOutlined,
   DeploymentUnitOutlined,
-  UpOutlined,
   WifiOutlined,
 } from '@ant-design/icons-vue'
 
@@ -44,15 +43,35 @@ const props = defineProps<{
   menuLabel: string
   closeLabel: string
   mobileOpen: boolean
-  mobileExpanded: Record<string, boolean>
 }>()
 
 const emit = defineEmits<{
   'select-view': [id: string]
   'toggle-mobile': []
-  'toggle-group': [id: string]
   rescan: []
 }>()
+
+const openKeys = ref<string[]>(props.navGroups.map((group) => group.id))
+
+watch(
+  () => props.navGroups,
+  (groups) => {
+    const available = new Set(groups.map((group) => group.id))
+    openKeys.value = openKeys.value.filter((key) => available.has(key))
+  },
+)
+
+watch(
+  () => props.active,
+  (active) => {
+    const group = props.navGroups.find((item) => item.items.some((item) => item.id === active))
+    if (group && !openKeys.value.includes(group.id)) openKeys.value = [...openKeys.value, group.id]
+  },
+)
+
+function handleOpenChange(keys: string[]) {
+  openKeys.value = keys
+}
 
 const iconMap: Record<string, Component> = {
   overview: DashboardOutlined,
@@ -88,32 +107,22 @@ function navIcon(id: string) {
         </div>
       </div>
 
-      <a-menu id="primary-nav" class="nav-menu" mode="inline" theme="dark" :selected-keys="[props.active]">
-        <a-menu-item-group v-for="group in props.navGroups" :key="group.id">
-          <template #title>
-            <button
-              class="menu-group-title"
-              type="button"
-              :aria-label="group.label"
-              @click.stop="emit('toggle-group', group.id)"
-            >
-              <span>{{ group.label }}</span>
-              <span class="mobile-nav-chevron" aria-hidden="true">
-                <UpOutlined v-if="props.mobileExpanded[group.id]" />
-                <DownOutlined v-else />
-              </span>
-            </button>
-          </template>
-          <a-menu-item
-            v-for="item in group.items"
-            v-if="props.mobileExpanded[group.id]"
-            :key="item.id"
-            @click="emit('select-view', item.id)"
-          >
+      <a-menu
+        id="primary-nav"
+        class="nav-menu"
+        mode="inline"
+        theme="dark"
+        :selected-keys="[props.active]"
+        :open-keys="openKeys"
+        @open-change="handleOpenChange"
+      >
+        <a-sub-menu v-for="group in props.navGroups" :key="group.id">
+          <template #title>{{ group.label }}</template>
+          <a-menu-item v-for="item in group.items" :key="item.id" @click="emit('select-view', item.id)">
             <template #icon><component :is="navIcon(item.id)" /></template>
             <span>{{ item.label }}</span>
           </a-menu-item>
-        </a-menu-item-group>
+        </a-sub-menu>
       </a-menu>
 
       <div class="sidebar-footer">
@@ -141,9 +150,10 @@ function navIcon(id: string) {
     />
 
     <a-layout-content class="main-content">
-      <button
+      <a-button
+        type="text"
+        shape="circle"
         class="mobile-menu-toggle mobile-menu-toggle-main"
-        type="button"
         :aria-label="props.mobileOpen ? props.closeLabel : props.menuLabel"
         aria-controls="primary-nav"
         :aria-expanded="props.mobileOpen"
@@ -151,7 +161,7 @@ function navIcon(id: string) {
       >
         <CloseOutlined v-if="props.mobileOpen" aria-hidden="true" />
         <MenuOutlined v-else aria-hidden="true" />
-      </button>
+      </a-button>
       <slot />
     </a-layout-content>
   </a-layout>

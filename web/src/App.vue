@@ -3,7 +3,8 @@ import { computed, h, onBeforeUnmount, onMounted, provide, ref, watch } from 'vu
 import { storeToRefs } from 'pinia'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
-import { notification } from 'ant-design-vue'
+import { notification, theme as antTheme } from 'ant-design-vue'
+import type { ThemeConfig } from 'ant-design-vue/es/config-provider/context'
 import { EditOutlined, ReloadOutlined } from '@ant-design/icons-vue'
 import { api } from './services/api'
 import { APIError } from './services/api'
@@ -15,6 +16,7 @@ import { useNetworkStore } from './stores/network'
 import { useSmsStore } from './stores/sms'
 import { useSimProfilesStore } from './stores/simprofiles'
 import { useVowifiStore } from './stores/vowifi'
+import { useAppearanceStore } from './stores/appearance'
 import type {
   CallStatus,
   FirmwareStatus,
@@ -32,8 +34,8 @@ import AppShell, { type ShellNavGroup } from './components/AppShell.vue'
 import PageHeader from './components/PageHeader.vue'
 import { viewContextKey } from './views/context'
 import { viewFromRoute, viewPaths, type ViewID } from './router'
-
-type NavGroupID = 'main' | 'voice' | 'tools'
+import { filterNavigationGroups } from './navigation'
+import { confirmDanger } from './utils/confirm'
 
 const VIEW_REFRESH_MIN_INTERVAL_MS = 500
 const OVERVIEW_REFRESH_MIN_INTERVAL_MS = 2000
@@ -49,6 +51,8 @@ const ACTIVE_VIEW_FALLBACK_INTERVALS: Partial<Record<ViewID, number>> = {
 }
 
 const device = useDeviceStore()
+const appearance = useAppearanceStore()
+appearance.initialize()
 const { t, te, locale } = useI18n()
 const route = useRoute()
 const router = useRouter()
@@ -189,16 +193,16 @@ const notificationChannelTesting = ref<string | null>(null)
 const sensitiveStorageKey = 'djonehub.show-sensitive'
 const showSensitive = ref(localStorage.getItem(sensitiveStorageKey) === '1')
 const mobileNavOpen = ref(false)
-const mobileNavExpanded = ref<Record<NavGroupID, boolean>>({ main: true, voice: true, tools: true })
 const showNotificationDebug = computed(() => notificationPreferences.value?.show_debug !== false)
 
-const navGroups = computed<ShellNavGroup[]>(() => [
+const allNavGroups = computed<ShellNavGroup[]>(() => [
   {
     id: 'main',
     label: t('nav.groups.main'),
     items: [
       { id: 'overview', label: t('nav.overview') },
       { id: 'sms', label: t('nav.sms'), capability: 'sms_read' },
+      { id: 'sim-profiles', label: t('nav.simProfiles') },
       { id: 'esim', label: t('nav.esim'), capability: 'esim' },
       { id: 'network', label: t('nav.network'), capability: 'network_status' },
     ],
@@ -218,15 +222,25 @@ const navGroups = computed<ShellNavGroup[]>(() => [
       { id: 'raw-at', label: t('nav.rawAt'), capability: 'raw_at' },
       { id: 'firmware', label: t('nav.firmware'), capability: 'raw_at' },
       ...(showNotificationDebug.value ? [{ id: 'notifications', label: t('nav.notifications') }] : []),
-      { id: 'sim-profiles', label: t('nav.simProfiles') },
       { id: 'runtime', label: t('nav.runtime') },
       { id: 'settings', label: t('nav.settings') },
     ],
   },
 ])
+const navGroups = computed(() =>
+  device.snapshot?.state === 'ready' && !device.error
+    ? filterNavigationGroups(allNavGroups.value, device.capabilities)
+    : allNavGroups.value,
+)
 const nav = computed(() => navGroups.value.flatMap((group) => group.items))
-// 导航项常驻显示: 能力缺失交由各视图内部处理 (device.has 门控、RawAt 的
-// "不可用" 提示等), 不在导航层按能力快照隐藏, 避免设备未就绪时菜单塌缩。
+const allNav = computed(() => allNavGroups.value.flatMap((group) => group.items))
+const themeConfig = computed<ThemeConfig>(() => ({
+  algorithm: appearance.resolved === 'dark' ? antTheme.darkAlgorithm : antTheme.defaultAlgorithm,
+  token: {
+    colorPrimary: '#1677ff',
+    borderRadius: 6,
+  },
+}))
 const stateValue = computed(() => device.snapshot?.state || 'offline')
 const effectiveStateValue = computed(() => (device.error ? 'offline' : stateValue.value))
 watch(effectiveStateValue, (state) => {
@@ -247,7 +261,7 @@ const sidebarDeviceLabel = computed(() =>
     : t('status.deviceStates.offline'),
 )
 const activeLabel = computed(
-  () => nav.value.find((item) => item.id === active.value)?.label || t('nav.overview'),
+  () => allNav.value.find((item) => item.id === active.value)?.label || t('nav.overview'),
 )
 const activeDescription = computed(() => t(`header.descriptions.${active.value}`))
 const deviceCapabilities = computed(() => (effectiveStateValue.value === 'ready' ? device.capabilities : {}))
@@ -368,12 +382,6 @@ watch(viewError, (message) => {
 
 function markViewLoaded(view: ViewID) {
   loadedViews.value[view] = true
-}
-
-function toggleMobileGroup(group: string) {
-  if (!(group in mobileNavExpanded.value)) return
-  const key = group as NavGroupID
-  mobileNavExpanded.value[key] = !mobileNavExpanded.value[key]
 }
 
 function applyATPreset() {
@@ -1202,8 +1210,6 @@ async function loadView(view: ViewID) {
 
 function selectView(view: string) {
   if (!nav.value.some((item) => item.id === view)) return
-  const group = navGroups.value.find((item) => item.items.some((item) => item.id === view))
-  if (group) mobileNavExpanded.value[group.id as NavGroupID] = true
   mobileNavOpen.value = false
   const nextView = view as ViewID
   if (active.value === nextView) {
@@ -1217,6 +1223,14 @@ function selectView(view: string) {
 watch(active, (view) => {
   syncActiveRefreshers()
   void loadView(view)
+})
+
+watch([active, nav, () => device.status], ([view, visibleNav, status]) => {
+  if (!status) return
+  const item = allNav.value.find((candidate) => candidate.id === view)
+  if (item?.capability && !visibleNav.some((candidate) => candidate.id === view)) {
+    void router.replace(viewPaths.overview)
+  }
 })
 
 watch(
@@ -1264,7 +1278,12 @@ async function rescan() {
 
 async function rebootModule() {
   if (!device.has('device_control')) return
-  if (!window.confirm(t('network.rebootConfirm'))) return
+  const confirmed = await confirmDanger({
+    title: t('network.rebootConfirm'),
+    confirmLabel: t('common.confirm'),
+    cancelLabel: t('common.cancel'),
+  })
+  if (!confirmed) return
   notifyInfo(t('network.rebooting'))
   try {
     await networkStore.reboot()
@@ -1502,32 +1521,32 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <AppShell
-    :nav-groups="navGroups"
-    :active="active"
-    :connected="device.connected"
-    :connection-label="device.connected ? t('status.linkReady') : t('status.linkReconnecting')"
-    :device-ready="effectiveStateValue === 'ready'"
-    :device-label="sidebarDeviceLabel"
-    :rescan-label="t('common.rescan')"
-    :primary-label="t('nav.primary')"
-    :menu-label="t('nav.menu')"
-    :close-label="t('nav.close')"
-    :mobile-open="mobileNavOpen"
-    :mobile-expanded="mobileNavExpanded"
-    @select-view="selectView"
-    @toggle-mobile="mobileNavOpen = !mobileNavOpen"
-    @toggle-group="toggleMobileGroup"
-    @rescan="rescan"
-  >
-    <PageHeader :eyebrow="t('header.controlPlane')" :title="activeLabel" :subtitle="activeDescription">
-      <template v-if="active === 'sms'" #actions>
-        <a-button @click="refreshSMS"><ReloadOutlined />{{ t('common.refresh') }}</a-button>
-        <a-button type="primary" :disabled="!device.has('sms_send')" @click="startNewSMS">
-          <EditOutlined />{{ t('sms.newMessage') }}
-        </a-button>
-      </template>
-    </PageHeader>
-    <RouterView />
-  </AppShell>
+  <a-config-provider :theme="themeConfig">
+    <AppShell
+      :nav-groups="navGroups"
+      :active="active"
+      :connected="device.connected"
+      :connection-label="device.connected ? t('status.linkReady') : t('status.linkReconnecting')"
+      :device-ready="effectiveStateValue === 'ready'"
+      :device-label="sidebarDeviceLabel"
+      :rescan-label="t('common.rescan')"
+      :primary-label="t('nav.primary')"
+      :menu-label="t('nav.menu')"
+      :close-label="t('nav.close')"
+      :mobile-open="mobileNavOpen"
+      @select-view="selectView"
+      @toggle-mobile="mobileNavOpen = !mobileNavOpen"
+      @rescan="rescan"
+    >
+      <PageHeader :title="activeLabel" :subtitle="activeDescription">
+        <template v-if="active === 'sms'" #actions>
+          <a-button @click="refreshSMS"><ReloadOutlined />{{ t('common.refresh') }}</a-button>
+          <a-button type="primary" :disabled="!device.has('sms_send')" @click="startNewSMS">
+            <EditOutlined />{{ t('sms.newMessage') }}
+          </a-button>
+        </template>
+      </PageHeader>
+      <RouterView />
+    </AppShell>
+  </a-config-provider>
 </template>

@@ -10,6 +10,8 @@
 
 `web/src/router.ts` maps a `ViewID` to a browser path and a lazy-loaded view. `web/src/App.vue` decides which navigation entries are visible.
 
+`web/src/navigation.ts` filters capability-gated navigation groups before the shell renders them. `web/src/stores/appearance.ts` owns the light, dark, and system appearance preference.
+
 The server capability snapshot controls navigation and controls. Do not use a browser OS check to select a modem feature.
 
 Use this read order when a page is missing or cannot open:
@@ -29,6 +31,7 @@ Use this read order when a page is missing or cannot open:
 | `web/src/stores/` | Domain state | Device, SMS, eSIM, network, SIM profile, and VoWiFi state |
 | `web/src/views/` | Feature UI | Feature-specific pages and settings sections |
 | `web/src/components/` | Shared UI | Shell, status, panel, loading, and operation components |
+| `web/src/navigation.ts` | Navigation rules | Capability-gated navigation filtering |
 | `web/src/types.ts` | API types | Shared frontend models |
 | `web/src/i18n.ts` | Text resources | Chinese and English UI text |
 | `web/src/utils/` | UI helpers | Date, format, and SIM-profile helpers |
@@ -70,10 +73,14 @@ Run these commands after frontend changes:
 ```sh
 npm --prefix web run typecheck
 npm --prefix web run lint
+npm --prefix web run format:check
+npm --prefix web run test
 npm --prefix web run build
 ```
 
-There is no committed frontend unit-test suite at this time. Add a focused test suite when a change adds testable frontend logic that is not already covered by a Go contract test.
+Focused frontend tests are under `web/src/**/*.test.ts`. Keep pure capability and appearance logic covered without requiring a device or a backend.
+
+The GitHub workflow `.github/workflows/frontend.yml` runs the frontend checks on push and pull request.
 
 ## Frontend Fault Checks
 

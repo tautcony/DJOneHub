@@ -63,6 +63,14 @@ export interface SMSStorageUsage {
   total: number
 }
 
+export interface SmsThread {
+  key: string
+  peer: string
+  iccid: string
+  items: SMSMessage[]
+  latest?: SMSMessage
+}
+
 export interface EsimOverview {
   card_type?: 'physical_sim' | 'euicc' | 'unknown'
   eid?: string

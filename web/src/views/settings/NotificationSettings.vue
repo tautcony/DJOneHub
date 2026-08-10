@@ -26,8 +26,7 @@ const {
       </div>
       <a-tag
         :color="
-          notificationPermissions?.state === 'authorized' ||
-          notificationPermissions?.state === 'provisional'
+          notificationPermissions?.state === 'authorized' || notificationPermissions?.state === 'provisional'
             ? 'green'
             : notificationPermissions?.state === 'denied'
               ? 'red'

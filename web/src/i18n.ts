@@ -36,6 +36,13 @@ const messages = {
         channels: 'Channels',
       },
       appearance: 'Appearance',
+      appearanceMode: 'Color mode',
+      appearanceDetail: 'Use a light theme, a dark theme, or the current system preference.',
+      appearanceModes: {
+        light: 'Light',
+        dark: 'Dark',
+        system: 'System',
+      },
       languageDetail: 'Choose the language used by the management interface.',
       saved: 'Settings saved.',
       showSensitive: 'Show sensitive identifiers',
@@ -269,7 +276,6 @@ const messages = {
       unableReject: 'Unable to reject the call',
     },
     header: {
-      controlPlane: 'LOCAL CONTROL PLANE',
       descriptions: {
         overview: 'Device status',
         calls: 'Call history and controls',
@@ -1087,7 +1093,7 @@ const messages = {
       calls: '通话',
       sms: '消息',
       esim: 'eSIM',
-      simProfiles: 'SIM 卡信息管理',
+      simProfiles: 'SIM 卡档案',
       network: '网络',
       rawAt: 'AT 调试',
       firmware: '固件管理',
@@ -1107,6 +1113,13 @@ const messages = {
         channels: '通知渠道',
       },
       appearance: '外观',
+      appearanceMode: '颜色模式',
+      appearanceDetail: '使用浅色、深色或当前系统外观。',
+      appearanceModes: {
+        light: '浅色',
+        dark: '深色',
+        system: '跟随系统',
+      },
       languageDetail: '选择管理界面使用的语言。',
       saved: '设置已保存。',
       showSensitive: '显示敏感标识',
@@ -1337,7 +1350,6 @@ const messages = {
       unableReject: '无法拒接来电',
     },
     header: {
-      controlPlane: '本地控制面',
       descriptions: {
         overview: '设备状态',
         calls: '通话记录与控制',
@@ -1583,7 +1595,7 @@ const messages = {
       unableRename: '无法重命名 Profile',
       profileSaved: 'eUICC Profile 名称已保存',
       localMetadata: '本地信息',
-      metadataManagedHint: '本地名称、号码、备注和标签请在 SIM 卡信息管理中编辑。',
+      metadataManagedHint: '本地名称、号码、备注和标签请在 SIM 卡档案中编辑。',
       unableMetadata: '无法加载 SIM Profile 本地信息',
       unableDelete: '无法删除 Profile',
       unableDisable: '无法停用 Profile',
@@ -1639,7 +1651,7 @@ const messages = {
     simProfiles: {
       eyebrow: 'SIM PROFILE',
       cardEyebrow: 'SIM PROFILE',
-      title: 'SIM 卡信息管理',
+      title: 'SIM 卡档案',
       profiles: '个 Profile',
       add: '添加 Profile',
       addTitle: '添加 SIM Profile',

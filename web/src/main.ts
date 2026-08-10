@@ -4,6 +4,7 @@ import {
   Alert,
   Button,
   Card,
+  ConfigProvider,
   Descriptions,
   Drawer,
   Empty,
@@ -32,6 +33,7 @@ import {
 import App from './App.vue'
 import { i18n } from './i18n'
 import { router } from './router'
+import { initialResolvedAppearance } from './stores/appearance'
 import 'ant-design-vue/dist/reset.css'
 import './style.css'
 
@@ -44,6 +46,7 @@ const antdComponents = [
   Alert,
   Button,
   Card,
+  ConfigProvider,
   Descriptions,
   Drawer,
   Empty,
@@ -69,6 +72,10 @@ const antdComponents = [
   Tag,
   Tooltip,
 ]
+
+const initialAppearance = initialResolvedAppearance()
+document.documentElement.dataset.theme = initialAppearance
+document.documentElement.style.colorScheme = initialAppearance
 
 const app = createApp(App)
 app.use(createPinia())

@@ -17,8 +17,8 @@ import type {
   NotificationPermissionStatus,
   NotificationPreferences,
   OperationStatus,
-  SMSMessage,
   SMSStorageUsage,
+  SmsThread,
   StartupStatus,
   VowifiStatus,
 } from '../types'
@@ -238,14 +238,6 @@ export type ViewContext = {
   saveNotificationChannels: () => Promise<void>
   testNotificationChannel: (channel: string, probe: NotificationChannelsSettings) => Promise<void>
   discoverTelegramChatIDs: () => Promise<void>
-}
-
-export interface SmsThread {
-  key: string
-  peer: string
-  iccid: string
-  items: SMSMessage[]
-  latest?: SMSMessage
 }
 
 export const viewContextKey: InjectionKey<ViewContext> = Symbol('djonehub.view-context')

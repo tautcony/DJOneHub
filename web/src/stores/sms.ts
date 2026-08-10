@@ -3,8 +3,7 @@ import { defineStore } from 'pinia'
 import { useI18n } from 'vue-i18n'
 import { api } from '../services/api'
 import { useDeviceStore } from './device'
-import type { SMSMessage, SMSStorageUsage } from '../types'
-import type { SmsThread } from '../views/context'
+import type { SMSMessage, SMSStorageUsage, SmsThread } from '../types'
 
 // SMS 域状态: 消息列表、会话线程、发送草稿与操作追踪。
 // 视图经 typed ViewContext 读取本 store 暴露的 refs/actions。
@@ -182,4 +181,3 @@ export const useSmsStore = defineStore('sms', () => {
 })
 
 export type SmsStore = ReturnType<typeof useSmsStore>
-export type { SmsThread }

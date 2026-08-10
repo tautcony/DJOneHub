@@ -226,13 +226,13 @@ onBeforeUnmount(() => {
             :label="signalLevel ? t('overview.signalQuality') : t('common.unknown')"
           />
         </div>
-		<div class="detail-list overview-detail-list">
-			<FieldRow :label="t('overview.networkMode')" :value="networkMode" monospace /><FieldRow
-				:label="t('overview.band')"
-				:value="radio?.radio_band"
-				monospace
-			/><FieldRow
-				:label="t('overview.rsrp')"
+        <div class="detail-list overview-detail-list">
+          <FieldRow :label="t('overview.networkMode')" :value="networkMode" monospace /><FieldRow
+            :label="t('overview.band')"
+            :value="radio?.radio_band"
+            monospace
+          /><FieldRow
+            :label="t('overview.rsrp')"
             :value="radio?.signal_rsrp ? `${radio.signal_rsrp} dBm` : undefined"
             monospace
           /><FieldRow
@@ -318,11 +318,19 @@ onBeforeUnmount(() => {
             :label="t('overview.received')"
             :value="formatBytes(networkTraffic.rxBytes)"
             monospace
-          /><FieldRow :label="t('overview.sent')" :value="formatBytes(networkTraffic.txBytes)" monospace /><FieldRow
+          /><FieldRow
+            :label="t('overview.sent')"
+            :value="formatBytes(networkTraffic.txBytes)"
+            monospace
+          /><FieldRow
             :label="t('overview.downloadRate')"
             :value="formatRate(networkTraffic.rxRate)"
             monospace
-          /><FieldRow :label="t('overview.uploadRate')" :value="formatRate(networkTraffic.txRate)" monospace />
+          /><FieldRow
+            :label="t('overview.uploadRate')"
+            :value="formatRate(networkTraffic.txRate)"
+            monospace
+          />
         </div>
       </article>
     </div>

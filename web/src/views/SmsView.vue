@@ -162,7 +162,7 @@ function threadDate(value?: string) {
           <a-progress
             :percent="item.percent"
             :show-info="false"
-            :stroke-color="item.warning ? '#c2410c' : '#1677ff'"
+            :stroke-color="item.warning ? 'var(--ui-warning-text)' : 'var(--ui-primary)'"
             size="small"
           />
         </div>
@@ -325,8 +325,8 @@ function threadDate(value?: string) {
 .sms-storage-usage {
   flex: 0 0 auto;
   padding: 4px 16px 5px;
-  border-bottom: 1px solid var(--border-subtle, #e5e7eb);
-  background: #f8fafc;
+  border-bottom: 1px solid var(--border-subtle, var(--ui-border-subtle));
+  background: var(--ui-surface-muted);
 }
 
 .sms-storage-row + .sms-storage-row {
@@ -339,13 +339,13 @@ function threadDate(value?: string) {
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 1px;
-  color: #475569;
+  color: var(--ui-text-secondary);
   font-size: 12px;
   line-height: 18px;
 }
 
 .sms-storage-copy strong {
-  color: #172033;
+  color: var(--ui-text);
   font-variant-numeric: tabular-nums;
 }
 

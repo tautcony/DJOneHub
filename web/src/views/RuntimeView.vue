@@ -979,7 +979,7 @@ onBeforeUnmount(() => {
   gap: 3px;
   padding: 10px 12px;
   border: 1px solid var(--ui-border);
-  border-left: 4px solid #64748b;
+  border-left: 4px solid var(--ui-text-tertiary);
   border-radius: 6px;
   background: var(--ui-surface);
   box-shadow: 0 3px 12px rgb(15 23 42 / 8%);
@@ -1007,13 +1007,13 @@ onBeforeUnmount(() => {
   font-size: 10px;
 }
 .runtime-canvas :deep(.runtime-node-channel .runtime-graph-node) {
-  border-left-color: #1677ff;
+  border-left-color: var(--ui-primary);
 }
 .runtime-canvas :deep(.runtime-node-processor .runtime-graph-node) {
-  border-left-color: #d97706;
+  border-left-color: var(--ui-warning-text);
 }
 .runtime-canvas :deep(.runtime-node-destination .runtime-graph-node) {
-  border-left-color: #15803d;
+  border-left-color: var(--ui-success-text);
 }
 .runtime-canvas :deep(.runtime-node-stopped .runtime-graph-node) {
   opacity: 0.58;
@@ -1022,14 +1022,14 @@ onBeforeUnmount(() => {
   opacity: 0.18;
 }
 .runtime-canvas :deep(.runtime-node-selected .runtime-graph-node) {
-  border-color: #1677ff;
+  border-color: var(--ui-primary);
   box-shadow:
     0 0 0 3px rgb(22 119 255 / 14%),
     0 6px 18px rgb(15 23 42 / 12%);
   opacity: 1;
 }
 .runtime-canvas :deep(.vue-flow__edge-path) {
-  stroke: #94a3b8;
+  stroke: var(--ui-border-strong);
   stroke-width: 1.4;
   transition:
     opacity 0.18s,
@@ -1038,7 +1038,7 @@ onBeforeUnmount(() => {
 }
 .runtime-canvas :deep(.runtime-edge-live .vue-flow__edge-path),
 .runtime-canvas :deep(.runtime-edge-selected .vue-flow__edge-path) {
-  stroke: #1677ff;
+  stroke: var(--ui-primary);
   stroke-width: 2.5;
 }
 .runtime-canvas :deep(.runtime-edge-muted) {

@@ -16,8 +16,7 @@ const {
 
 // channels 复用 notificationChannels 的响应式对象; v-if 已保证非 null 时才渲染。
 const channels = computed<NotificationChannelsSettings>(() => notificationChannels.value!)
-const channelKeys = ['telegram', 'feishu', 'webhook', 'bark', 'email', 'pushplus'] as const
-type ChannelKey = (typeof channelKeys)[number]
+type ChannelKey = 'telegram' | 'feishu' | 'webhook' | 'bark' | 'email' | 'pushplus'
 const channelTitle = (key: ChannelKey) => t(`settings.channels.${key}.title`)
 
 // Webhook 自定义请求头以 map 存储，这里维护一份可编辑的 key/value 列表，
@@ -79,9 +78,12 @@ const barkLevels = ['active', 'timeSensitive', 'critical', 'passive']
         </div>
         <div class="channel-card-actions">
           <a-switch v-model:checked="channels.telegram.enabled" :disabled="notificationChannelsBusy" />
-          <a-button :loading="notificationChannelTesting === 'telegram'" :disabled="notificationChannelsBusy" @click="testChannel('telegram')">{{
-            t('settings.channels.test')
-          }}</a-button>
+          <a-button
+            :loading="notificationChannelTesting === 'telegram'"
+            :disabled="notificationChannelsBusy"
+            @click="testChannel('telegram')"
+            >{{ t('settings.channels.test') }}</a-button
+          >
         </div>
       </div>
       <a-form layout="vertical" class="channel-form">
@@ -89,16 +91,27 @@ const barkLevels = ['active', 'timeSensitive', 'critical', 'passive']
           <a-input-password v-model:value="channels.telegram.bot_token" />
         </a-form-item>
         <a-form-item :label="t('settings.field.chatID')">
-          <a-input-number v-model:value="channels.telegram.chat_id" :min="-1" :precision="0" style="width: 100%" />
+          <a-input-number
+            v-model:value="channels.telegram.chat_id"
+            :min="-1"
+            :precision="0"
+            style="width: 100%"
+          />
           <a-button
             class="discover-chat-id"
             :loading="notificationChannelTesting === 'telegram-chat-id'"
             :disabled="notificationChannelsBusy || notificationChannelTesting !== null"
             @click="discoverTelegramChatIDs()"
-          >{{ t('settings.channels.telegram.findChatID') }}</a-button>
+            >{{ t('settings.channels.telegram.findChatID') }}</a-button
+          >
         </a-form-item>
         <a-form-item :label="t('settings.field.adminID')">
-          <a-input-number v-model:value="channels.telegram.admin_id" :min="-1" :precision="0" style="width: 100%" />
+          <a-input-number
+            v-model:value="channels.telegram.admin_id"
+            :min="-1"
+            :precision="0"
+            style="width: 100%"
+          />
         </a-form-item>
         <a-form-item :label="t('settings.field.baseURL')">
           <a-input v-model:value="channels.telegram.base_url" :placeholder="t('settings.field.baseURL')" />
@@ -118,9 +131,12 @@ const barkLevels = ['active', 'timeSensitive', 'critical', 'passive']
         </div>
         <div class="channel-card-actions">
           <a-switch v-model:checked="channels.feishu.enabled" :disabled="notificationChannelsBusy" />
-          <a-button :loading="notificationChannelTesting === 'feishu'" :disabled="notificationChannelsBusy" @click="testChannel('feishu')">{{
-            t('settings.channels.test')
-          }}</a-button>
+          <a-button
+            :loading="notificationChannelTesting === 'feishu'"
+            :disabled="notificationChannelsBusy"
+            @click="testChannel('feishu')"
+            >{{ t('settings.channels.test') }}</a-button
+          >
         </div>
       </div>
       <a-form layout="vertical" class="channel-form">
@@ -131,7 +147,11 @@ const barkLevels = ['active', 'timeSensitive', 'critical', 'passive']
           <a-input-password v-model:value="channels.feishu.app_secret" />
         </a-form-item>
         <a-form-item :label="t('settings.field.chatIDs')">
-          <a-select v-model:value="channels.feishu.chat_ids" mode="tags" :placeholder="t('settings.field.chatIDs')" />
+          <a-select
+            v-model:value="channels.feishu.chat_ids"
+            mode="tags"
+            :placeholder="t('settings.field.chatIDs')"
+          />
         </a-form-item>
       </a-form>
     </div>
@@ -145,27 +165,47 @@ const barkLevels = ['active', 'timeSensitive', 'critical', 'passive']
         </div>
         <div class="channel-card-actions">
           <a-switch v-model:checked="channels.webhook.enabled" :disabled="notificationChannelsBusy" />
-          <a-button :loading="notificationChannelTesting === 'webhook'" :disabled="notificationChannelsBusy" @click="testChannel('webhook')">{{
-            t('settings.channels.test')
-          }}</a-button>
+          <a-button
+            :loading="notificationChannelTesting === 'webhook'"
+            :disabled="notificationChannelsBusy"
+            @click="testChannel('webhook')"
+            >{{ t('settings.channels.test') }}</a-button
+          >
         </div>
       </div>
       <a-form layout="vertical" class="channel-form">
         <a-form-item :label="t('settings.field.urls')">
-          <a-select v-model:value="channels.webhook.urls" mode="tags" :placeholder="t('settings.field.urls')" />
+          <a-select
+            v-model:value="channels.webhook.urls"
+            mode="tags"
+            :placeholder="t('settings.field.urls')"
+          />
         </a-form-item>
         <a-form-item :label="t('settings.field.secret')">
           <a-input-password v-model:value="channels.webhook.secret" />
           <small class="field-hint">{{ t('settings.channels.secretHint') }}</small>
         </a-form-item>
         <a-form-item :label="t('settings.field.timeoutMs')">
-          <a-input-number v-model:value="channels.webhook.timeout_ms" :min="1" :precision="0" style="width: 100%" />
+          <a-input-number
+            v-model:value="channels.webhook.timeout_ms"
+            :min="1"
+            :precision="0"
+            style="width: 100%"
+          />
         </a-form-item>
         <a-form-item :label="t('settings.field.retryMax')">
-          <a-input-number v-model:value="channels.webhook.retry_max" :min="0" :precision="0" style="width: 100%" />
+          <a-input-number
+            v-model:value="channels.webhook.retry_max"
+            :min="0"
+            :precision="0"
+            style="width: 100%"
+          />
         </a-form-item>
         <a-form-item :label="t('settings.field.textTemplate')">
-          <a-textarea v-model:value="channels.webhook.text_template" :auto-size="{ minRows: 2, maxRows: 5 }" />
+          <a-textarea
+            v-model:value="channels.webhook.text_template"
+            :auto-size="{ minRows: 2, maxRows: 5 }"
+          />
         </a-form-item>
         <a-form-item :label="t('settings.field.headers')">
           <div class="header-editor">
@@ -191,9 +231,12 @@ const barkLevels = ['active', 'timeSensitive', 'critical', 'passive']
         </div>
         <div class="channel-card-actions">
           <a-switch v-model:checked="channels.bark.enabled" :disabled="notificationChannelsBusy" />
-          <a-button :loading="notificationChannelTesting === 'bark'" :disabled="notificationChannelsBusy" @click="testChannel('bark')">{{
-            t('settings.channels.test')
-          }}</a-button>
+          <a-button
+            :loading="notificationChannelTesting === 'bark'"
+            :disabled="notificationChannelsBusy"
+            @click="testChannel('bark')"
+            >{{ t('settings.channels.test') }}</a-button
+          >
         </div>
       </div>
       <a-form layout="vertical" class="channel-form">
@@ -208,7 +251,9 @@ const barkLevels = ['active', 'timeSensitive', 'critical', 'passive']
         </a-form-item>
         <a-form-item :label="t('settings.field.level')">
           <a-select v-model:value="channels.bark.level">
-            <a-select-option v-for="level in barkLevels" :key="level" :value="level">{{ level }}</a-select-option>
+            <a-select-option v-for="level in barkLevels" :key="level" :value="level">{{
+              level
+            }}</a-select-option>
           </a-select>
         </a-form-item>
       </a-form>
@@ -223,9 +268,12 @@ const barkLevels = ['active', 'timeSensitive', 'critical', 'passive']
         </div>
         <div class="channel-card-actions">
           <a-switch v-model:checked="channels.email.enabled" :disabled="notificationChannelsBusy" />
-          <a-button :loading="notificationChannelTesting === 'email'" :disabled="notificationChannelsBusy" @click="testChannel('email')">{{
-            t('settings.channels.test')
-          }}</a-button>
+          <a-button
+            :loading="notificationChannelTesting === 'email'"
+            :disabled="notificationChannelsBusy"
+            @click="testChannel('email')"
+            >{{ t('settings.channels.test') }}</a-button
+          >
         </div>
       </div>
       <a-form layout="vertical" class="channel-form">
@@ -236,7 +284,13 @@ const barkLevels = ['active', 'timeSensitive', 'critical', 'passive']
           <a-input v-model:value="channels.email.smtp_host" />
         </a-form-item>
         <a-form-item :label="t('settings.field.smtpPort')">
-          <a-input-number v-model:value="channels.email.smtp_port" :min="1" :max="65535" :precision="0" style="width: 100%" />
+          <a-input-number
+            v-model:value="channels.email.smtp_port"
+            :min="1"
+            :max="65535"
+            :precision="0"
+            style="width: 100%"
+          />
         </a-form-item>
         <a-form-item :label="t('settings.field.username')">
           <a-input v-model:value="channels.email.username" />
@@ -249,7 +303,11 @@ const barkLevels = ['active', 'timeSensitive', 'critical', 'passive']
           <a-input v-model:value="channels.email.from_address" />
         </a-form-item>
         <a-form-item :label="t('settings.field.toAddresses')">
-          <a-select v-model:value="channels.email.to_addresses" mode="tags" :placeholder="t('settings.field.toAddresses')" />
+          <a-select
+            v-model:value="channels.email.to_addresses"
+            mode="tags"
+            :placeholder="t('settings.field.toAddresses')"
+          />
         </a-form-item>
       </a-form>
     </div>
@@ -263,9 +321,12 @@ const barkLevels = ['active', 'timeSensitive', 'critical', 'passive']
         </div>
         <div class="channel-card-actions">
           <a-switch v-model:checked="channels.pushplus.enabled" :disabled="notificationChannelsBusy" />
-          <a-button :loading="notificationChannelTesting === 'pushplus'" :disabled="notificationChannelsBusy" @click="testChannel('pushplus')">{{
-            t('settings.channels.test')
-          }}</a-button>
+          <a-button
+            :loading="notificationChannelTesting === 'pushplus'"
+            :disabled="notificationChannelsBusy"
+            @click="testChannel('pushplus')"
+            >{{ t('settings.channels.test') }}</a-button
+          >
         </div>
       </div>
       <a-form layout="vertical" class="channel-form">

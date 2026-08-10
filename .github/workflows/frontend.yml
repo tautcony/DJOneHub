@@ -1,0 +1,34 @@
+name: Frontend Checks
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Vue checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install web dependencies
+        run: npm --prefix web ci
+      - name: Type check
+        run: npm --prefix web run typecheck
+      - name: Lint
+        run: npm --prefix web run lint
+      - name: Format check
+        run: npm --prefix web run format:check
+      - name: Unit tests
+        run: npm --prefix web run test
+      - name: Production build
+        run: npm --prefix web run build

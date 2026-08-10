@@ -38,7 +38,9 @@ const filteredHistory = computed(() =>
   (calls.value?.history || []).filter((item) => !simFilter.value || item.iccid === simFilter.value),
 )
 const activeCallDuration = computed(() =>
-  calls.value?.active?.connected_at ? formatDuration(calls.value.active.connected_at, undefined, now.value) : '',
+  calls.value?.active?.connected_at
+    ? formatDuration(calls.value.active.connected_at, undefined, now.value)
+    : '',
 )
 
 onMounted(() => {

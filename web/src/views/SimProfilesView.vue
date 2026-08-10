@@ -108,7 +108,11 @@ const sortedProfiles = computed(() =>
       <LoadingState v-if="!loadedViews['sim-profiles']" />
       <div v-else>
         <div v-if="sortedProfiles.length" class="profile-grid sim-profile-grid">
-          <article v-for="profile in sortedProfiles" :key="profile.iccid" class="profile-row sim-profile-card">
+          <article
+            v-for="profile in sortedProfiles"
+            :key="profile.iccid"
+            class="profile-row sim-profile-card"
+          >
             <div class="profile-card-head">
               <div>
                 <span class="eyebrow">{{ t('simProfiles.cardEyebrow') }}</span>
@@ -154,7 +158,10 @@ const sortedProfiles = computed(() =>
               <a-button :disabled="simProfilesBusy" @click="openEdit(profile)">
                 <EditOutlined />{{ t('simProfiles.edit') }}
               </a-button>
-              <a-popconfirm :title="t('simProfiles.deleteConfirm')" @confirm="deleteSimProfile(profile.iccid)">
+              <a-popconfirm
+                :title="t('simProfiles.deleteConfirm')"
+                @confirm="deleteSimProfile(profile.iccid)"
+              >
                 <a-button danger :disabled="simProfilesBusy">
                   <DeleteOutlined />{{ t('common.delete') }}
                 </a-button>

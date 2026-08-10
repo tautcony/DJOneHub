@@ -55,27 +55,27 @@ const duration = computed(() => Number(props.data?.duration || 0.78))
   filter: drop-shadow(0 1px 3px rgb(15 23 42 / 16%));
 }
 .runtime-trace-particle rect {
-  fill: #e6f4ff;
-  stroke: #1677ff;
+  fill: var(--ui-info-bg);
+  stroke: var(--ui-primary);
   stroke-width: 1;
 }
 .runtime-trace-particle circle {
-  fill: #1677ff;
+  fill: var(--ui-primary);
 }
 .runtime-trace-particle text {
-  fill: #0958d9;
+  fill: var(--ui-info-text);
   font-size: 9px;
   font-weight: 600;
   letter-spacing: 0;
 }
 .runtime-trace-particle.failed rect {
-  fill: #fff1f0;
-  stroke: #cf1322;
+  fill: var(--ui-danger-bg);
+  stroke: var(--ui-danger-text);
 }
 .runtime-trace-particle.failed circle {
-  fill: #cf1322;
+  fill: var(--ui-danger-text);
 }
 .runtime-trace-particle.failed text {
-  fill: #a8071a;
+  fill: var(--ui-danger-text);
 }
 </style>
