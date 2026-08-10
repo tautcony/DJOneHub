@@ -1,3 +1,8 @@
+## RENAMED Requirements
+
+- FROM: `### Requirement: Event payloads SHALL be sanitized by an explicit field allowlist`
+- TO: `### Requirement: Event payloads SHALL use typed sanitizers and an evidence-based field blacklist`
+
 ## MODIFIED Requirements
 
 ### Requirement: Event payloads SHALL use typed sanitizers and an evidence-based field blacklist
@@ -23,6 +28,18 @@ An `operation.log` event SHALL preserve the exact terminal message. The sanitize
 #### Scenario: Operation emits terminal output
 - **WHEN** a NAND operation publishes stdout or stderr that contains ANSI sequences, carriage returns, newlines, or whitespace-only chunks
 - **THEN** the public `operation.log` event preserves the message unchanged for xterm rendering
+
+#### Scenario: Raw backend event contains a disallowed field
+- **WHEN** a raw backend event reaches the public event stream carrying a blacklisted field
+- **THEN** the blacklisted field is removed while non-blacklisted sibling fields are preserved
+
+#### Scenario: SMS body is not allowlisted
+- **WHEN** an SMS received event is published through its typed public projection
+- **THEN** the message body is removed without applying an allowlist to unrelated raw-map fields
+
+#### Scenario: Unknown event fields are present
+- **WHEN** an event contains a raw-map field that is not in the evidence-based blacklist
+- **THEN** the field remains present in both HTTP and WebSocket output
 
 #### Scenario: Device status is sanitized
 - **WHEN** a REST status or WebSocket snapshot payload passes through the typed sanitizer
