@@ -14,19 +14,19 @@ The frontend SHALL use Vue 3, TypeScript, Vite, and a state store/service organi
 
 ### Requirement: UI actions SHALL be driven by server capabilities
 
-The frontend SHALL show, disable, or explain actions according to the capability snapshot and SHALL NOT select business behavior from the browser or server operating-system name. When the device is ready, a navigation entry that declares a capability absent from the snapshot SHALL be hidden. When the device is absent, connecting, initializing, degraded, or disconnected, the frontend SHALL keep all supported navigation entries visible and SHALL gate executable controls inside their views.
+The frontend SHALL show, disable, or explain actions according to the capability snapshot and SHALL NOT select business behavior from the browser or server operating-system name. The frontend SHALL keep all supported navigation entries visible regardless of the capability snapshot. Feature views SHALL gate executable controls and explain unavailable capabilities inside the view.
 
-#### Scenario: Raw AT is unavailable on a ready device
+#### Scenario: Raw AT is unavailable
 - **WHEN** the ready capability snapshot does not include `raw_at`
-- **THEN** the UI does not render the Raw AT or firmware navigation entries
+- **THEN** the UI keeps the Raw AT and firmware navigation entries visible, while their executable controls are disabled or explained in the views
 
 #### Scenario: Device is not connected
 - **WHEN** the device is absent, connecting, initializing, degraded, or disconnected
 - **THEN** the UI renders all supported navigation entries, while unavailable actions remain disabled or explained inside their views
 
-#### Scenario: Navigation capability becomes available
-- **WHEN** a ready capability snapshot adds a capability required by a navigation entry
-- **THEN** the matching navigation entry becomes visible
+#### Scenario: A feature capability becomes available
+- **WHEN** a ready capability snapshot adds a capability required by a feature
+- **THEN** the matching controls become available in the feature view
 
 ### Requirement: Management UI SHALL apply the selected appearance mode
 
@@ -68,9 +68,9 @@ The frontend SHALL provide automated type, lint, format, test, and production-bu
 - **WHEN** continuous integration checks the frontend source
 - **THEN** type, lint, format, test, and build commands complete without errors or warnings
 
-#### Scenario: Capability filtering regresses
-- **WHEN** a change makes a capability-gated navigation item visible without its capability
-- **THEN** an automated navigation test fails
+#### Scenario: Feature gating regresses
+- **WHEN** a change makes a capability-gated control executable without its capability
+- **THEN** an automated feature test fails
 
 #### Scenario: Appearance resolution regresses
 - **WHEN** a change resolves a stored or system appearance mode incorrectly

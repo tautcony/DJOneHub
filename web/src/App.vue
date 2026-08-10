@@ -34,7 +34,6 @@ import AppShell, { type ShellNavGroup } from './components/AppShell.vue'
 import PageHeader from './components/PageHeader.vue'
 import { viewContextKey } from './views/context'
 import { viewFromRoute, viewPaths, type ViewID } from './router'
-import { filterNavigationGroups } from './navigation'
 import { confirmDanger } from './utils/confirm'
 
 const VIEW_REFRESH_MIN_INTERVAL_MS = 500
@@ -227,13 +226,8 @@ const allNavGroups = computed<ShellNavGroup[]>(() => [
     ],
   },
 ])
-const navGroups = computed(() =>
-  device.snapshot?.state === 'ready' && !device.error
-    ? filterNavigationGroups(allNavGroups.value, device.capabilities)
-    : allNavGroups.value,
-)
+const navGroups = allNavGroups
 const nav = computed(() => navGroups.value.flatMap((group) => group.items))
-const allNav = computed(() => allNavGroups.value.flatMap((group) => group.items))
 const themeConfig = computed<ThemeConfig>(() => ({
   algorithm: appearance.resolved === 'dark' ? antTheme.darkAlgorithm : antTheme.defaultAlgorithm,
   token: {
@@ -261,7 +255,7 @@ const sidebarDeviceLabel = computed(() =>
     : t('status.deviceStates.offline'),
 )
 const activeLabel = computed(
-  () => allNav.value.find((item) => item.id === active.value)?.label || t('nav.overview'),
+  () => nav.value.find((item) => item.id === active.value)?.label || t('nav.overview'),
 )
 const activeDescription = computed(() => t(`header.descriptions.${active.value}`))
 const deviceCapabilities = computed(() => (effectiveStateValue.value === 'ready' ? device.capabilities : {}))
@@ -1223,14 +1217,6 @@ function selectView(view: string) {
 watch(active, (view) => {
   syncActiveRefreshers()
   void loadView(view)
-})
-
-watch([active, nav, () => device.status], ([view, visibleNav, status]) => {
-  if (!status) return
-  const item = allNav.value.find((candidate) => candidate.id === view)
-  if (item?.capability && !visibleNav.some((candidate) => candidate.id === view)) {
-    void router.replace(viewPaths.overview)
-  }
 })
 
 watch(

@@ -10,9 +10,9 @@
 
 `web/src/router.ts` maps a `ViewID` to a browser path and a lazy-loaded view. `web/src/App.vue` decides which navigation entries are visible.
 
-`web/src/navigation.ts` filters capability-gated navigation groups before the shell renders them. `web/src/stores/appearance.ts` owns the light, dark, and system appearance preference.
+`web/src/App.vue` keeps all supported navigation entries visible. Feature views use the device capability snapshot to enable, disable, or explain their concrete actions. `web/src/stores/appearance.ts` owns the light, dark, and system appearance preference.
 
-The server capability snapshot controls navigation and controls. Do not use a browser OS check to select a modem feature.
+The server capability snapshot controls feature actions. Navigation stays visible so users can inspect unavailable features. Do not use a browser OS check to select a modem feature.
 
 Use this read order when a page is missing or cannot open:
 
@@ -31,7 +31,6 @@ Use this read order when a page is missing or cannot open:
 | `web/src/stores/` | Domain state | Device, SMS, eSIM, network, SIM profile, and VoWiFi state |
 | `web/src/views/` | Feature UI | Feature-specific pages and settings sections |
 | `web/src/components/` | Shared UI | Shell, status, panel, loading, and operation components |
-| `web/src/navigation.ts` | Navigation rules | Capability-gated navigation filtering |
 | `web/src/types.ts` | API types | Shared frontend models |
 | `web/src/i18n.ts` | Text resources | Chinese and English UI text |
 | `web/src/utils/` | UI helpers | Date, format, and SIM-profile helpers |
@@ -52,7 +51,7 @@ web/src/services
 Go HTTP server
 ```
 
-The server capability snapshot controls navigation and actions. Do not select behavior from the browser platform or from a guessed modem state.
+The server capability snapshot controls feature actions. Navigation stays visible when a capability is unavailable. Do not select behavior from the browser platform or from a guessed modem state.
 
 Long-running actions return an operation ID. Show the operation state until it is final. When the event sequence has a gap, get a new snapshot.
 
@@ -78,7 +77,7 @@ npm --prefix web run test
 npm --prefix web run build
 ```
 
-Focused frontend tests are under `web/src/**/*.test.ts`. Keep pure capability and appearance logic covered without requiring a device or a backend.
+Focused frontend tests are under `web/src/**/*.test.ts`. Keep pure appearance logic covered without requiring a device or a backend.
 
 The GitHub workflow `.github/workflows/frontend.yml` runs the frontend checks on push and pull request.
 
