@@ -157,23 +157,16 @@ func parseLocationID(location string) (uint32, bool) {
 
 func libusbLocationID(device *C.libusb_device) (uint32, bool) {
 	bus := uint32(C.libusb_get_bus_number(device))
-	if bus == 0 {
-		return 0, false
-	}
 	ports := make([]C.uint8_t, 7)
 	count := int(C.libusb_get_port_numbers(device, &ports[0], C.int(len(ports))))
-	if count < 0 || count > 5 {
+	if count <= 0 || count > 5 {
 		return 0, false
 	}
-	location := bus << 24
+	path := make([]uint8, count)
 	for index := 0; index < count; index++ {
-		port := uint32(ports[index])
-		if port == 0 || port > 15 {
-			return 0, false
-		}
-		location |= port << uint(20-index*4)
+		path[index] = uint8(ports[index])
 	}
-	return location, true
+	return composeLibUSBLocationID(bus, path)
 }
 
 func usbATCandidates(handle *C.libusb_device_handle) ([]usbATCandidate, error) {
