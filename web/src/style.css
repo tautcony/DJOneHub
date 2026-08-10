@@ -178,12 +178,12 @@ button:disabled {
   color: var(--ui-sidebar-muted);
   font-size: 11px;
 }
-.primary-nav {
-  min-height: 0;
-  flex: 1;
-  overflow: auto;
-}
 .nav-menu {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   border-inline-end: 0 !important;
   background: transparent !important;
   color: var(--ui-sidebar-text);
@@ -241,6 +241,7 @@ button:disabled {
 }
 .sidebar-footer {
   display: grid;
+  flex: 0 0 auto;
   gap: 12px;
   margin-top: auto;
   padding: 18px 8px 0;
@@ -3128,6 +3129,66 @@ button:disabled {
   min-width: 220px;
   flex: 1 1 220px;
 }
+.firmware-control-groups {
+  display: grid;
+  gap: 16px;
+  margin-top: 4px;
+}
+.firmware-control-group {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.firmware-control-label {
+  color: var(--ui-text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+.firmware-command-buttons {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.firmware-adb-mode-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+}
+.firmware-adb-command-select {
+  width: 100%;
+}
+.firmware-mode-action {
+  width: 100%;
+}
+.firmware-edl-capabilities {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  margin-bottom: 16px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--ui-border-subtle);
+}
+.firmware-edl-capability {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  gap: 10px;
+}
+.firmware-edl-capability > div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+.firmware-edl-capability strong {
+  color: var(--ui-text);
+  font-size: 13px;
+}
+.firmware-edl-capability span {
+  color: var(--ui-text-tertiary);
+  font-size: 11px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
 .firmware-shell {
   min-width: 0;
 }
@@ -3279,6 +3340,7 @@ button:disabled {
   height: 100%;
 }
 .firmware-operation-terminal .xterm-viewport {
+  background-color: #111315 !important;
   scrollbar-color: #555 #111315;
 }
 .mono {
@@ -3314,6 +3376,9 @@ button:disabled {
     grid-template-columns: 1fr;
     gap: 10px;
   }
+  .firmware-edl-capabilities {
+    grid-template-columns: 1fr;
+  }
   .firmware-adb-status + .firmware-adb-status {
     padding-top: 10px;
     padding-left: 0;
@@ -3328,6 +3393,10 @@ button:disabled {
   }
   .firmware-adb-device-controls .ant-btn {
     flex: 1 1 auto;
+  }
+  .firmware-command-buttons,
+  .firmware-adb-mode-controls {
+    grid-template-columns: 1fr;
   }
   .firmware-usb-config-strip {
     gap: 6px;

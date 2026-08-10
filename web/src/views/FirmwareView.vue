@@ -29,21 +29,25 @@ const {
   refreshFirmware,
   runFirmwareAction,
   saveFirmwareADBCommand,
+  saveFirmwareDeviceControlSettings,
   selectFirmwareADBFile,
   selectFirmwareBackupDirectory,
   selectFirmwareEDLDirectory,
+  selectFirmwareLoaderFile,
   updateFirmwareUSBID,
 } = useViewContext()
 
 type EDLRunner = 'python' | 'uv'
-const edlPath = ref(localStorage.getItem('djonehub.firmware.edl-path') || '')
-const storedEDLRunner = localStorage.getItem('djonehub.firmware.edl-runner')
-const edlRunner = ref<EDLRunner>(storedEDLRunner === 'uv' ? 'uv' : 'python')
+const edlPath = ref('')
+const edlRunner = ref<EDLRunner>('uv')
 const backupDirectory = ref('')
+const loaderPath = ref('')
 const backupFileName = ref(makeBackupFileName())
+let lastGeneratedBackupFileName = backupFileName.value
 const vid = ref('')
 const pid = ref('')
 const selectedADBSerial = ref('')
+const selectedADBAction = ref<string | undefined>(undefined)
 const shellOpen = ref(false)
 const shellTerminalElement = ref(null)
 const operationTerminalElement = ref(null)
@@ -52,14 +56,23 @@ const shellConnected = ref(false)
 let shellSocket: WebSocket | undefined
 let shellTerminal: Terminal | undefined
 let operationTerminal: Terminal | undefined
+let renderedOperationLogCount = 0
+let operationTerminalOpening = false
 const outputPath = computed(() => {
   const directory = backupDirectory.value.trim().replace(/\/$/, '')
   return directory ? `${directory}/${backupFileName.value}` : ''
 })
-const edlAvailable = computed(() => firmware.value?.backup.available === true || edlPath.value.trim() !== '')
+const edlAvailable = computed(() => firmware.value?.backup.available === true)
+const resetAvailable = computed(() => firmware.value?.backup.reset_available === true)
 const busy = computed(() => {
   const state = firmwareOperation.value?.state
   return state === 'pending' || state === 'running'
+})
+const recoveryDetail = computed(() => {
+  const details = firmwareOperationSnapshot.value?.error?.details
+  if (details?.backup_valid === true && details?.reconnect_required === true)
+    return t('firmware.backupValidResetFailed')
+  return ''
 })
 const modeLabel = computed(() => {
   const mode = firmware.value?.mode
@@ -80,6 +93,21 @@ const selectedADBDevice = computed(() =>
   adbDevices.value.find((item) => item.serial === selectedADBSerial.value),
 )
 const selectedADBOnline = computed(() => selectedADBDevice.value?.online === true)
+const directEDLAvailable = computed(() => firmware.value?.entry_methods?.includes('direct') === true)
+const adbEDLAvailable = computed(() => firmware.value?.entry_methods?.includes('adb') === true)
+const directEDLReason = computed(() => firmware.value?.entry_method_reasons?.direct || '')
+const canEnterEDL = computed(() => !busy.value && directEDLAvailable.value)
+const adbModeAction = computed<'enable' | 'disable' | undefined>(() => {
+  if (!firmware.value?.adb.enabled_known) return undefined
+  return firmware.value.adb.enabled ? 'disable' : 'enable'
+})
+const canToggleADB = computed(() => !busy.value && device.has('raw_at') && adbModeAction.value !== undefined)
+const canShowEnterEDL = computed(
+  () => !busy.value && ['normal', 'adb'].includes(firmware.value?.mode || '') && directEDLAvailable.value,
+)
+const canShowResetEDL = computed(
+  () => !busy.value && firmware.value?.mode === 'edl' && resetAvailable.value,
+)
 const adbConfigLabel = computed(() => {
   if (firmware.value?.adb.enabled_known) {
     return firmware.value.adb.enabled ? t('firmware.adb.enabled') : t('firmware.adb.disabled')
@@ -104,6 +132,26 @@ watch(
     }
   },
   { immediate: true },
+)
+
+watch(
+  () => firmware.value?.settings,
+  (settings) => {
+    if (!settings) return
+    if (!edlPath.value && settings.edl_path) edlPath.value = settings.edl_path
+    if (settings.edl_runner === 'python' || settings.edl_runner === 'uv') edlRunner.value = settings.edl_runner
+    if (!loaderPath.value && settings.loader_path) loaderPath.value = settings.loader_path
+    if (!backupDirectory.value && settings.backup_directory) backupDirectory.value = settings.backup_directory
+  },
+  { immediate: true },
+)
+watch(
+  () => firmware.value?.firmware,
+  (version) => {
+    if (backupFileName.value !== lastGeneratedBackupFileName) return
+    backupFileName.value = makeBackupFileName(version)
+    lastGeneratedBackupFileName = backupFileName.value
+  },
 )
 // The command saves automatically after a short pause: choosing a file or
 // finishing a manual edit persists without a separate save button.
@@ -140,28 +188,50 @@ function closeOperationModal() {
 }
 
 async function openOperationTerminal() {
-  await nextTick()
-  operationTerminal?.dispose()
-  operationTerminal = new Terminal({
-    convertEol: true,
-    cursorBlink: false,
-    disableStdin: true,
-    fontFamily: 'SFMono-Regular, Menlo, Consolas, monospace',
-    fontSize: 12,
-    scrollback: 5000,
-    theme: { background: '#111315', foreground: '#e6e8ea', cursor: '#111315' },
-  })
-  const element = operationTerminalElement.value as Parameters<Terminal['open']>[0] | null
-  if (!element) return
-  operationTerminal.open(element)
-  resizeOperationTerminal()
-  operationTerminal.write(firmwareOperationLogs.value.join(''))
+  if (operationTerminalOpening || operationTerminal || !firmwareOperationLogs.value.length) return
+  operationTerminalOpening = true
+  try {
+    await nextTick()
+    const element = operationTerminalElement.value as Parameters<Terminal['open']>[0] | null
+    if (!element || !firmwareOperationModalOpen.value) return
+    operationTerminal = new Terminal({
+      convertEol: true,
+      cursorBlink: false,
+      disableStdin: true,
+      fontFamily: 'SFMono-Regular, Menlo, Consolas, monospace',
+      fontSize: 12,
+      scrollback: 5000,
+      theme: { background: '#111315', foreground: '#e6e8ea', cursor: '#111315' },
+    })
+    operationTerminal.open(element)
+    resizeOperationTerminal()
+    renderedOperationLogCount = 0
+    syncOperationTerminal(firmwareOperationLogs.value)
+    window.requestAnimationFrame(resizeOperationTerminal)
+  } finally {
+    operationTerminalOpening = false
+  }
 }
 
 function resizeOperationTerminal() {
   const element = operationTerminalElement.value as Parameters<Terminal['open']>[0] | null
   if (!operationTerminal || !element) return
-  operationTerminal.resize(Math.max(40, Math.floor(element.clientWidth / 7.3)), 22)
+  const columns = Math.max(40, Math.floor((element.clientWidth - 20) / 7.3))
+  const rows = Math.max(8, Math.floor((element.clientHeight - 20) / 16))
+  operationTerminal.resize(columns, rows)
+}
+
+function syncOperationTerminal(logs: string[]) {
+  if (!operationTerminal) return
+  if (logs.length < renderedOperationLogCount) {
+    operationTerminal.reset()
+    renderedOperationLogCount = 0
+  }
+  for (let index = renderedOperationLogCount; index < logs.length; index++) {
+    operationTerminal.write(logs[index])
+  }
+  renderedOperationLogCount = logs.length
+  operationTerminal.scrollToBottom()
 }
 
 function usbConfigFieldLabel(key: string) {
@@ -216,16 +286,14 @@ watch(
   },
 )
 
-watch(edlPath, (value) => localStorage.setItem('djonehub.firmware.edl-path', value))
-watch(edlRunner, (value) => localStorage.setItem('djonehub.firmware.edl-runner', value))
-
 watch(
   () => firmwareOperationModalOpen.value,
   (open) => {
-    if (open) void openOperationTerminal()
+    if (open && firmwareOperationLogs.value.length) void openOperationTerminal()
     else {
       operationTerminal?.dispose()
       operationTerminal = undefined
+      renderedOperationLogCount = 0
     }
   },
 )
@@ -241,16 +309,11 @@ watch(
   { immediate: true },
 )
 
-watch(
-  () => device.eventRevision,
-  () => {
-    if (device.lastEventType !== 'operation.log' || !operationTerminal) return
-    const log = device.lastEventData as { operation_id?: string; message?: string }
-    if (log.operation_id === firmwareOperation.value?.operation_id && log.message) {
-      operationTerminal.write(log.message)
-    }
-  },
-)
+watch(firmwareOperationLogs, (logs) => {
+  if (!firmwareOperationModalOpen.value || !logs.length) return
+  if (!operationTerminal) void openOperationTerminal()
+  else syncOperationTerminal(logs)
+})
 
 watch(vid, (value) => {
   const normalized = value
@@ -267,48 +330,121 @@ watch(pid, (value) => {
   if (value !== normalized) pid.value = normalized
 })
 
-function makeBackupFileName() {
+function makeBackupFileName(version = firmware.value?.firmware) {
   const now = new Date()
   const part = (value: number) => String(value).padStart(2, '0')
-  return `full-nand-${now.getFullYear()}${part(now.getMonth() + 1)}${part(now.getDate())}-${part(now.getHours())}${part(now.getMinutes())}${part(now.getSeconds())}.bin`
+  const safeVersion = (version || 'unknown')
+    .trim()
+    .replace(/[^A-Za-z0-9._-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '') || 'unknown'
+  return `full-nand-${safeVersion}-${now.getFullYear()}${part(now.getMonth() + 1)}${part(now.getDate())}-${part(now.getHours())}${part(now.getMinutes())}${part(now.getSeconds())}.bin`
 }
 
 function startBackup() {
   if (!outputPath.value || !edlAvailable.value || busy.value) return
-  void backupFirmware(outputPath.value, '', edlPath.value.trim(), edlRunner.value)
+  void backupFirmware(outputPath.value, loaderPath.value.trim(), edlPath.value.trim(), edlRunner.value)
   backupFileName.value = makeBackupFileName()
+  lastGeneratedBackupFileName = backupFileName.value
 }
 
 async function chooseBackupDirectory() {
   if (busy.value) return
   const directory = await selectFirmwareBackupDirectory()
-  if (directory) backupDirectory.value = directory
+  if (directory) {
+    backupDirectory.value = directory
+    await saveFirmwareDeviceControlSettings({ backup_directory: directory })
+  }
 }
 
 async function chooseEDLDirectory() {
   if (busy.value) return
   const directory = await selectFirmwareEDLDirectory()
-  if (directory) edlPath.value = directory
+  if (directory) {
+    edlPath.value = directory
+    await saveFirmwareDeviceControlSettings({ edl_path: directory, edl_runner: edlRunner.value })
+  }
+}
+
+async function saveEDLPath() {
+  await saveFirmwareDeviceControlSettings({ edl_path: edlPath.value.trim(), edl_runner: edlRunner.value })
+}
+
+async function saveEDLRunner() {
+  if (!edlPath.value.trim()) return
+  await saveFirmwareDeviceControlSettings({ edl_path: edlPath.value.trim(), edl_runner: edlRunner.value })
+}
+
+async function chooseLoaderFile() {
+  if (busy.value) return
+  const path = await selectFirmwareLoaderFile()
+  if (path) {
+    loaderPath.value = path
+    await saveFirmwareDeviceControlSettings({ loader_path: path })
+  }
+}
+
+async function saveLoaderPath() {
+  await saveFirmwareDeviceControlSettings({ loader_path: loaderPath.value.trim() })
 }
 
 async function enterEDL() {
-  if (!selectedADBOnline.value || busy.value) return
+  if (!canEnterEDL.value) return
   const confirmed = await confirmDanger({
     title: t('firmware.mode.edlConfirm'),
     confirmLabel: t('common.confirm'),
     cancelLabel: t('common.cancel'),
   })
-  if (confirmed) await runFirmwareAction('edl', selectedADBSerial.value)
+  if (confirmed) await runFirmwareAction('edl', '', 'direct')
+}
+
+async function enterEDLFromADB() {
+  if (!adbEDLAvailable.value || !selectedADBOnline.value || busy.value) return
+  const confirmed = await confirmDanger({
+    title: t('firmware.mode.adbEDLConfirm'),
+    confirmLabel: t('common.confirm'),
+    cancelLabel: t('common.cancel'),
+  })
+  if (confirmed) await runFirmwareAction('edl', selectedADBSerial.value, 'adb')
+}
+
+async function resetEDL() {
+  if (!resetAvailable.value || busy.value) return
+  const confirmed = await confirmDanger({
+    title: t('firmware.mode.resetConfirm'),
+    confirmLabel: t('common.confirm'),
+    cancelLabel: t('common.cancel'),
+  })
+  if (confirmed) await runFirmwareAction('reset')
 }
 
 async function toggleADBMode(action: 'enable' | 'disable') {
-  if (busy.value) return
+  if (!canToggleADB.value || action !== adbModeAction.value) return
   const confirmed = await confirmDanger({
     title: t('firmware.mode.adbModeConfirm'),
     confirmLabel: t('common.confirm'),
     cancelLabel: t('common.cancel'),
   })
   if (confirmed) await runFirmwareAction(action)
+}
+
+async function rebootADBDevice() {
+  if (busy.value || !selectedADBOnline.value) return
+  const confirmed = await confirmDanger({
+    title: t('firmware.mode.adbRebootConfirm'),
+    confirmLabel: t('common.confirm'),
+    cancelLabel: t('common.cancel'),
+  })
+  if (confirmed) await runFirmwareAction('adb-reboot', selectedADBSerial.value)
+}
+
+async function runADBCommandAction(action?: string) {
+  selectedADBAction.value = undefined
+  if (action === 'reboot') {
+    await rebootADBDevice()
+    return
+  }
+  if (action === 'edl') await enterEDLFromADB()
 }
 
 async function openShell() {
@@ -334,7 +470,7 @@ async function openShell() {
   }
   const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
   const socket = new WebSocket(
-    `${protocol}://${window.location.host}/api/v1/firmware/actions/adb/shell/ws?serial=${encodeURIComponent(selectedADBSerial.value)}`,
+    `${protocol}://${window.location.host}/api/v1/device-control/actions/adb/shell/ws?serial=${encodeURIComponent(selectedADBSerial.value)}`,
   )
   shellSocket = socket
   socket.binaryType = 'arraybuffer'
@@ -364,14 +500,11 @@ async function openShell() {
   }
   socket.onclose = () => {
     if (shellSocket !== socket) return
-    shellConnecting.value = false
-    shellConnected.value = false
-    shellSocket = undefined
+    closeShell()
   }
   socket.onerror = () => {
     if (shellSocket !== socket) return
-    shellConnecting.value = false
-    shellConnected.value = false
+    closeShell()
   }
 }
 
@@ -451,7 +584,15 @@ onBeforeUnmount(() => {
           </div>
           <div>
             <dt>{{ t('firmware.version') }}</dt>
-            <dd>{{ firmware.firmware || t('common.empty') }}</dd>
+            <dd>
+              {{ firmware.firmware || t('common.empty') }}
+              <small v-if="firmware.firmware_version_source" class="firmware-version-source">
+                {{ firmware.firmware_version_source }}{{ firmware.firmware_version_live === false ? ` (${t('firmware.cached')})` : '' }}
+              </small>
+              <small v-else-if="firmware.firmware_version_reason" class="firmware-version-source">
+                {{ firmware.firmware_version_reason }}
+              </small>
+            </dd>
           </div>
           <div>
             <dt>{{ t('firmware.usbId') }}</dt>
@@ -540,48 +681,68 @@ onBeforeUnmount(() => {
               {{ item.serial }} · {{ item.state }}
             </a-select-option>
           </a-select>
-          <a-button :disabled="!selectedADBOnline || busy" @click="openShell">
-            <CodeOutlined />{{ t('firmware.adb.shell') }}
-          </a-button>
-          <a-button type="primary" :disabled="!selectedADBOnline || busy" @click="enterEDL">
-            <ThunderboltOutlined />{{ t('firmware.enterEDL') }}
-          </a-button>
         </div>
-        <div class="panel-actions firmware-actions">
-          <a-button
-            type="primary"
-            :loading="busy"
-            :disabled="!device.has('raw_at') || busy"
-            @click="runFirmwareAction('unlock')"
-          >
-            <LockOutlined />{{ t('firmware.unlock') }}
-          </a-button>
-          <a-button
-            :loading="busy"
-            :disabled="!device.has('raw_at') || busy"
-            @click="toggleADBMode('enable')"
-          >
-            {{ t('firmware.enableADB') }}
-          </a-button>
-          <a-button
-            danger
-            :loading="busy"
-            :disabled="!device.has('raw_at') || busy"
-            @click="toggleADBMode('disable')"
-          >
-            {{ t('firmware.disableADB') }}
-          </a-button>
+        <div class="firmware-control-groups">
+          <div class="firmware-control-group">
+            <div class="firmware-control-label">{{ t('firmware.adb.commands') }}</div>
+            <div class="firmware-command-buttons">
+              <a-button :disabled="!selectedADBOnline || busy" @click="openShell">
+                <CodeOutlined />{{ t('firmware.adb.shell') }}
+              </a-button>
+              <a-select
+                v-model:value="selectedADBAction"
+                class="firmware-adb-command-select"
+                :disabled="!selectedADBOnline || busy"
+                :placeholder="t('firmware.adb.selectAction')"
+                @change="runADBCommandAction"
+              >
+                <a-select-option value="reboot">{{ t('firmware.adb.reboot') }}</a-select-option>
+                <a-select-option v-if="adbEDLAvailable" value="edl">
+                  {{ t('firmware.adb.enterEDL') }}
+                </a-select-option>
+              </a-select>
+            </div>
+          </div>
+          <div class="firmware-control-group">
+            <div class="firmware-control-label">{{ t('firmware.adb.configuration') }}</div>
+            <div class="firmware-adb-mode-controls">
+              <a-button
+                v-if="adbModeAction === 'disable'"
+                type="primary"
+                class="firmware-mode-action"
+                :loading="busy"
+                :disabled="!canToggleADB"
+                @click="toggleADBMode('disable')"
+              >
+                <LockOutlined />{{ t('firmware.disableADBReboot') }}
+              </a-button>
+              <a-button
+                v-else-if="adbModeAction === 'enable'"
+                type="primary"
+                class="firmware-mode-action"
+                :loading="busy"
+                :disabled="!canToggleADB"
+                @click="toggleADBMode('enable')"
+              >
+                <ThunderboltOutlined />{{ t('firmware.enableADBReboot') }}
+              </a-button>
+            </div>
+          </div>
         </div>
       </Panel>
 
-      <Panel :eyebrow="t('firmware.backupEyebrow')" :title="t('firmware.backupTitle')">
-        <a-alert
-          v-if="firmware && !firmware.backup.available && !edlPath.trim()"
-          type="warning"
-          show-icon
-          :message="t('firmware.edlUnavailable')"
-        />
-        <a-form layout="vertical" class="form firmware-form" @submit.prevent="startBackup">
+      <Panel :eyebrow="t('firmware.edlEyebrow')" :title="t('firmware.edlTitle')">
+        <div class="firmware-edl-capabilities">
+          <div class="firmware-edl-capability">
+            <StatusLight :tone="directEDLAvailable ? 'success' : 'neutral'" />
+            <div>
+              <strong>{{ t('firmware.entryDirect') }}</strong>
+              <span>{{ directEDLAvailable ? t('firmware.edlAvailable') : directEDLReason || t('common.unavailable') }}</span>
+            </div>
+          </div>
+        </div>
+
+        <a-form layout="vertical" class="form firmware-form">
           <a-form-item :label="t('firmware.edlPath')">
             <a-input
               v-model:value="edlPath"
@@ -589,6 +750,7 @@ onBeforeUnmount(() => {
               allow-clear
               :placeholder="t('firmware.edlPathPlaceholder')"
               :disabled="busy"
+              @change="saveEDLPath"
             >
               <template #suffix>
                 <a-tooltip :title="t('firmware.selectEDLDirectory')">
@@ -614,7 +776,59 @@ onBeforeUnmount(() => {
                 { label: t('firmware.edlRunnerPython'), value: 'python' },
                 { label: t('firmware.edlRunnerUV'), value: 'uv' },
               ]"
+              @change="saveEDLRunner"
             />
+          </a-form-item>
+          <a-button
+            v-if="canShowEnterEDL"
+            type="primary"
+            class="firmware-mode-action"
+            @click="enterEDL"
+          >
+            <ThunderboltOutlined />{{ t('firmware.enterEDL') }}
+          </a-button>
+          <a-button
+            v-else-if="canShowResetEDL"
+            type="primary"
+            class="firmware-mode-action"
+            @click="resetEDL"
+          >
+            <ReloadOutlined />{{ t('firmware.resetEDL') }}
+          </a-button>
+        </a-form>
+      </Panel>
+
+      <Panel :eyebrow="t('firmware.backupEyebrow')" :title="t('firmware.backupTitle')">
+        <a-alert
+          v-if="firmware && !firmware.backup.available"
+          type="warning"
+          show-icon
+          :message="firmware.backup.reason || t('firmware.edlUnavailable')"
+        />
+        <a-form layout="vertical" class="form firmware-form" @submit.prevent="startBackup">
+          <a-form-item :label="t('firmware.loaderFile')">
+            <a-input
+              v-model:value="loaderPath"
+              readonly
+              allow-clear
+              :placeholder="t('firmware.loaderOptional')"
+              :disabled="busy"
+              @change="saveLoaderPath"
+            >
+              <template #suffix>
+                <a-tooltip :title="t('firmware.selectLoaderFile')">
+                  <button
+                    type="button"
+                    class="firmware-directory-button"
+                    :aria-label="t('firmware.selectLoaderFile')"
+                    :disabled="busy"
+                    @click="chooseLoaderFile"
+                  >
+                    <FolderOpenOutlined />
+                  </button>
+                </a-tooltip>
+              </template>
+            </a-input>
           </a-form-item>
           <a-form-item :label="t('firmware.outputDirectory')">
             <a-input
@@ -713,12 +927,17 @@ onBeforeUnmount(() => {
           "
           :show-info="false"
         />
-        <div ref="operationTerminalElement" class="firmware-operation-terminal" />
+        <div
+          v-if="firmwareOperationLogs.length"
+          ref="operationTerminalElement"
+          class="firmware-operation-terminal"
+        />
         <a-alert
           v-if="firmwareOperationSnapshot?.error"
           type="error"
           show-icon
           :message="firmwareOperationSnapshot.error.message"
+          :description="recoveryDetail || undefined"
         />
       </div>
     </a-modal>

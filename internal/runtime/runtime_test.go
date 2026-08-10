@@ -58,6 +58,12 @@ type fakeFactory struct {
 	err error
 }
 
+type fakePlatformCapabilities device.CapabilitySet
+
+func (f fakePlatformCapabilities) PlatformCapabilities(context.Context) device.CapabilitySet {
+	return device.CapabilitySet(f).Clone()
+}
+
 func (f *fakeFactory) Open(context.Context, device.Candidate) (backend.ModemBackend, string, error) {
 	return f.b, "fake", f.err
 }
@@ -74,6 +80,32 @@ func TestRuntimeReachesReadyWithoutHardware(t *testing.T) {
 	s := r.Snapshot()
 	if s.State != device.StateReady || s.Backend != device.BackendMBIM || !s.Capabilities.Has(device.CapabilityDeviceStatus) {
 		t.Fatalf("unexpected snapshot: %+v", s)
+	}
+}
+
+func TestRuntimeMergesPlatformCapabilitiesWithoutOverwritingBackendReason(t *testing.T) {
+	d := &fakeDiscovery{candidates: []device.Candidate{{Identity: device.Identity{StableID: "synthetic-slot", PhysicalLocation: "0x01000000", VendorID: "2ca3", ProductID: "4006"}}}}
+	backendCaps := device.CapabilitySet{
+		device.CapabilityDeviceStatus:      "backend status",
+		device.CapabilityFirmwareEDLSwitch: "backend reason wins",
+	}
+	platformCaps := fakePlatformCapabilities{
+		device.CapabilityFirmwareEDLSwitch:  "verified direct DIAG transport",
+		device.CapabilityFirmwareNANDBackup: "verified Firehose read and reset",
+	}
+	r, err := New(Config{Discovery: d, Backends: &fakeFactory{b: &fakeBackend{mode: "at", caps: backendCaps}}, Platform: platformCaps})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Rescan(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	caps := r.Snapshot().Capabilities
+	if caps[device.CapabilityFirmwareEDLSwitch] != "backend reason wins" {
+		t.Fatalf("EDL reason = %q", caps[device.CapabilityFirmwareEDLSwitch])
+	}
+	if caps[device.CapabilityFirmwareNANDBackup] != "verified Firehose read and reset" {
+		t.Fatalf("backup reason = %q", caps[device.CapabilityFirmwareNANDBackup])
 	}
 }
 

@@ -25,7 +25,7 @@ Read `internal/api/http/boundary_test.go`, `server_test.go`, `sanitize_test.go`,
 | `/esim`, `/sim-profiles` | eSIM and SIM-profile services | `internal/application/esim/`, `internal/application/simprofiles/` |
 | `/network` | Network service | `internal/application/network/` |
 | `/device/actions/raw-at` | Raw AT service | `internal/application/rawat/` |
-| `/firmware` | Firmware service | `internal/application/firmware/` |
+| `/device-control` | Device-control service | `internal/application/firmware/` |
 | `/vowifi` | VoWiFi service | `internal/application/vowifi/` |
 | `/calls` | Extras service | `internal/application/extras/` |
 | `/notifications`, `/settings/startup` | Notification and startup services | `internal/application/notification/`, `internal/platform/startup/` |
@@ -78,6 +78,6 @@ Read `internal/api/http/runtime_stream_test.go`, `internal/api/http/websocket_te
 | SIM profile labels, notes, and tags | SIM-profile service |
 | eSIM notification history | eSIM service |
 | Network traffic data | Network service |
-| Firmware settings | Firmware service |
+| Device-control settings | Device-control service |
 
 The eUICC owns card-side profile data. SQLite owns local names, notes, and tags. Do not merge these sources in code or UI.

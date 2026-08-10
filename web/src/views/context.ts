@@ -8,7 +8,8 @@ import type {
   SimProfile,
   EsimNotificationHistory,
   EsimOverview,
-  FirmwareStatus,
+  DeviceControlStatus,
+  DeviceControlSettings,
   NetworkStatus,
   NetworkTrafficRange,
   NotificationChannelsSettings,
@@ -186,13 +187,17 @@ export type ViewContext = {
   rawATPreset: Ref<string>
   rawATResponse: Ref<string>
 
-  // firmware
-  firmware: Ref<FirmwareStatus | null>
+  // device control
+  firmware: Ref<DeviceControlStatus | null>
   firmwareOperation: ComputedRef<OperationStatus | undefined>
   firmwareOperationLogs: ComputedRef<string[]>
   firmwareOperationModalOpen: Ref<boolean>
   refreshFirmware: () => Promise<void>
-  runFirmwareAction: (action: 'unlock' | 'enable' | 'disable' | 'edl', serial?: string) => Promise<void>
+  runFirmwareAction: (
+    action: 'unlock' | 'enable' | 'disable' | 'adb-reboot' | 'edl' | 'reset',
+    serial?: string,
+    method?: 'direct' | 'adb',
+  ) => Promise<void>
   updateFirmwareUSBID: (vid: string, pid: string) => Promise<void>
   backupFirmware: (
     outputPath: string,
@@ -203,6 +208,8 @@ export type ViewContext = {
   selectFirmwareBackupDirectory: () => Promise<string>
   selectFirmwareEDLDirectory: () => Promise<string>
   selectFirmwareADBFile: () => Promise<string>
+  selectFirmwareLoaderFile: () => Promise<string>
+  saveFirmwareDeviceControlSettings: (patch: DeviceControlSettings) => Promise<boolean>
   saveFirmwareADBCommand: (command: string) => Promise<string>
 
   // notifications / settings

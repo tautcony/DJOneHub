@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -14,6 +15,8 @@ import (
 
 	"github.com/electricbubble/gadb"
 	"github.com/iniwex5/vohive/internal/application/operation"
+	"github.com/iniwex5/vohive/internal/domain/device"
+	"github.com/iniwex5/vohive/internal/transport"
 )
 
 // recordingATExecutor answers a fixed USB composition and records every
@@ -85,8 +88,8 @@ func TestEnterEDLUsesADBRebootService(t *testing.T) {
 	device := &rebootADBDevice{mode: make(chan string, 1)}
 	service := NewService(nil, operation.NewManager(nil), nil, Config{})
 	service.adbList = func() ([]ADBDevice, error) { return []ADBDevice{device}, nil }
-	if id, err := service.StartEnterEDL(context.Background(), device.Serial()); err != nil || id == "" {
-		t.Fatalf("StartEnterEDL() = %q, %v", id, err)
+	if id, err := service.StartEnterEDLWithMethod(context.Background(), "adb", device.Serial()); err != nil || id == "" {
+		t.Fatalf("StartEnterEDLWithMethod() = %q, %v", id, err)
 	}
 	select {
 	case mode := <-device.mode:
@@ -96,6 +99,70 @@ func TestEnterEDLUsesADBRebootService(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("Reboot() was not called")
 	}
+}
+
+func TestStartADBRebootUsesSelectedDevice(t *testing.T) {
+	device := &rebootADBDevice{mode: make(chan string, 1)}
+	service := NewService(nil, operation.NewManager(nil), nil, Config{})
+	service.adbList = func() ([]ADBDevice, error) { return []ADBDevice{device}, nil }
+	if id, err := service.StartADBReboot(context.Background(), device.Serial()); err != nil || id == "" {
+		t.Fatalf("StartADBReboot() = %q, %v", id, err)
+	}
+	select {
+	case mode := <-device.mode:
+		if mode != "" {
+			t.Fatalf("Reboot() mode = %q, want normal mode", mode)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Reboot() was not called")
+	}
+}
+
+type resetOnlyFirehose struct {
+	reset chan struct{}
+	read  chan struct{}
+}
+
+func (f *resetOnlyFirehose) ReadNAND(context.Context, device.Candidate, transport.FirehoseReadRequest) (transport.FirehoseReadResult, error) {
+	close(f.read)
+	return transport.FirehoseReadResult{}, nil
+}
+
+func (f *resetOnlyFirehose) Reset(context.Context, device.Candidate) error {
+	close(f.reset)
+	return nil
+}
+
+func TestStartResetDoesNotReadNAND(t *testing.T) {
+	firehose := &resetOnlyFirehose{reset: make(chan struct{}), read: make(chan struct{})}
+	ops := operation.NewManager(nil)
+	service := NewService(nil, ops, nil, Config{Firehose: firehose})
+	id, err := service.StartReset(context.Background())
+	if err != nil || id == "" {
+		t.Fatalf("StartReset() = %q, %v", id, err)
+	}
+	select {
+	case <-firehose.reset:
+	case <-time.After(time.Second):
+		t.Fatal("Firehose reset was not called")
+	}
+	select {
+	case <-firehose.read:
+		t.Fatal("standalone reset called ReadNAND")
+	default:
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		status, ok := ops.Get(id)
+		if ok && status.State == operation.Succeeded {
+			if status.Type != "device_control.reset" {
+				t.Fatalf("operation type = %q", status.Type)
+			}
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("reset operation did not succeed")
 }
 
 func TestStartUSBIDDoesNotRequireADBUnlockSerial(t *testing.T) {
@@ -160,6 +227,21 @@ func TestEDLInvocationSupportsPythonAndUV(t *testing.T) {
 	}
 	if uvInvocation.command != uvPath || uvInvocation.dir != edlDirectory || !slices.Equal(uvInvocation.prefix, []string{"run", "edl"}) {
 		t.Fatalf("uv invocation = %+v", uvInvocation)
+	}
+}
+
+func TestValidateEDLInvocationExplainsMissingPythonPackages(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 is unavailable")
+	}
+	script := filepath.Join(t.TempDir(), "edl.py")
+	if err := os.WriteFile(script, []byte("import djonehub_missing_edl_dependency\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err = validateEDLInvocation(context.Background(), edlInvocation{command: python, prefix: []string{script}, dir: filepath.Dir(script)})
+	if err == nil || !strings.Contains(err.Error(), "select the uv runner") {
+		t.Fatalf("validateEDLInvocation() error = %v", err)
 	}
 }
 

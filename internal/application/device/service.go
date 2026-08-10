@@ -62,7 +62,10 @@ func (s *Service) Status(ctx context.Context) (Status, error) {
 	out := Status{Snapshot: snapshot}
 	b, err := s.runtime.Backend()
 	if err != nil {
-		if snapshot.State == domain.StateAbsent || snapshot.State == domain.StateDisconnected {
+		// Reboot and USB mode changes pass through connecting and initializing
+		// states before a backend is ready. The snapshot is the valid status in
+		// that window; returning an API error would misreport a normal reconnect.
+		if snapshot.State != domain.StateReady {
 			return out, nil
 		}
 		return out, err

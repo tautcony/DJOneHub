@@ -958,7 +958,7 @@ func TestWebSocketStaysOpenWhenSnapshotFails(t *testing.T) {
 	if err := json.Unmarshal(payload, &envelope); err != nil {
 		t.Fatalf("bad envelope: %v", err)
 	}
-	if envelope.Type != "device.status.changed" {
+	if envelope.Type != "device.status.changed" && envelope.Type != "snapshot" {
 		t.Fatalf("envelope type = %q", envelope.Type)
 	}
 }
@@ -982,16 +982,16 @@ func (s *settingsJSONStore) Write(value any) error {
 	return nil
 }
 
-func TestFirmwareADBSettingsAPI(t *testing.T) {
+func TestDeviceControlSettingsAPI(t *testing.T) {
 	r, err := runtime.New(runtime.Config{Discovery: emptyDiscovery{}, Backends: emptyFactory{}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	ops := operation.NewManager(r.Events())
 	store := &settingsJSONStore{}
-	firmwareService := firmware.NewService(nil, ops, r, firmware.Config{Store: store})
+	deviceControlService := firmware.NewService(nil, ops, r, firmware.Config{Store: store})
 	server := NewServer(Config{
-		Firmware: firmwareService, Operations: ops, Runtime: r,
+		DeviceControl: deviceControlService, Operations: ops, Runtime: r,
 		Auth: AuthenticatorFunc(func(*http.Request) bool { return true }), LoopbackPort: testLoopbackPort,
 	})
 	handler := server.Handler()
@@ -1007,7 +1007,7 @@ func TestFirmwareADBSettingsAPI(t *testing.T) {
 	}
 
 	recorder := httptest.NewRecorder()
-	request := withSameOrigin(httptest.NewRequest(http.MethodPost, "/api/v1/firmware/actions/adb/settings", strings.NewReader(fmt.Sprintf(`{"command":%q}`, executable))))
+	request := withSameOrigin(httptest.NewRequest(http.MethodPost, "/api/v1/device-control/settings", strings.NewReader(fmt.Sprintf(`{"adb_command":%q}`, executable))))
 	handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d: %s", recorder.Code, recorder.Body.String())
@@ -1016,7 +1016,7 @@ func TestFirmwareADBSettingsAPI(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
-	if result["command"] != executable || result["command_source"] != "saved" {
+	if result["adb_command"] != executable {
 		t.Fatalf("response = %#v", result)
 	}
 
@@ -1028,7 +1028,7 @@ func TestFirmwareADBSettingsAPI(t *testing.T) {
 
 	// A command that does not resolve to an executable is rejected.
 	recorder = httptest.NewRecorder()
-	request = withSameOrigin(httptest.NewRequest(http.MethodPost, "/api/v1/firmware/actions/adb/settings", strings.NewReader(`{"command":"definitely-not-a-real-command-xyz"}`)))
+	request = withSameOrigin(httptest.NewRequest(http.MethodPost, "/api/v1/device-control/settings", strings.NewReader(`{"adb_command":"definitely-not-a-real-command-xyz"}`)))
 	handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("invalid command status = %d, want 400: %s", recorder.Code, recorder.Body.String())

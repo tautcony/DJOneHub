@@ -19,9 +19,12 @@ import (
 
 	"github.com/electricbubble/gadb"
 	"github.com/iniwex5/vohive/internal/application/operation"
+	"github.com/iniwex5/vohive/internal/domain/device"
 	derrors "github.com/iniwex5/vohive/internal/domain/errors"
+	"github.com/iniwex5/vohive/internal/modem"
 	"github.com/iniwex5/vohive/internal/runtime"
 	"github.com/iniwex5/vohive/internal/storage"
+	"github.com/iniwex5/vohive/internal/transport"
 )
 
 type ATExecutor interface {
@@ -46,12 +49,18 @@ type Config struct {
 	ADBCommand string
 	// Store persists user-tunable settings (e.g. the adb command). A nil
 	// store leaves settings in their default state.
-	Store storage.ValueStore
+	Store    storage.ValueStore
+	EDLPort  transport.EDLPort
+	Firehose transport.FirehosePort
 }
 
-// Settings is the JSON document persisted in the firmware settings namespace.
+// Settings is the atomic JSON document in the device-control namespace.
 type Settings struct {
-	ADBCommand string `json:"adb_command,omitempty"`
+	ADBCommand      string `json:"adb_command,omitempty"`
+	EDLPath         string `json:"edl_path,omitempty"`
+	EDLRunner       string `json:"edl_runner,omitempty"`
+	LoaderPath      string `json:"loader_path,omitempty"`
+	BackupDirectory string `json:"backup_directory,omitempty"`
 }
 
 func ConfigFromEnvironment() Config {
@@ -73,13 +82,14 @@ type Service struct {
 	mu       sync.Mutex
 	// statusCache 是固件状态短 TTL 缓存 (design D17): 读取不重复运行
 	// AT + ADB 探测序列。
-	statusCacheMu sync.Mutex
-	cachedStatus  *Status
-	cachedAt      time.Time
+	statusCacheMu      sync.Mutex
+	cachedStatus       *Status
+	cachedAt           time.Time
+	lastFirmware       modem.FirmwareRevision
+	lastFirmwareReason string
 }
 
-// firmwareStatusCacheTTL 是固件状态缓存的存活时间。
-const firmwareStatusCacheTTL = 1500 * time.Millisecond
+const deviceControlStatusCacheTTL = 1500 * time.Millisecond
 
 func NewService(at ATExecutor, ops *operation.Manager, rt *runtime.Runtime, config Config) *Service {
 	service := &Service{at: at, ops: ops, runtime: rt, config: config}
@@ -115,13 +125,73 @@ func (s *Service) ADBCommandConfig() (command, source string) {
 	return s.adbCommandConfig()
 }
 
+// DeviceControlSettings returns one effective document for ADB and EDL tools.
+func (s *Service) DeviceControlSettings() Settings {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	value := s.settings
+	if strings.TrimSpace(s.config.ADBCommand) != "" {
+		value.ADBCommand = strings.TrimSpace(s.config.ADBCommand)
+	}
+	if strings.TrimSpace(s.config.EDLScript) != "" {
+		value.EDLPath = strings.TrimSpace(s.config.EDLScript)
+	}
+	return value
+}
+
+// SetDeviceControlSettings validates and persists the complete control
+// document in one write. Empty optional paths clear their saved values.
+func (s *Service) SetDeviceControlSettings(ctx context.Context, value Settings) error {
+	_ = ctx
+	value.ADBCommand = strings.TrimSpace(value.ADBCommand)
+	value.EDLPath = strings.TrimSpace(value.EDLPath)
+	value.EDLRunner = strings.TrimSpace(value.EDLRunner)
+	value.LoaderPath = strings.TrimSpace(value.LoaderPath)
+	value.BackupDirectory = strings.TrimSpace(value.BackupDirectory)
+	if value.ADBCommand != "" {
+		if _, err := exec.LookPath(value.ADBCommand); err != nil {
+			return derrors.New(derrors.InvalidRequest, "adb command not found", false, nil)
+		}
+	}
+	for name, path := range map[string]string{"edl_path": value.EDLPath, "loader_path": value.LoaderPath} {
+		if path == "" {
+			continue
+		}
+		if _, err := os.Stat(path); err != nil {
+			return derrors.New(derrors.InvalidRequest, name+" does not exist", false, nil)
+		}
+		if name == "loader_path" {
+			if info, statErr := os.Stat(path); statErr != nil || !info.Mode().IsRegular() {
+				return derrors.New(derrors.InvalidRequest, "loader_path is not a regular file", false, nil)
+			}
+		}
+	}
+	if value.EDLRunner != "" && value.EDLRunner != "python" && value.EDLRunner != "uv" {
+		return derrors.New(derrors.InvalidRequest, "edl_runner must be python or uv", false, nil)
+	}
+	if s.config.Store == nil {
+		return derrors.New(derrors.CapabilityNotSupported, "device-control settings are unavailable", false, nil)
+	}
+	s.mu.Lock()
+	err := s.config.Store.Write(&value)
+	if err == nil {
+		s.settings = value
+	}
+	s.mu.Unlock()
+	if err != nil {
+		return derrors.New(derrors.Internal, "unable to save device-control settings", true, nil)
+	}
+	s.invalidateStatusCache()
+	return nil
+}
+
 // SetADBCommand persists the adb command used to start the local adb server.
 // An empty command clears the saved value; DJONEHUB_ADB_COMMAND still wins
 // while it is set. A non-empty command must resolve to an executable.
 func (s *Service) SetADBCommand(ctx context.Context, command string) error {
 	command = strings.TrimSpace(command)
 	if s.config.Store == nil {
-		return derrors.New(derrors.CapabilityNotSupported, "firmware settings are unavailable", false, nil)
+		return derrors.New(derrors.CapabilityNotSupported, "device-control settings are unavailable", false, nil)
 	}
 	if command != "" {
 		if _, err := exec.LookPath(command); err != nil {
@@ -139,20 +209,26 @@ func (s *Service) SetADBCommand(ctx context.Context, command string) error {
 }
 
 type Status struct {
-	Available       bool             `json:"available"`
-	Manufacturer    string           `json:"manufacturer,omitempty"`
-	Model           string           `json:"model,omitempty"`
-	Firmware        string           `json:"firmware,omitempty"`
-	ADBKeySerial    string           `json:"adb_key_serial,omitempty"`
-	USBConfig       string           `json:"usb_config,omitempty"`
-	USBConfigFields []USBConfigField `json:"usb_config_fields,omitempty"`
-	USBID           string           `json:"usb_id,omitempty"`
-	USBVID          string           `json:"usb_vid,omitempty"`
-	USBPID          string           `json:"usb_pid,omitempty"`
-	Mode            string           `json:"mode"`
-	ModeReason      string           `json:"mode_reason,omitempty"`
-	ADB             ADBStatus        `json:"adb"`
-	Backup          BackupStatus     `json:"backup"`
+	Available             bool              `json:"available"`
+	Manufacturer          string            `json:"manufacturer,omitempty"`
+	Model                 string            `json:"model,omitempty"`
+	Firmware              string            `json:"firmware,omitempty"`
+	FirmwareVersionSource string            `json:"firmware_version_source,omitempty"`
+	FirmwareVersionLive   bool              `json:"firmware_version_live,omitempty"`
+	FirmwareVersionReason string            `json:"firmware_version_reason,omitempty"`
+	ADBKeySerial          string            `json:"adb_key_serial,omitempty"`
+	USBConfig             string            `json:"usb_config,omitempty"`
+	USBConfigFields       []USBConfigField  `json:"usb_config_fields,omitempty"`
+	USBID                 string            `json:"usb_id,omitempty"`
+	USBVID                string            `json:"usb_vid,omitempty"`
+	USBPID                string            `json:"usb_pid,omitempty"`
+	Mode                  string            `json:"mode"`
+	ModeReason            string            `json:"mode_reason,omitempty"`
+	ADB                   ADBStatus         `json:"adb"`
+	Backup                BackupStatus      `json:"backup"`
+	EntryMethods          []string          `json:"entry_methods,omitempty"`
+	EntryMethodReasons    map[string]string `json:"entry_method_reasons,omitempty"`
+	Settings              Settings          `json:"settings"`
 }
 
 type USBConfigField struct {
@@ -181,16 +257,18 @@ type ADBDeviceStatus struct {
 }
 
 type BackupStatus struct {
-	Available  bool   `json:"available"`
-	Command    string `json:"command,omitempty"`
-	Script     string `json:"script,omitempty"`
-	DefaultDir string `json:"default_dir,omitempty"`
+	Available      bool   `json:"available"`
+	ResetAvailable bool   `json:"reset_available"`
+	Reason         string `json:"reason,omitempty"`
+	Command        string `json:"command,omitempty"`
+	Script         string `json:"script,omitempty"`
+	DefaultDir     string `json:"default_dir,omitempty"`
 }
 
 // Status 从短 TTL 缓存提供固件状态; 缓存过期时才运行完整探测序列。
 func (s *Service) Status(ctx context.Context) (Status, error) {
 	s.statusCacheMu.Lock()
-	if s.cachedStatus != nil && time.Since(s.cachedAt) < firmwareStatusCacheTTL {
+	if s.cachedStatus != nil && time.Since(s.cachedAt) < deviceControlStatusCacheTTL {
 		cached := *s.cachedStatus
 		s.statusCacheMu.Unlock()
 		return cached, nil
@@ -207,8 +285,26 @@ func (s *Service) Status(ctx context.Context) (Status, error) {
 	return status, err
 }
 
+func (s *Service) invalidateStatusCache() {
+	s.statusCacheMu.Lock()
+	s.cachedStatus = nil
+	s.cachedAt = time.Time{}
+	s.statusCacheMu.Unlock()
+}
+
 func (s *Service) statusFresh(ctx context.Context) (Status, error) {
 	status := Status{Mode: "unknown", Backup: s.backupStatus()}
+	status.Settings = s.DeviceControlSettings()
+	status.EntryMethodReasons = map[string]string{}
+	status.EntryMethodReasons["adb"] = "ADB fallback requires one selected online device"
+	if s.runtime != nil {
+		caps := s.runtime.Snapshot().Capabilities
+		if caps.Has(device.CapabilityFirmwareEDLSwitch) && s.config.EDLPort != nil {
+			status.EntryMethods = append(status.EntryMethods, "direct")
+		} else {
+			status.EntryMethodReasons["direct"] = "direct DIAG EDL switching is unavailable on the active platform"
+		}
+	}
 	if s.config.DetectEDL != nil {
 		detected, err := s.config.DetectEDL(ctx)
 		if err != nil {
@@ -220,6 +316,16 @@ func (s *Service) statusFresh(ctx context.Context) (Status, error) {
 			status.USBVID = "0x05C6"
 			status.USBPID = "0x9008"
 			status.USBID = "05C6:9008"
+			s.statusCacheMu.Lock()
+			if s.lastFirmware.Value != "" {
+				status.Firmware = s.lastFirmware.Value
+				status.FirmwareVersionSource = s.lastFirmware.Source
+				status.FirmwareVersionLive = false
+				status.FirmwareVersionReason = "cached from the last normal-mode AT probe; EDL has no live AT channel"
+			} else {
+				status.FirmwareVersionReason = "firmware revision is unavailable while the device is in EDL"
+			}
+			s.statusCacheMu.Unlock()
 			return status, nil
 		}
 	}
@@ -229,7 +335,6 @@ func (s *Service) statusFresh(ctx context.Context) (Status, error) {
 		responses := map[string]string{}
 		commands := []struct{ key, command string }{
 			{"ati", "ATI"},
-			{"firmware", "AT+CGMR"},
 			{"adb_key", "AT+QADBKEY?"},
 			{"usb_config", `AT+QCFG="usbcfg"?`},
 		}
@@ -243,7 +348,21 @@ func (s *Service) statusFresh(ctx context.Context) (Status, error) {
 			responses[item.key] = response
 		}
 		status.Manufacturer, status.Model = parseATI(responses["ati"])
-		status.Firmware = firstValue(responses["firmware"])
+		if revision, revisionErr := modem.ProbeFirmwareRevision(func(command string, timeout time.Duration) (string, error) {
+			probeCtx, cancel := context.WithTimeout(ctx, timeout)
+			defer cancel()
+			return s.at.Execute(probeCtx, command)
+		}); revisionErr == nil {
+			status.Firmware = revision.Value
+			status.FirmwareVersionSource = revision.Source
+			status.FirmwareVersionLive = revision.Live
+			s.statusCacheMu.Lock()
+			s.lastFirmware = revision
+			s.lastFirmwareReason = ""
+			s.statusCacheMu.Unlock()
+		} else {
+			status.FirmwareVersionReason = "the modem returned no unambiguous QGMR or CGMR revision"
+		}
 		status.ADBKeySerial = parseADBKeySerial(responses["adb_key"])
 		status.USBConfig = firstValue(responses["usb_config"])
 		if config, ok := parseUSBConfig(responses["usb_config"]); ok {
@@ -257,11 +376,20 @@ func (s *Service) statusFresh(ctx context.Context) (Status, error) {
 		status.USBID = parseUSBID(status.USBConfig)
 		status.Available = len(responses) > 0
 		if !status.Available && lastErr != nil {
-			return status, lastErr
+			if s.runtime == nil || s.runtime.Snapshot().State == device.StateReady {
+				return status, lastErr
+			}
+			status.ModeReason = "device is reconnecting after a mode change"
 		}
 	}
 
 	status.ADB = s.adbStatus()
+	if status.ADB.Connected {
+		status.EntryMethods = append(status.EntryMethods, "adb")
+		delete(status.EntryMethodReasons, "adb")
+	} else {
+		status.EntryMethodReasons["adb"] = "ADB fallback requires one selected online device"
+	}
 	status.ADB.Enabled = adbEnabled
 	status.ADB.EnabledKnown = adbEnabledKnown
 	if status.ADB.EnabledKnown && status.ADB.Enabled {
@@ -292,7 +420,12 @@ func (s *Service) StartUnlock(ctx context.Context) (string, error) {
 	if s.ops == nil {
 		return "", errors.New("operation manager is unavailable")
 	}
-	return s.ops.Start(ctx, "firmware.adb_unlock", func(ctx context.Context, _ string, report func(int, string)) error {
+	return s.ops.Start(ctx, "device_control.adb_unlock", func(ctx context.Context, _ string, report func(int, string)) error {
+		release, err := s.acquireDevice(ctx)
+		if err != nil {
+			return err
+		}
+		defer release()
 		return s.unlock(ctx, report)
 	})
 }
@@ -301,7 +434,13 @@ func (s *Service) StartADBMode(ctx context.Context, enabled bool) (string, error
 	if s.ops == nil {
 		return "", errors.New("operation manager is unavailable")
 	}
-	return s.ops.Start(ctx, "firmware.adb_mode", func(ctx context.Context, _ string, report func(int, string)) error {
+	return s.ops.Start(ctx, "device_control.adb_mode", func(ctx context.Context, _ string, report func(int, string)) error {
+		release, err := s.acquireDevice(ctx)
+		if err != nil {
+			return err
+		}
+		defer release()
+		defer s.invalidateStatusCache()
 		if s.at == nil {
 			return derrors.CapabilityMissing("raw_at", "firmware_adb_mode", "AT control channel is unavailable")
 		}
@@ -331,7 +470,8 @@ func (s *Service) StartADBMode(ctx context.Context, enabled bool) (string, error
 	})
 }
 
-func (s *Service) StartEnterEDL(ctx context.Context, serial string) (string, error) {
+// StartADBReboot restarts the selected online ADB device in normal mode.
+func (s *Service) StartADBReboot(ctx context.Context, serial string) (string, error) {
 	serial = strings.TrimSpace(serial)
 	if serial == "" {
 		return "", derrors.New(derrors.InvalidRequest, "an ADB device must be selected", false, nil)
@@ -339,18 +479,107 @@ func (s *Service) StartEnterEDL(ctx context.Context, serial string) (string, err
 	if s.ops == nil {
 		return "", errors.New("operation manager is unavailable")
 	}
-	return s.ops.Start(ctx, "firmware.enter_edl", func(ctx context.Context, _ string, report func(int, string)) error {
-		device, err := s.selectOnlineADBDevice(serial)
+	return s.ops.Start(ctx, "device_control.adb_reboot", func(ctx context.Context, _ string, report func(int, string)) error {
+		defer s.invalidateStatusCache()
+		release, err := s.acquireDevice(ctx)
 		if err != nil {
 			return err
 		}
-		report(20, "sending reboot edl")
-		if err := device.Reboot("edl"); err != nil {
-			return fmt.Errorf("ADB reboot to EDL failed: %w", err)
+		defer release()
+		adbDevice, err := s.selectOnlineADBDevice(serial)
+		if err != nil {
+			return err
 		}
-		report(100, "EDL reboot requested")
+		report(30, "sending ADB reboot request")
+		if err := adbDevice.Reboot(""); err != nil {
+			return derrors.New(derrors.TransportUnavailable, "ADB reboot failed", true, map[string]any{"phase": "adb_reboot"})
+		}
+		report(100, "ADB reboot requested; reconnect required")
 		return nil
 	})
+}
+
+// StartEnterEDLWithMethod selects direct DIAG or the explicit ADB fallback.
+// Direct failures never fall back to ADB because the serial could identify a
+// different online device.
+func (s *Service) StartEnterEDLWithMethod(ctx context.Context, method, serial string) (string, error) {
+	method = strings.ToLower(strings.TrimSpace(method))
+	if method == "" {
+		method = "direct"
+		if s.runtime == nil || !s.runtime.Snapshot().Capabilities.Has(device.CapabilityFirmwareEDLSwitch) || s.config.EDLPort == nil {
+			method = "adb"
+		}
+	}
+	if method != "direct" && method != "adb" {
+		return "", derrors.New(derrors.InvalidRequest, "entry method must be direct or adb", false, map[string]any{"method": method})
+	}
+	if method == "direct" && (s.config.EDLPort == nil || s.runtime == nil || !s.runtime.Snapshot().Capabilities.Has(device.CapabilityFirmwareEDLSwitch)) {
+		return "", derrors.CapabilityMissing(string(device.CapabilityFirmwareEDLSwitch), "device_control.enter_edl", "direct DIAG switching is unavailable")
+	}
+	if method == "adb" && strings.TrimSpace(serial) == "" {
+		return "", derrors.New(derrors.InvalidRequest, "an ADB device must be selected for the ADB fallback", false, nil)
+	}
+	if s.ops == nil {
+		return "", errors.New("operation manager is unavailable")
+	}
+	return s.ops.Start(ctx, "device_control.enter_edl", func(ctx context.Context, _ string, report func(int, string)) error {
+		defer s.invalidateStatusCache()
+		release, err := s.acquireDevice(ctx)
+		if err != nil {
+			return err
+		}
+		defer release()
+		var original device.Candidate
+		if s.runtime != nil {
+			original, err = s.runtime.Candidate()
+			if err != nil {
+				return err
+			}
+		}
+		if method == "adb" {
+			adbDevice, selectErr := s.selectOnlineADBDevice(strings.TrimSpace(serial))
+			if selectErr != nil {
+				return selectErr
+			}
+			report(20, "enter_edl: sending ADB reboot request")
+			if err := adbDevice.Reboot("edl"); err != nil {
+				return derrors.New(derrors.TransportUnavailable, "ADB reboot to EDL failed", true, map[string]any{"phase": "enter_edl"})
+			}
+		} else {
+			report(20, "enter_edl: sending direct DIAG reboot request")
+			if err := s.config.EDLPort.EnterEDL(ctx, original); err != nil {
+				return derrors.New(derrors.TransportUnavailable, "direct DIAG EDL entry failed", true, map[string]any{"phase": "enter_edl", "cause": err.Error()})
+			}
+		}
+		if s.config.EDLPort != nil && original.Identity.PhysicalLocation != "" {
+			report(55, "await_edl: waiting for the matching Qualcomm device")
+			deadline := time.Now().Add(15 * time.Second)
+			for time.Now().Before(deadline) {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				if _, findErr := s.config.EDLPort.FindEDL(ctx, original); findErr == nil {
+					report(100, "complete: EDL device matched at the original location")
+					return nil
+				}
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(250 * time.Millisecond):
+				}
+			}
+			return derrors.New(derrors.DeviceOffline, "matching EDL device did not re-enumerate", true, map[string]any{"phase": "await_edl"})
+		}
+		report(100, "complete: EDL reboot requested")
+		return nil
+	})
+}
+
+func (s *Service) acquireDevice(ctx context.Context) (func(), error) {
+	if s.runtime == nil || s.runtime.Locks() == nil {
+		return func() {}, nil
+	}
+	return s.runtime.Locks().Acquire(ctx, runtime.ResourceDevice)
 }
 
 func (s *Service) OpenADBShell(serial string) (io.ReadWriteCloser, error) {
@@ -416,12 +645,25 @@ func (s *Service) StartBackup(ctx context.Context, request BackupRequest) (strin
 	if err != nil {
 		return "", err
 	}
+	if err := validateEDLInvocation(ctx, invocation); err != nil {
+		return "", err
+	}
 	var operationID string
 	ready := make(chan struct{})
 	var startErr error
-	operationID, startErr = s.ops.Start(ctx, "firmware.backup", func(ctx context.Context, _ string, report func(int, string)) error {
+	operationID, startErr = s.ops.Start(ctx, "device_control.nand_backup", func(ctx context.Context, _ string, report func(int, string)) error {
 		<-ready
-		return s.backup(ctx, output, loader, invocation, report, func(message string) {
+		defer s.invalidateStatusCache()
+		firehose := s.config.Firehose
+		if firehose == nil {
+			firehose = &CommandFirehose{
+				ClientPath: invocation.command,
+				LoaderPath: loader,
+				Prefix:     invocation.prefix,
+				Dir:        invocation.dir,
+			}
+		}
+		return s.backupWithFirehose(ctx, firehose, output, loader, invocation, report, func(message string) {
 			s.ops.Log(operationID, message)
 		})
 	})
@@ -430,6 +672,209 @@ func (s *Service) StartBackup(ctx context.Context, request BackupRequest) (strin
 	}
 	close(ready)
 	return operationID, nil
+}
+
+// StartReset leaves Qualcomm EDL mode through the configured Firehose client
+// and waits for the same physical device to return in its normal USB mode.
+func (s *Service) StartReset(ctx context.Context) (string, error) {
+	if s.ops == nil {
+		return "", errors.New("operation manager is unavailable")
+	}
+	settings := s.DeviceControlSettings()
+	invocation, err := s.edlInvocation(settings.EDLPath, settings.EDLRunner)
+	if err != nil && s.config.Firehose == nil {
+		return "", err
+	}
+	if s.config.Firehose == nil {
+		if err := validateEDLInvocation(ctx, invocation); err != nil {
+			return "", err
+		}
+	}
+	loader := strings.TrimSpace(settings.LoaderPath)
+	return s.ops.Start(ctx, "device_control.reset", func(ctx context.Context, _ string, report func(int, string)) error {
+		defer s.invalidateStatusCache()
+		release, acquireErr := s.acquireDevice(ctx)
+		if acquireErr != nil {
+			return acquireErr
+		}
+		defer release()
+
+		original := device.Candidate{}
+		if s.runtime != nil {
+			if candidate, candidateErr := s.runtime.Candidate(); candidateErr == nil {
+				original = candidate
+			}
+		}
+		edlCandidate := original
+		if s.config.EDLPort != nil {
+			report(15, "await_edl: locating the matching Qualcomm device")
+			edlCandidate, err = s.config.EDLPort.FindEDL(ctx, original)
+			if err != nil {
+				return derrors.New(derrors.DeviceOffline, "matching EDL device was not found", true, map[string]any{"phase": "await_edl"})
+			}
+		}
+
+		firehose := s.config.Firehose
+		if firehose == nil {
+			firehose = &CommandFirehose{
+				ClientPath: invocation.command,
+				LoaderPath: loader,
+				Prefix:     invocation.prefix,
+				Dir:        invocation.dir,
+			}
+		}
+		report(45, "reset: requesting normal USB mode through Firehose")
+		if resetErr := firehose.Reset(ctx, edlCandidate); resetErr != nil {
+			return derrors.New(derrors.TransportUnavailable, "Firehose reset failed", true, map[string]any{"phase": "reset", "reconnect_required": true, "cause": resetErr.Error()})
+		}
+		if s.config.EDLPort == nil || original.Identity.PhysicalLocation == "" {
+			report(100, "complete: reset request completed")
+			return nil
+		}
+		report(70, "await_boot: waiting for the original device to reconnect")
+		deadline := time.Now().Add(20 * time.Second)
+		for time.Now().Before(deadline) {
+			if _, findErr := s.config.EDLPort.FindOriginal(ctx, original); findErr == nil {
+				report(100, "complete: normal USB mode restored")
+				return nil
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(250 * time.Millisecond):
+			}
+		}
+		return derrors.New(derrors.DeviceOffline, "the original device did not reconnect after reset", true, map[string]any{"phase": "await_boot", "reconnect_required": true})
+	})
+}
+
+func (s *Service) backupWithFirehose(ctx context.Context, firehose transport.FirehosePort, output, loader string, invocation edlInvocation, report func(int, string), logOutput func(string)) error {
+	release, err := s.acquireDevice(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	original := device.Candidate{}
+	if s.runtime != nil {
+		original, err = s.runtime.Candidate()
+		if err != nil {
+			return err
+		}
+	}
+	edlCandidate := original
+	if s.config.EDLPort != nil {
+		report(0, "await_edl: waiting for the matching Qualcomm device")
+		deadline := time.Now().Add(15 * time.Second)
+		for time.Now().Before(deadline) {
+			edlCandidate, err = s.config.EDLPort.FindEDL(ctx, original)
+			if err == nil {
+				break
+			}
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(250 * time.Millisecond):
+			}
+		}
+		if err != nil {
+			return derrors.New(derrors.DeviceOffline, "matching EDL device was not found", true, map[string]any{"phase": "await_edl"})
+		}
+	}
+	if commandFirehose, ok := firehose.(*CommandFirehose); ok {
+		configured := *commandFirehose
+		configured.Output = firehoseOutputReporter(report, logOutput)
+		firehose = &configured
+	}
+	readReq := transport.FirehoseReadRequest{ClientPath: invocation.command, LoaderPath: loader, OutputPath: output, PageSize: 2048, BlockSize: 131072}
+	report(0, "read_nand: reading NAND image")
+	result, readErr := firehose.ReadNAND(ctx, edlCandidate, readReq)
+	if readErr != nil {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = firehose.Reset(cleanupCtx, edlCandidate)
+		return derrors.New(derrors.TransportUnavailable, "NAND read failed", true, map[string]any{"phase": "read_nand", "backup_valid": false, "reconnect_required": true})
+	}
+	if !result.Valid || result.Bytes == 0 {
+		return derrors.New(derrors.InvalidRequest, "NAND read did not produce a valid image", false, map[string]any{"phase": "read_nand", "backup_valid": false})
+	}
+	report(100, "reset: resetting the module through Firehose")
+	if resetErr := firehose.Reset(ctx, edlCandidate); resetErr != nil {
+		return derrors.New(derrors.TransportUnavailable, "Firehose reset failed after a valid NAND read", true, map[string]any{"phase": "reset", "backup_valid": true, "reconnect_required": true, "cause": resetErr.Error()})
+	}
+	if s.config.EDLPort != nil {
+		report(100, "await_boot: waiting for the original device to reconnect")
+		deadline := time.Now().Add(20 * time.Second)
+		for time.Now().Before(deadline) {
+			if _, findErr := s.config.EDLPort.FindOriginal(ctx, original); findErr == nil {
+				report(100, "complete: NAND backup and reconnect completed")
+				return nil
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(250 * time.Millisecond):
+			}
+		}
+		return derrors.New(derrors.DeviceOffline, "the original device did not reconnect after reset", true, map[string]any{"phase": "await_boot", "backup_valid": true, "reconnect_required": true})
+	}
+	if logOutput != nil {
+		logOutput("NAND backup and Firehose reset completed\n")
+	}
+	report(100, "complete: NAND backup and reset completed")
+	return nil
+}
+
+var firehosePercentPattern = regexp.MustCompile(`([0-9]+(?:\.[0-9]+)?)%`)
+
+func firehoseOutputReporter(report func(int, string), logOutput func(string)) func(string) {
+	var mu sync.Mutex
+	var progressBuffer string
+	lastProgress := -1
+	lastMessage := ""
+	return func(raw string) {
+		mu.Lock()
+		defer mu.Unlock()
+		if logOutput != nil {
+			logOutput(raw)
+		}
+
+		// Process writes may split a percentage or an ANSI sequence. Keep only a
+		// short diagnostic tail for parsing; the raw chunks above remain unchanged.
+		progressBuffer += raw
+		if len(progressBuffer) > 16*1024 {
+			progressBuffer = progressBuffer[len(progressBuffer)-16*1024:]
+		}
+		cleaned := cleanTerminalOutput(progressBuffer)
+		matches := firehosePercentPattern.FindAllStringSubmatchIndex(cleaned, -1)
+		if len(matches) == 0 {
+			return
+		}
+		match := matches[len(matches)-1]
+		value, err := strconv.ParseFloat(cleaned[match[2]:match[3]], 64)
+		if err != nil {
+			return
+		}
+		progress := int(value)
+		if progress > 100 {
+			progress = 100
+		}
+		lineStart := strings.LastIndexAny(cleaned[:match[0]], "\r\n") + 1
+		lineEnd := strings.IndexAny(cleaned[match[1]:], "\r\n")
+		if lineEnd < 0 {
+			lineEnd = len(cleaned)
+		} else {
+			lineEnd += match[1]
+		}
+		message := strings.TrimSpace(cleaned[lineStart:lineEnd])
+		if progress != lastProgress || message != lastMessage {
+			lastProgress = progress
+			lastMessage = message
+			report(progress, message)
+		}
+	}
 }
 
 // SelectBackupDirectory opens the platform directory picker when available.
@@ -447,6 +892,11 @@ func (s *Service) SelectEDLDirectory(ctx context.Context) (string, error) {
 // SelectADBFile opens a file picker for the adb executable.
 func (s *Service) SelectADBFile(ctx context.Context) (string, error) {
 	return selectFile(ctx, "Choose the adb executable", "")
+}
+
+// SelectLoaderFile opens a picker for an optional Firehose loader.
+func (s *Service) SelectLoaderFile(ctx context.Context) (string, error) {
+	return selectFile(ctx, "Choose an optional Firehose loader", "")
 }
 
 // selectDirectory opens the platform directory chooser. Platforms without a
@@ -582,7 +1032,13 @@ func (s *Service) StartUSBID(ctx context.Context, request USBIDRequest) (string,
 	if s.ops == nil {
 		return "", errors.New("operation manager is unavailable")
 	}
-	return s.ops.Start(ctx, "firmware.usb_id", func(ctx context.Context, _ string, report func(int, string)) error {
+	return s.ops.Start(ctx, "device_control.usb_id", func(ctx context.Context, _ string, report func(int, string)) error {
+		release, err := s.acquireDevice(ctx)
+		if err != nil {
+			return err
+		}
+		defer release()
+		defer s.invalidateStatusCache()
 		if s.at == nil {
 			return derrors.CapabilityMissing("raw_at", "firmware_usb_id", "AT control channel is unavailable")
 		}
@@ -681,6 +1137,27 @@ type edlInvocation struct {
 	command string
 	prefix  []string
 	dir     string
+}
+
+func validateEDLInvocation(ctx context.Context, invocation edlInvocation) error {
+	checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	args := append(append([]string(nil), invocation.prefix...), "--help")
+	cmd := exec.CommandContext(checkCtx, invocation.command, args...)
+	cmd.Dir = invocation.dir
+	var stdout, stderr boundedBuffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		if checkCtx.Err() != nil {
+			return derrors.New(derrors.TransportUnavailable, "EDL client startup check timed out", true, map[string]any{"phase": "configure_edl"})
+		}
+		output := boundedToolOutput(stdout.Bytes(), stderr.Bytes())
+		if strings.Contains(output, "ModuleNotFoundError") || strings.Contains(output, "No module named") {
+			return derrors.New(derrors.InvalidRequest, "EDL Python environment is missing required packages; select the uv runner or install the project dependencies", false, map[string]any{"phase": "configure_edl"})
+		}
+		return derrors.New(derrors.InvalidRequest, "EDL client failed its startup check", false, map[string]any{"phase": "configure_edl"})
+	}
+	return nil
 }
 
 func (s *Service) backup(ctx context.Context, output, loader string, invocation edlInvocation, report func(int, string), logOutput func(string)) error {
@@ -812,19 +1289,25 @@ func (s *Service) backupStatus() BackupStatus {
 	if command == "" {
 		command = "edl"
 	}
-	available := false
-	if s.config.EDLScript != "" {
-		_, available = commandPath(s.config.EDLPython, "python3")
-		_, scriptErr := os.Stat(s.config.EDLScript)
-		available = available && scriptErr == nil
-	} else {
-		_, available = commandPath(strings.Fields(command)[0], "edl")
+	settings := s.DeviceControlSettings()
+	clientAvailable := s.config.Firehose != nil
+	if !clientAvailable {
+		_, invocationErr := s.edlInvocation(settings.EDLPath, settings.EDLRunner)
+		clientAvailable = invocationErr == nil
 	}
 	defaultDir, _ := os.UserHomeDir()
 	if defaultDir != "" {
 		defaultDir = filepath.Join(defaultDir, "DJOneHub", "firmware-backups")
 	}
-	return BackupStatus{Available: available, Command: command, Script: s.config.EDLScript, DefaultDir: defaultDir}
+	resetAvailable := clientAvailable
+	available := clientAvailable && resetAvailable
+	reason := ""
+	if !clientAvailable {
+		reason = "EDL client is not configured or is unavailable"
+	} else if !resetAvailable {
+		reason = "Firehose reset path is unavailable"
+	}
+	return BackupStatus{Available: available, ResetAvailable: resetAvailable, Reason: reason, Command: command, Script: s.config.EDLScript, DefaultDir: defaultDir}
 }
 
 func commandPath(value, fallback string) (string, bool) {

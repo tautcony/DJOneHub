@@ -52,6 +52,26 @@ func New() *Adapter {
 	}), sysfsRoot: "/sys/bus/usb/devices", probeFail: make(map[string]time.Time)}
 }
 
+func (a *Adapter) PlatformCapabilities(context.Context) device.CapabilitySet {
+	return a.Adapter.Capabilities.Clone()
+}
+
+func (a *Adapter) EnterEDL(context.Context, device.Candidate) error {
+	return unsupported.Unsupported(string(device.CapabilityFirmwareEDLSwitch), "enter_edl")
+}
+func (a *Adapter) FindEDL(context.Context, device.Candidate) (device.Candidate, error) {
+	return device.Candidate{}, unsupported.Unsupported(string(device.CapabilityFirmwareEDLSwitch), "find_edl")
+}
+func (a *Adapter) FindOriginal(context.Context, device.Candidate) (device.Candidate, error) {
+	return device.Candidate{}, unsupported.Unsupported(string(device.CapabilityFirmwareEDLSwitch), "find_original")
+}
+func (a *Adapter) ReadNAND(context.Context, device.Candidate, transport.FirehoseReadRequest) (transport.FirehoseReadResult, error) {
+	return transport.FirehoseReadResult{}, unsupported.Unsupported(string(device.CapabilityFirmwareNANDBackup), "read_nand")
+}
+func (a *Adapter) Reset(context.Context, device.Candidate) error {
+	return unsupported.Unsupported(string(device.CapabilityFirmwareNANDBackup), "reset")
+}
+
 func (a *Adapter) Discover(ctx context.Context) ([]device.Candidate, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err

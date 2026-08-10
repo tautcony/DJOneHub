@@ -8,11 +8,18 @@ import (
 )
 
 type Identity struct {
-	IMEI     string `json:"imei,omitempty"`
-	IMSI     string `json:"imsi,omitempty"`
-	ICCID    string `json:"iccid,omitempty"`
-	MSISDN   string `json:"msisdn,omitempty"`
-	Firmware string `json:"firmware,omitempty"`
+	IMEI           string `json:"imei,omitempty"`
+	IMSI           string `json:"imsi,omitempty"`
+	ICCID          string `json:"iccid,omitempty"`
+	MSISDN         string `json:"msisdn,omitempty"`
+	Firmware       string `json:"firmware,omitempty"`
+	FirmwareSource string `json:"firmware_source,omitempty"`
+	FirmwareLive   bool   `json:"firmware_live,omitempty"`
+}
+
+// FirmwareRevisionProvider exposes revision provenance for status surfaces.
+type FirmwareRevisionProvider interface {
+	GetFirmwareRevision(context.Context) (value, source string, live bool, err error)
 }
 
 type RadioState struct {

@@ -65,10 +65,11 @@ func parseIMEI(resp string) string {
 }
 
 func parseFirmware(resp string) string {
-	for _, line := range splitLines(resp) {
-		if line != "" && line != "OK" && !strings.HasPrefix(line, "+") {
-			return line
-		}
+	if value, ok := ParseFirmwareRevision(resp, "AT+QGMR", "+QGMR:"); ok {
+		return value
+	}
+	if value, ok := ParseFirmwareRevision(resp, "AT+CGMR", "+CGMR:"); ok {
+		return value
 	}
 	return ""
 }

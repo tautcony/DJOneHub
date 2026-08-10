@@ -19,11 +19,15 @@ func (m *Manager) QueryIMEI() (string, error) {
 }
 
 func (m *Manager) QueryFirmware() (string, error) {
-	resp, err := m.ExecuteATSilent("AT+CGMR", 2*time.Second)
+	revision, err := m.QueryFirmwareRevision()
 	if err != nil {
 		return "", err
 	}
-	return parseFirmware(resp), nil
+	return revision.Value, nil
+}
+
+func (m *Manager) QueryFirmwareRevision() (FirmwareRevision, error) {
+	return ProbeFirmwareRevision(m.ExecuteATSilent)
 }
 
 func (m *Manager) QuerySIMInserted() (bool, error) {

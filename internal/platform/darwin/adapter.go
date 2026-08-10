@@ -18,6 +18,7 @@ import (
 	"github.com/iniwex5/vohive/internal/esim"
 	"github.com/iniwex5/vohive/internal/modem"
 	"github.com/iniwex5/vohive/internal/platform/unsupported"
+	"github.com/iniwex5/vohive/internal/transport"
 )
 
 type Adapter struct {
@@ -30,6 +31,46 @@ func New() *Adapter {
 	return &Adapter{Adapter: unsupported.New("darwin", device.CapabilitySet{
 		device.CapabilityDeviceStatus: "DJI/Quectel USB and AT serial discovery",
 	}), networkInterfaces: make(map[string]string)}
+}
+
+func (a *Adapter) PlatformCapabilities(context.Context) device.CapabilitySet {
+	caps := device.CapabilitySet{device.CapabilityDeviceStatus: "DJI/Quectel USB and AT serial discovery"}
+	if _, ok := newEDLPort(); ok {
+		caps[device.CapabilityFirmwareEDLSwitch] = "verified macOS libusb DIAG frame exchange"
+	}
+	return caps
+}
+
+func (a *Adapter) EnterEDL(ctx context.Context, candidate device.Candidate) error {
+	port, ok := newEDLPort()
+	if !ok {
+		return unsupported.Unsupported(string(device.CapabilityFirmwareEDLSwitch), "enter_edl")
+	}
+	return port.EnterEDL(ctx, candidate)
+}
+
+func (a *Adapter) FindEDL(ctx context.Context, candidate device.Candidate) (device.Candidate, error) {
+	port, ok := newEDLPort()
+	if !ok {
+		return device.Candidate{}, unsupported.Unsupported(string(device.CapabilityFirmwareEDLSwitch), "find_edl")
+	}
+	return port.FindEDL(ctx, candidate)
+}
+
+func (a *Adapter) FindOriginal(ctx context.Context, candidate device.Candidate) (device.Candidate, error) {
+	port, ok := newEDLPort()
+	if !ok {
+		return device.Candidate{}, unsupported.Unsupported(string(device.CapabilityFirmwareEDLSwitch), "find_original")
+	}
+	return port.FindOriginal(ctx, candidate)
+}
+
+func (a *Adapter) ReadNAND(context.Context, device.Candidate, transport.FirehoseReadRequest) (transport.FirehoseReadResult, error) {
+	return transport.FirehoseReadResult{}, unsupported.Unsupported(string(device.CapabilityFirmwareNANDBackup), "read_nand")
+}
+
+func (a *Adapter) Reset(context.Context, device.Candidate) error {
+	return unsupported.Unsupported(string(device.CapabilityFirmwareNANDBackup), "reset")
 }
 
 // DetectEDL reports whether a Qualcomm emergency download device is present.
@@ -238,6 +279,42 @@ func discoverUSBIdentities(ctx context.Context) []usbIdentity {
 		}
 		seen[key] = true
 		unique = append(unique, item)
+	}
+	return unique
+}
+
+func discoverEDLIdentities(ctx context.Context) []device.Candidate {
+	command := exec.CommandContext(ctx, "ioreg", "-r", "-c", "IOUSBHostInterface", "-l", "-w", "0")
+	output, err := command.Output()
+	if err != nil {
+		return nil
+	}
+	var result []device.Candidate
+	for _, block := range strings.Split(string(output), "\n\n") {
+		vendorID, okVendor := intProperty(block, "idVendor")
+		productID, okProduct := intProperty(block, "idProduct")
+		if !okVendor || !okProduct || vendorID != 0x05c6 || productID != 0x9008 {
+			continue
+		}
+		location := formatHexProperty(block, "locationID")
+		if location == "" || location == "unknown" {
+			continue
+		}
+		result = append(result, device.Candidate{Identity: device.Identity{
+			StableID: "edl/" + location, PhysicalLocation: location,
+			VendorID: fmt.Sprintf("%04x", vendorID), ProductID: fmt.Sprintf("%04x", productID),
+			Manufacturer: "Qualcomm", Product: "Qualcomm EDL",
+		}})
+	}
+	seen := map[string]bool{}
+	unique := result[:0]
+	for _, candidate := range result {
+		key := candidate.Identity.PhysicalLocation
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		unique = append(unique, candidate)
 	}
 	return unique
 }

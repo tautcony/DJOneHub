@@ -33,7 +33,7 @@ export interface ATPreset {
 export const AT_PRESETS: ATPreset[] = [
   { id: 'basic', command: 'AT', labelKey: 'rawAt.presets.basic' },
   { id: 'imei', command: 'AT+CGSN', labelKey: 'rawAt.presets.imei' },
-  { id: 'firmware', command: 'AT+CGMR', labelKey: 'rawAt.presets.firmware' },
+  { id: 'firmware', command: 'AT+QGMR', labelKey: 'rawAt.presets.firmware' },
   { id: 'sim', command: 'AT+CPIN?', labelKey: 'rawAt.presets.sim' },
   { id: 'iccid', command: 'AT+QCCID', labelKey: 'rawAt.presets.iccid' },
   { id: 'phone', command: 'AT+CNUM', labelKey: 'rawAt.presets.phone' },
@@ -334,7 +334,8 @@ export function parseATResponse(
   else if (normalized === 'AT+CGATT?') fields = parsePacketAttach(lines)
   else if (normalized === 'AT+QCCID') fields = parseNamedValue(lines, /^\+QCCID:\s*/, 'rawAt.fields.iccid')
   else if (normalized === 'AT+CGSN') fields = parseNamedValue(lines, /^\+CGSN:\s*/, 'rawAt.fields.imei')
-  else if (normalized === 'AT+CGMR') fields = parseNamedValue(lines, /^\+CGMR:\s*/, 'rawAt.fields.firmware')
+  else if (normalized === 'AT+QGMR' || normalized === 'AT+CGMR')
+    fields = parseNamedValue(lines, /^\+(?:QGMR|CGMR):\s*/, 'rawAt.fields.firmware')
   else if (normalized.startsWith('AT+QENG='))
     fields = parseNamedValue(lines, /^\+QENG:\s*/, 'rawAt.fields.servingCell')
   else if (normalized === 'AT+CPMS?') fields = parseCPMS(lines)

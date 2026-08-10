@@ -19,7 +19,8 @@ import { useVowifiStore } from './stores/vowifi'
 import { useAppearanceStore } from './stores/appearance'
 import type {
   CallStatus,
-  FirmwareStatus,
+  DeviceControlStatus,
+  DeviceControlSettings,
   NotificationChannelsSettings,
   NotificationDebugEvent,
   NotificationDebugInfo,
@@ -149,7 +150,7 @@ const { profiles: simProfiles, busy: simProfilesBusy } = storeToRefs(simProfiles
 
 const vowifiStore = useVowifiStore()
 const { status: vowifi, operation: vowifiOperation } = storeToRefs(vowifiStore)
-const firmware = ref<FirmwareStatus | null>(null)
+const firmware = ref<DeviceControlStatus | null>(null)
 const firmwareOperationID = ref('')
 const firmwareOperationModalOpen = ref(false)
 const firmwareOperation = computed(() =>
@@ -219,7 +220,7 @@ const allNavGroups = computed<ShellNavGroup[]>(() => [
     label: t('nav.groups.tools'),
     items: [
       { id: 'raw-at', label: t('nav.rawAt'), capability: 'raw_at' },
-      { id: 'firmware', label: t('nav.firmware'), capability: 'raw_at' },
+      { id: 'device-control', label: t('nav.deviceControl'), capability: 'device_control' },
       ...(showNotificationDebug.value ? [{ id: 'notifications', label: t('nav.notifications') }] : []),
       { id: 'runtime', label: t('nav.runtime') },
       { id: 'settings', label: t('nav.settings') },
@@ -618,7 +619,7 @@ function operationView(operation: OperationStatus): ViewID | undefined {
   if (operation.type.startsWith('esim.')) return 'esim'
   if (operation.type.startsWith('network.')) return 'network'
   if (operation.type.startsWith('vowifi.')) return 'vowifi'
-  if (operation.type.startsWith('firmware.')) return 'firmware'
+  if (operation.type.startsWith('device_control.')) return 'device-control'
   return undefined
 }
 
@@ -675,7 +676,7 @@ watch(
     }
     if (eventType === 'device.status.changed') {
       scheduleViewRefresh('overview')
-      if (active.value === 'firmware') scheduleViewRefresh('firmware', 700)
+      if (active.value === 'device-control') scheduleViewRefresh('device-control', 700)
       // 状态变化也应刷新当前激活视图, 避免非 overview/firmware 视图在设备
       // 就绪后仍停留在过期/加载态。
       else if (active.value !== 'overview') scheduleViewRefresh(active.value)
@@ -700,7 +701,7 @@ watch(
     const view = operationView(operation)
     if (!view) return
     const delay =
-      operation.type === 'firmware.enter_edl' && operation.state === 'succeeded'
+      operation.type === 'device_control.enter_edl' && operation.state === 'succeeded'
         ? 1200
         : view === 'esim' && operation.state === 'succeeded'
           ? 1200
@@ -836,13 +837,13 @@ async function loadVowifi() {
 
 async function loadFirmware() {
   try {
-    firmware.value = await api.firmware()
+    firmware.value = await api.deviceControl()
     viewError.value = ''
   } catch (error) {
     firmware.value = null
     viewError.value = errorText(error, 'firmware.unableLoad')
   } finally {
-    markViewLoaded('firmware')
+    markViewLoaded('device-control')
   }
 }
 
@@ -850,16 +851,24 @@ async function refreshFirmware() {
   await loadFirmware()
 }
 
-async function runFirmwareAction(action: 'unlock' | 'enable' | 'disable' | 'edl', serial = '') {
+async function runFirmwareAction(
+  action: 'unlock' | 'enable' | 'disable' | 'adb-reboot' | 'edl' | 'reset',
+  serial = '',
+  method: 'direct' | 'adb' = 'direct',
+) {
   try {
     const result =
       action === 'unlock'
-        ? await api.firmwareADBUnlock()
+        ? await api.deviceControlADBUnlock()
         : action === 'enable'
-          ? await api.firmwareADBMode(true)
-          : action === 'disable'
-            ? await api.firmwareADBMode(false)
-            : await api.firmwareMode('edl', serial)
+          ? await api.deviceControlADBMode(true)
+        : action === 'disable'
+          ? await api.deviceControlADBMode(false)
+          : action === 'adb-reboot'
+            ? await api.deviceControlADBReboot(serial)
+          : action === 'edl'
+            ? await api.deviceControlEDL(serial, method)
+            : await api.deviceControlReset()
     firmwareOperationID.value = result.operation_id
     notifySuccess(t('firmware.operationAccepted', { id: result.operation_id }))
   } catch (error) {
@@ -869,7 +878,7 @@ async function runFirmwareAction(action: 'unlock' | 'enable' | 'disable' | 'edl'
 
 async function updateFirmwareUSBID(vid: string, pid: string) {
   try {
-    const result = await api.firmwareUSBID(vid, pid)
+    const result = await api.deviceControlUSBID(vid, pid)
     firmwareOperationID.value = result.operation_id
     notifySuccess(t('firmware.operationAccepted', { id: result.operation_id }))
   } catch (error) {
@@ -884,7 +893,15 @@ async function backupFirmware(
   edlRunner: 'python' | 'uv',
 ) {
   try {
-    const result = await api.firmwareBackup(outputPath, loaderPath, edlPath, edlRunner)
+    await api.saveDeviceControlSettings({
+      ...(firmware.value?.settings || {}),
+      adb_command: firmware.value?.settings?.adb_command || firmware.value?.adb.command || '',
+      edl_path: edlPath,
+      edl_runner: edlRunner,
+      loader_path: loaderPath,
+      backup_directory: outputPath ? outputPath.replace(/[\\/][^\\/]*$/, '') : '',
+    })
+    const result = await api.deviceControlBackup(outputPath, loaderPath, edlPath, edlRunner)
     firmwareOperationID.value = result.operation_id
     notifySuccess(t('firmware.operationAccepted', { id: result.operation_id }))
   } catch (error) {
@@ -894,7 +911,7 @@ async function backupFirmware(
 
 async function selectFirmwareEDLDirectory() {
   try {
-    const result = await api.selectFirmwareEDLDirectory()
+    const result = await api.selectDeviceControlEDLDirectory()
     return result.directory
   } catch (error) {
     if (error instanceof APIError && error.message.includes('cancelled')) return ''
@@ -903,9 +920,24 @@ async function selectFirmwareEDLDirectory() {
   }
 }
 
+async function saveFirmwareDeviceControlSettings(patch: DeviceControlSettings) {
+  try {
+    const result = await api.saveDeviceControlSettings({
+      ...(firmware.value?.settings || {}),
+      adb_command: firmware.value?.settings?.adb_command || firmware.value?.adb.command || '',
+      ...patch,
+    })
+    if (firmware.value) firmware.value.settings = result
+    return true
+  } catch (error) {
+    notifyError('view', errorText(error, 'firmware.unableSaveSettings'))
+    return false
+  }
+}
+
 async function selectFirmwareBackupDirectory() {
   try {
-    const result = await api.selectFirmwareBackupDirectory()
+    const result = await api.selectDeviceControlBackupDirectory()
     return result.directory
   } catch (error) {
     if (error instanceof APIError && error.message.includes('cancelled')) return ''
@@ -916,7 +948,7 @@ async function selectFirmwareBackupDirectory() {
 
 async function selectFirmwareADBFile() {
   try {
-    const result = await api.selectFirmwareADBFile()
+    const result = await api.selectDeviceControlADBFile()
     return result.path
   } catch (error) {
     if (error instanceof APIError && error.message.includes('cancelled')) return ''
@@ -925,11 +957,26 @@ async function selectFirmwareADBFile() {
   }
 }
 
+async function selectFirmwareLoaderFile() {
+  try {
+    const result = await api.selectDeviceControlLoaderFile()
+    return result.path
+  } catch (error) {
+    if (error instanceof APIError && error.message.includes('cancelled')) return ''
+    notifyError('view', errorText(error, 'firmware.unableSelectLoaderFile'))
+    return ''
+  }
+}
+
 async function saveFirmwareADBCommand(command: string) {
   try {
-    const result = await api.firmwareSetADBCommand(command)
+    const result = await api.saveDeviceControlSettings({
+      ...(firmware.value?.settings || {}),
+      adb_command: command,
+    })
+    if (firmware.value) firmware.value.settings = result
     notifySuccess(t('firmware.adb.commandSaved'))
-    return result.command
+    return result.adb_command || ''
   } catch (error) {
     notifyError('view', errorText(error, 'firmware.adb.unableSaveCommand'))
     return ''
@@ -1153,7 +1200,7 @@ const viewLoaders: Partial<Record<ViewID, () => Promise<void>>> = {
   'sim-profiles': loadSimProfiles,
   network: loadNetwork,
   vowifi: loadVowifi,
-  firmware: loadFirmware,
+  'device-control': loadFirmware,
   notifications: loadNotifierDebug,
   settings: loadSettings,
 }
@@ -1474,6 +1521,8 @@ provide(viewContextKey, {
   selectFirmwareBackupDirectory,
   selectFirmwareEDLDirectory,
   selectFirmwareADBFile,
+  selectFirmwareLoaderFile,
+  saveFirmwareDeviceControlSettings,
   saveFirmwareADBCommand,
   toggleStartup,
   openNotificationSettings,
@@ -1495,7 +1544,7 @@ onMounted(async () => {
   device.connect()
   syncActiveRefreshers()
   // 首屏：主动加载当前激活视图的数据。active 的 watch 未设 immediate，
-  // 且 device.status.changed 仅调度 overview/firmware, 若不在其中且后端
+  // 且 device.status.changed 仅调度 overview/device-control, 若不在其中且后端
   // 未推送对应领域事件, 视图会永久停留在加载态。
   void loadView(active.value)
 })

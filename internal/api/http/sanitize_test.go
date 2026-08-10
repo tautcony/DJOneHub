@@ -9,8 +9,8 @@ import (
 	"github.com/iniwex5/vohive/internal/application/notification"
 	"github.com/iniwex5/vohive/internal/application/operation"
 	"github.com/iniwex5/vohive/internal/backend"
-	derrors "github.com/iniwex5/vohive/internal/domain/errors"
 	domain "github.com/iniwex5/vohive/internal/domain/device"
+	derrors "github.com/iniwex5/vohive/internal/domain/errors"
 	"github.com/iniwex5/vohive/internal/runtime"
 )
 
@@ -35,7 +35,7 @@ func TestSanitizeSnapshotReplacesErrorTextWithoutHeuristic(t *testing.T) {
 		t.Fatalf("capability reason = %q, want fallback", got)
 	}
 	if out.State != domain.StateReady || out.Generation != 7 {
-		t.Fatalf("allowlisted fields were altered: %+v", out)
+		t.Fatalf("non-sensitive fields were altered: %+v", out)
 	}
 }
 
@@ -64,14 +64,13 @@ func TestSanitizeSnapshotKeepsIdentity(t *testing.T) {
 	}
 }
 
-// TestSanitizeEventMatrix 按事件族验证公开投影: 白名单字段通过, 其余字段
-// (含未知类型) 一律不通过。
+// TestSanitizeEventMatrix verifies typed redaction and raw-map blacklisting.
 func TestSanitizeEventMatrix(t *testing.T) {
 	now := time.Now()
 	tests := []struct {
-		name string
+		name  string
 		event runtime.Event
-		want any // 期望的净化的 Data
+		want  any // 期望的净化的 Data
 	}{
 		{
 			name: "sms.received redacts content",
@@ -90,35 +89,42 @@ func TestSanitizeEventMatrix(t *testing.T) {
 			want: notification.CallEvent{ID: "call-1", Direction: "incoming", State: "incoming", StartedAt: now, Missed: true},
 		},
 		{
-			name: "operation.progress redacts message and error details",
+			name: "operation.progress keeps bounded message and safe error details",
 			event: runtime.Event{Type: "operation.progress", Data: operation.Status{
 				ID: "op-1", Type: "sms.send", State: operation.Failed, Progress: 50,
 				Message: "下发失败: +CMGS ERROR", StartedAt: now, FinishedAt: now,
-				Error: derrors.New(derrors.Internal, "backend crashed: 0xDEAD", true, map[string]any{"path": "/dev/ttyUSB2"}),
+				Error: derrors.New(derrors.Internal, "backend crashed: 0xDEAD", true, map[string]any{"path": "/dev/ttyUSB2", "phase": "read_nand"}),
 			}},
 			want: operation.Status{
 				ID: "op-1", Type: "sms.send", State: operation.Failed, Progress: 50,
+				Message:   "下发失败: +CMGS ERROR",
 				StartedAt: now, FinishedAt: now,
-				Error: derrors.New(derrors.Internal, derrors.PublicMessage(derrors.Internal), true, nil),
+				Error: derrors.New(derrors.Internal, derrors.PublicMessage(derrors.Internal), true, map[string]any{"phase": "read_nand"}),
 			},
 		},
 		{
-			name: "network.updated allowlist only",
+			name: "operation.log keeps the exact terminal stream",
+			event: runtime.Event{Type: "operation.log", Data: operation.Log{
+				OperationID: "op-1", Type: "device_control.nand_backup", Message: "\x1b[2Kread_nand: 50%\r\n",
+			}},
+			want: operation.Log{OperationID: "op-1", Type: "device_control.nand_backup", Message: "\x1b[2Kread_nand: 50%\r\n"},
+		},
+		{
+			name: "network.updated keeps current non-sensitive fields",
 			event: runtime.Event{Type: "network.updated", Data: map[string]any{
-				"registered": true, "network_mode": "LTE", "radio_band": "BAND 8",
-				"signal_dbm": -87, "subscriber_imsi": "460009300011111", "raw": "AT+QNWINFO payload",
+				"registered": true, "network_mode": "LTE", "radio_band": "BAND 8", "signal_dbm": -87,
 			}},
 			want: map[string]any{"registered": true, "network_mode": "LTE", "radio_band": "BAND 8", "signal_dbm": -87},
 		},
 		{
-			name:  "backend event carries no data",
+			name:  "backend event removes blacklisted fields",
 			event: runtime.Event{Type: "backend.disconnected", Data: map[string]any{"error": "modem unplugged", "serial": "0123456789ABCDEF"}},
-			want:  nil,
+			want:  map[string]any{},
 		},
 		{
-			name:  "unknown event family carries no data",
+			name:  "unknown event family keeps non-sensitive data",
 			event: runtime.Event{Type: "esim.updated", Data: map[string]any{"profiles": []string{"A"}}},
-			want:  nil,
+			want:  map[string]any{"profiles": []string{"A"}},
 		},
 		{
 			name: "device.status.changed keeps snapshot with identity",
@@ -146,20 +152,38 @@ func TestSanitizeEventMatrix(t *testing.T) {
 	}
 }
 
-// TestSanitizeEventRawMapNoUnknownPassthrough 原始 map 事件绝不透传未知字段。
-func TestSanitizeEventRawMapNoUnknownPassthrough(t *testing.T) {
-	out := sanitizeEvent(runtime.Event{Type: "network.updated", Data: map[string]any{
-		"registered":   false,
-		"surprise_key": "leaked",
+// TestSanitizeEventRawMapUsesBlacklist keeps new fields and removes fields
+// that occur with sensitive content in current event producers.
+func TestSanitizeEventRawMapUsesBlacklist(t *testing.T) {
+	out := sanitizeEvent(runtime.Event{Type: "esim.updated", Data: map[string]any{
+		"operation":    "enable",
+		"surprise_key": "retained",
+		"number":       "+10000000000",
+		"recipient":    "+10000000001",
+		"iccid":        "89860012345678901234",
+		"nested":       map[string]any{"state": "ready", "data": []byte{0x01, 0x02}},
 	}})
 	data, ok := out.Data.(map[string]any)
 	if !ok {
 		t.Fatalf("data = %T, want map", out.Data)
 	}
-	if _, exists := data["surprise_key"]; exists {
-		t.Fatal("unknown field passed through the allowlist")
+	if data["surprise_key"] != "retained" {
+		t.Fatalf("new non-sensitive field was removed: %+v", data)
 	}
-	if registered, ok := data["registered"]; !ok || registered != false {
-		t.Fatalf("allowlisted field missing or wrong: %+v", data)
+	if operationName, ok := data["operation"]; !ok || operationName != "enable" {
+		t.Fatalf("existing field missing or wrong: %+v", data)
+	}
+	if data["number"] != "+10000000000" || data["recipient"] != "+10000000001" {
+		t.Fatalf("fields without a sensitive raw-map producer were removed: %+v", data)
+	}
+	if _, exists := data["iccid"]; exists {
+		t.Fatalf("blacklisted ICCID was retained: %+v", data)
+	}
+	nested, ok := data["nested"].(map[string]any)
+	if !ok || nested["state"] != "ready" {
+		t.Fatalf("nested non-sensitive data was removed: %+v", data)
+	}
+	if _, exists := nested["data"]; exists {
+		t.Fatalf("nested raw MBIM data was retained: %+v", data)
 	}
 }

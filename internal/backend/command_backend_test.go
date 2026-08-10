@@ -78,6 +78,26 @@ func TestCommandBackendReadOnlyStatus(t *testing.T) {
 	}
 }
 
+func TestCommandBackendIdentityUsesQGMRBeforeCGMR(t *testing.T) {
+	transport := &fakeATTransport{responses: map[string]string{
+		"AT+CGSN": "AT+CGSN\r\n" + fixtureIMEI + "\r\nOK\r\n",
+		"AT+QGMR": "AT+QGMR\r\n+QGMR: QGMR-SYNTHETIC\r\nOK\r\n",
+	}}
+	backend := NewCommandBackend(transport, device.Identity{StableID: "synthetic-qgmr"})
+	identity, err := backend.Identity(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if identity.Firmware != "QGMR-SYNTHETIC" || identity.FirmwareSource != "AT+QGMR" || !identity.FirmwareLive {
+		t.Fatalf("identity=%+v", identity)
+	}
+	for _, command := range transport.commands {
+		if command == "AT+CGMR" {
+			t.Fatal("CGMR was sent after a valid QGMR response")
+		}
+	}
+}
+
 func TestCommandBackendRadioFallsBackAcrossRegistrationDomains(t *testing.T) {
 	transport := &fakeATTransport{responses: map[string]string{
 		"AT+CEREG?": "+CEREG: 0,0\r\nOK\r\n",

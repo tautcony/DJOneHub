@@ -47,6 +47,10 @@ func unsupported(capability, operation string) error {
 	return domainErrors.CapabilityMissing(capability, operation, "the platform adapter has not verified this operation")
 }
 
+// Unsupported returns the standard structured capability error for optional
+// platform ports implemented as stubs.
+func Unsupported(capability, operation string) error { return unsupported(capability, operation) }
+
 type Paths struct {
 	Log         string
 	Config      string

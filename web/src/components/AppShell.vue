@@ -83,7 +83,7 @@ const iconMap: Record<string, Component> = {
   'raw-at': CodeOutlined,
   notifications: BellOutlined,
   settings: SettingOutlined,
-  firmware: CloudDownloadOutlined,
+  'device-control': CloudDownloadOutlined,
   runtime: DeploymentUnitOutlined,
 }
 

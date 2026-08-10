@@ -55,8 +55,17 @@ func openUSBAT(identity usbDeviceIdentity) (*usbAT, error) {
 		C.libusb_exit(ctx)
 		return nil, err
 	}
+	allowedInterface, allowed := map[string]int{"dji": 2, "quectel": 2}[identity.Key]
+	if !allowed {
+		C.libusb_close(handle)
+		C.libusb_exit(ctx)
+		return nil, fmt.Errorf("USB AT interface is not allow-listed for %s", identity.Key)
+	}
 	var lastErr error
 	for _, candidate := range candidates {
+		if candidate.iface != allowedInterface {
+			continue
+		}
 		if rc := C.libusb_claim_interface(handle, C.int(candidate.iface)); rc != 0 {
 			lastErr = fmt.Errorf("claim USB AT interface %d: %s", candidate.iface, C.GoString(C.libusb_error_name(rc)))
 			continue
@@ -101,15 +110,26 @@ func openUSBDevice(ctx *C.libusb_context, identity usbDeviceIdentity) (*C.libusb
 		return nil, "", fmt.Errorf("USB device %04x:%04x not found", identity.VendorID, identity.ProductID)
 	}
 	selected := matches[0]
-	if len(matches) > 1 && identity.LocationID != "" {
-		if bus, ok := locationBus(identity.LocationID); ok {
-			for _, candidate := range matches {
-				if int(C.libusb_get_bus_number(candidate)) == bus {
-					selected = candidate
-					break
-				}
+	if identity.LocationID != "" {
+		locationID, ok := parseLocationID(identity.LocationID)
+		if !ok {
+			return nil, "", fmt.Errorf("USB physical location %q cannot be matched", identity.LocationID)
+		}
+		located := make([]*C.libusb_device, 0, 1)
+		for _, candidate := range matches {
+			if candidateLocation, locationOK := libusbLocationID(candidate); locationOK && candidateLocation == locationID {
+				located = append(located, candidate)
 			}
 		}
+		if len(located) == 0 {
+			return nil, "", fmt.Errorf("USB device %04x:%04x not found at location %s", identity.VendorID, identity.ProductID, identity.LocationID)
+		}
+		if len(located) > 1 {
+			return nil, "", fmt.Errorf("multiple USB devices %04x:%04x match location %s", identity.VendorID, identity.ProductID, identity.LocationID)
+		}
+		selected = located[0]
+	} else if len(matches) != 1 {
+		return nil, "", fmt.Errorf("multiple USB devices %04x:%04x found without a physical location", identity.VendorID, identity.ProductID)
 	}
 	var handle *C.libusb_device_handle
 	if rc := C.libusb_open(selected, &handle); rc != 0 {
@@ -119,12 +139,41 @@ func openUSBDevice(ctx *C.libusb_context, identity usbDeviceIdentity) (*C.libusb
 }
 
 func locationBus(location string) (int, bool) {
-	value := strings.TrimPrefix(strings.TrimPrefix(strings.TrimSpace(location), "0x"), "0X")
-	parsed, err := strconv.ParseUint(value, 16, 32)
-	if err != nil || parsed>>24 == 0 {
+	parsed, ok := parseLocationID(location)
+	if !ok || parsed>>24 == 0 {
 		return 0, false
 	}
 	return int(parsed >> 24), true
+}
+
+func parseLocationID(location string) (uint32, bool) {
+	value := strings.TrimPrefix(strings.TrimPrefix(strings.TrimSpace(location), "0x"), "0X")
+	parsed, err := strconv.ParseUint(value, 16, 32)
+	if err != nil {
+		return 0, false
+	}
+	return uint32(parsed), true
+}
+
+func libusbLocationID(device *C.libusb_device) (uint32, bool) {
+	bus := uint32(C.libusb_get_bus_number(device))
+	if bus == 0 {
+		return 0, false
+	}
+	ports := make([]C.uint8_t, 7)
+	count := int(C.libusb_get_port_numbers(device, &ports[0], C.int(len(ports))))
+	if count < 0 || count > 5 {
+		return 0, false
+	}
+	location := bus << 24
+	for index := 0; index < count; index++ {
+		port := uint32(ports[index])
+		if port == 0 || port > 15 {
+			return 0, false
+		}
+		location |= port << uint(20-index*4)
+	}
+	return location, true
 }
 
 func usbATCandidates(handle *C.libusb_device_handle) ([]usbATCandidate, error) {

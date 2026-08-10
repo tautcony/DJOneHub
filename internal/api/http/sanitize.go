@@ -6,32 +6,34 @@ import (
 	"github.com/iniwex5/vohive/internal/application/device"
 	"github.com/iniwex5/vohive/internal/application/notification"
 	"github.com/iniwex5/vohive/internal/application/operation"
-	derrors "github.com/iniwex5/vohive/internal/domain/errors"
 	domain "github.com/iniwex5/vohive/internal/domain/device"
+	derrors "github.com/iniwex5/vohive/internal/domain/errors"
 	"github.com/iniwex5/vohive/internal/runtime"
 )
 
 // 公开事件流 (WebSocket 事件 + REST status/snapshot) 的字段级净化策略。
-// 规则见 openspec 变更 cleanup-architectural-debt D7: 已知事件族用类型化投影,
-// 原始 map 用字段白名单; 不在白名单上的字段一律不通过。错误/原因文本无条件
-// 替换为回退文案, 不再使用 CJK 内容启发式 (docs/code-review-report.md 3.6 L4)。
+// 已知敏感事件使用类型化投影。原始 map 使用明确的字段黑名单；未列入黑名单的
+// 字段保留。错误/原因文本无条件替换为回退文案，不再使用 CJK 内容启发式。
 // 设备身份 (IMEI/ICCID/IMSI/EID) 在 status/snapshot 中保持公开 — web Overview
 // 卡片客户端侧掩码渲染, loopback 边界已保护非本地读者。
 // REST 数据端点 (SMS 列表、通话历史) 不在本净化器范围内。
 
-// networkUpdatedAllowlist 是 network.updated 原始 map 允许通过的字段:
-// 注册状态、网络模式、频段与信号指标。
-var networkUpdatedAllowlist = map[string]bool{
-	"registered":   true,
-	"network_mode": true,
-	"radio_band":   true,
-	"signal_dbm":   true,
-	"signal_rsrp":  true,
-	"signal_rsrq":  true,
-	"signal_snr":   true,
+// publicEventKeyBlacklist contains field names that must not cross the public
+// event boundary when an event uses a raw map. Matching is case-insensitive.
+var publicEventKeyBlacklist = map[string]struct{}{
+	"body":      {}, // SMSMessageEvent.Body contains the complete SMS text; raw SMS maps use the same key.
+	"sender":    {}, // SMSMessageEvent.Sender contains the sender phone number; raw SMS maps use the same key.
+	"iccid":     {}, // application/esim publishes the affected card ICCID in esim.updated maps.
+	"data":      {}, // backend/mbim publishes the raw MBIM InfoBuffer in mbim.indication maps.
+	"error":     {}, // backend/qmi publishes manager.Event.Error text in qmi.* maps.
+	"cause":     {}, // Device-control operation errors attach raw transport or tool errors as cause.
+	"path":      {}, // Device-control validation errors attach absolute loader, output, or EDL paths.
+	"directory": {}, // EDL discovery errors attach the absolute configured EDL directory.
+	"command":   {}, // ADB validation errors attach the configured executable, which can be an absolute path.
+	"serial":    {}, // ADB selection errors attach the selected hardware serial.
 }
 
-// fallbackText 无条件以回退文案替换原始文本: 错误/原因字段不在公开白名单上。
+// fallbackText 无条件以回退文案替换可能包含传输细节的错误或原因文本。
 func fallbackText(value, fallback string) string {
 	if strings.TrimSpace(value) == "" {
 		return value
@@ -40,16 +42,20 @@ func fallbackText(value, fallback string) string {
 }
 
 // sanitizeEvent 对 WS 事件流中的每个事件做家族级净化, 返回公开投影。
-// 未识别家族 (含 backend.*) 不携带任何嵌套数据。
+// 未识别事件使用原始数据的敏感字段黑名单净化。
 func sanitizeEvent(value runtime.Event) runtime.Event {
 	switch value.Type {
 	case "device.status.changed":
 		if data, ok := value.Data.(domain.Snapshot); ok {
 			value.Data = sanitizeSnapshot(data)
+		} else {
+			value.Data = sanitizePublicValue(value.Data)
 		}
 	case "snapshot":
 		if data, ok := value.Data.(device.Status); ok {
 			value.Data = sanitizeDeviceStatus(data)
+		} else {
+			value.Data = sanitizePublicValue(value.Data)
 		}
 	case "network.updated":
 		if data, ok := value.Data.(map[string]any); ok {
@@ -58,23 +64,29 @@ func sanitizeEvent(value runtime.Event) runtime.Event {
 	case notification.EventSMSReceived:
 		if data, ok := value.Data.(notification.SMSMessageEvent); ok {
 			value.Data = sanitizeSMSReceived(data)
+		} else {
+			value.Data = sanitizePublicValue(value.Data)
 		}
 	case notification.EventCallIncoming, notification.EventCallUpdated, notification.EventCallEnded:
 		if data, ok := value.Data.(notification.CallEvent); ok {
 			value.Data = sanitizeCallEvent(data)
+		} else {
+			value.Data = sanitizePublicValue(value.Data)
 		}
 	case "operation.progress", "operation.completed", "operation.changed":
 		if data, ok := value.Data.(operation.Status); ok {
 			value.Data = sanitizeOperationStatus(data)
+		} else {
+			value.Data = sanitizePublicValue(value.Data)
 		}
 	case "operation.log":
-		if data, ok := value.Data.(operation.Log); ok {
-			data.Message = ""
-			value.Data = data
+		// xterm consumes the exact process stream. Preserve ANSI sequences,
+		// carriage returns, newlines, and chunk boundaries.
+		if _, ok := value.Data.(operation.Log); !ok {
+			value.Data = sanitizePublicValue(value.Data)
 		}
 	default:
-		// backend.* 与未知事件族: 不传递任何嵌套数据字段。
-		value.Data = nil
+		value.Data = sanitizePublicValue(value.Data)
 	}
 	return value
 }
@@ -86,8 +98,7 @@ func sanitizeDeviceStatus(value device.Status) device.Status {
 	return value
 }
 
-// sanitizeSnapshot 投影 domain.Snapshot: 保留 state/identity/backend/generation/
-// capabilities 名称/错误外字段, 错误与原因文本替换为回退文案。
+// sanitizeSnapshot 投影 domain.Snapshot 并替换错误和原因文本。
 func sanitizeSnapshot(value domain.Snapshot) domain.Snapshot {
 	value.BackendReason = fallbackText(value.BackendReason, "backend selection failed")
 	value.LastError = fallbackText(value.LastError, "device error")
@@ -117,24 +128,46 @@ func sanitizeCallEvent(value notification.CallEvent) notification.CallEvent {
 	return value
 }
 
-// sanitizeOperationStatus 投影 operation.*: 保留结构化状态, 自由文本消息与
-// 错误细节替换为稳定文案; 错误保留 code 作为机器可读契约。
+// sanitizeOperationStatus preserves progress text and applies the raw-map
+// blacklist to structured error details.
 func sanitizeOperationStatus(value operation.Status) operation.Status {
-	value.Message = ""
 	if value.Error != nil {
-		value.Error = derrors.New(value.Error.Code, derrors.PublicMessage(value.Error.Code), value.Error.Retryable, nil)
+		details := sanitizePublicMap(value.Error.Details)
+		if len(details) == 0 {
+			details = nil
+		}
+		value.Error = derrors.New(value.Error.Code, derrors.PublicMessage(value.Error.Code), value.Error.Retryable, details)
 	}
 	return value
 }
 
-// sanitizeNetworkMap 对 network.updated 的原始 map 应用字段白名单:
-// 不在白名单上的字段 (subscriber 身份、原始 backend 负载等) 一律不通过。
+// sanitizeNetworkMap 对 network.updated 的原始 map 应用字段黑名单。
 func sanitizeNetworkMap(value map[string]any) map[string]any {
+	return sanitizePublicMap(value)
+}
+
+func sanitizePublicValue(value any) any {
+	switch item := value.(type) {
+	case map[string]any:
+		return sanitizePublicMap(item)
+	case []any:
+		out := make([]any, len(item))
+		for index, nested := range item {
+			out[index] = sanitizePublicValue(nested)
+		}
+		return out
+	default:
+		return value
+	}
+}
+
+func sanitizePublicMap(value map[string]any) map[string]any {
 	out := make(map[string]any, len(value))
 	for key, item := range value {
-		if networkUpdatedAllowlist[key] {
-			out[key] = item
+		if _, blocked := publicEventKeyBlacklist[strings.ToLower(strings.TrimSpace(key))]; blocked {
+			continue
 		}
+		out[key] = sanitizePublicValue(item)
 	}
 	return out
 }

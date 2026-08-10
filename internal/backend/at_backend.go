@@ -248,6 +248,14 @@ func (a *ATBackend) GetRevision(ctx context.Context) (string, error) {
 	return a.modem.QueryFirmware()
 }
 
+func (a *ATBackend) GetFirmwareRevision(ctx context.Context) (string, string, bool, error) {
+	revision, err := a.modem.QueryFirmwareRevision()
+	if err != nil {
+		return "", "", false, err
+	}
+	return revision.Value, revision.Source, revision.Live, nil
+}
+
 func (a *ATBackend) GetSignalInfo(ctx context.Context) (*SignalInfo, error) {
 	info := &SignalInfo{}
 

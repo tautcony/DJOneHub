@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/iniwex5/vohive/internal/backend"
+	"github.com/iniwex5/vohive/internal/transport"
 )
 
 type usbDeviceIdentity struct {
@@ -24,3 +25,5 @@ func (*unavailableUSBAT) Command(string, time.Duration) (string, error) {
 	return "", errors.New("DJI raw USB AT is unavailable in this build")
 }
 func (*unavailableUSBAT) Close() error { return nil }
+
+func newEDLPort() (transport.EDLPort, bool) { return nil, false }

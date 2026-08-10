@@ -23,7 +23,8 @@ import type {
   SMSMessage,
   SMSStorageUsage,
   VowifiStatus,
-  FirmwareStatus,
+  DeviceControlStatus,
+  DeviceControlSettings,
   RuntimeDiagnostics,
 } from '../types'
 import type { RawATSMSDiagnostic } from './at'
@@ -146,39 +147,48 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ command }),
     }),
-  firmware: () => request<FirmwareStatus>('/firmware'),
-  firmwareADBUnlock: () =>
-    request<{ operation_id: string }>('/firmware/actions/adb/unlock', { method: 'POST' }),
-  firmwareADBMode: (enabled: boolean) =>
-    request<{ operation_id: string }>('/firmware/actions/adb/mode', {
+  deviceControl: () => request<DeviceControlStatus>('/device-control'),
+  deviceControlADBUnlock: () =>
+    request<{ operation_id: string }>('/device-control/actions/adb-unlock', { method: 'POST' }),
+  deviceControlADBMode: (enabled: boolean) =>
+    request<{ operation_id: string }>('/device-control/actions/adb-mode', {
       method: 'POST',
       body: JSON.stringify({ enabled }),
     }),
-  firmwareUSBID: (vid: string, pid: string) =>
-    request<{ operation_id: string }>('/firmware/actions/usb-id', {
+  deviceControlADBReboot: (serial: string) =>
+    request<{ operation_id: string }>('/device-control/actions/adb/reboot', {
+      method: 'POST',
+      body: JSON.stringify({ serial }),
+    }),
+  deviceControlUSBID: (vid: string, pid: string) =>
+    request<{ operation_id: string }>('/device-control/actions/usb-id', {
       method: 'POST',
       body: JSON.stringify({ vid, pid }),
     }),
-  firmwareMode: (mode: 'edl', serial: string) =>
-    request<{ operation_id: string }>('/firmware/actions/mode', {
+  deviceControlEDL: (serial: string, method: 'direct' | 'adb' = 'direct') =>
+    request<{ operation_id: string }>('/device-control/actions/edl', {
       method: 'POST',
-      body: JSON.stringify({ mode, serial }),
+      body: JSON.stringify({ serial, method }),
     }),
-  firmwareBackup: (output_path: string, loader_path: string, edl_path: string, edl_runner: 'python' | 'uv') =>
-    request<{ operation_id: string }>('/firmware/actions/backup', {
+  deviceControlReset: () =>
+    request<{ operation_id: string }>('/device-control/actions/reset', { method: 'POST' }),
+  deviceControlBackup: (output_path: string, loader_path: string, edl_path: string, edl_runner: 'python' | 'uv') =>
+    request<{ operation_id: string }>('/device-control/actions/nand-backup', {
       method: 'POST',
       body: JSON.stringify({ output_path, loader_path, edl_path, edl_runner }),
     }),
-  selectFirmwareBackupDirectory: () =>
-    request<{ directory: string }>('/firmware/actions/backup/select-directory', { method: 'POST' }),
-  selectFirmwareEDLDirectory: () =>
-    request<{ directory: string }>('/firmware/actions/backup/select-edl-directory', { method: 'POST' }),
-  selectFirmwareADBFile: () =>
-    request<{ path: string }>('/firmware/actions/select-adb-file', { method: 'POST' }),
-  firmwareSetADBCommand: (command: string) =>
-    request<{ command: string; command_source: string }>('/firmware/actions/adb/settings', {
+  selectDeviceControlBackupDirectory: () =>
+    request<{ directory: string }>('/device-control/actions/select-backup-directory', { method: 'POST' }),
+  selectDeviceControlEDLDirectory: () =>
+    request<{ directory: string }>('/device-control/actions/select-edl-directory', { method: 'POST' }),
+  selectDeviceControlADBFile: () =>
+    request<{ path: string }>('/device-control/actions/select-adb-file', { method: 'POST' }),
+  selectDeviceControlLoaderFile: () =>
+    request<{ path: string }>('/device-control/actions/select-loader-file', { method: 'POST' }),
+  saveDeviceControlSettings: (settings: DeviceControlSettings) =>
+    request<DeviceControlSettings>('/device-control/settings', {
       method: 'POST',
-      body: JSON.stringify({ command }),
+      body: JSON.stringify(settings),
     }),
   vowifi: () => request<VowifiStatus>('/vowifi'),
   vowifiEnable: () => request<{ operation_id: string }>('/vowifi/actions/enable', { method: 'POST' }),

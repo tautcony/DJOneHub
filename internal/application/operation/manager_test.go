@@ -9,11 +9,43 @@ import (
 	derrors "github.com/iniwex5/vohive/internal/domain/errors"
 )
 
+func TestManagerLogPreservesTerminalControlChunks(t *testing.T) {
+	manager := NewManager(nil)
+	_, events, unsubscribe := manager.bus.Subscribe(16)
+	defer unsubscribe()
+	id, err := manager.Start(context.Background(), "terminal", func(context.Context, string, func(int, string)) error {
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	manager.Log(id, "\r")
+	for {
+		select {
+		case event := <-events:
+			if event.Type != "operation.log" {
+				continue
+			}
+			logEntry := event.Data.(Log)
+			if logEntry.Message != "\r" {
+				t.Fatalf("log message = %q, want carriage return", logEntry.Message)
+			}
+			return
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for operation log")
+		}
+	}
+}
+
 func TestManagerPublishesProgressAndCompletion(t *testing.T) {
 	manager := NewManager(nil)
 	_, events, unsubscribe := manager.bus.Subscribe(16)
 	defer unsubscribe()
-	id, err := manager.Start(context.Background(), "test", func(_ context.Context, _ string, progress func(int, string)) error { progress(50, "halfway"); return nil })
+	id, err := manager.Start(context.Background(), "test", func(_ context.Context, _ string, progress func(int, string)) error {
+		progress(50, "halfway")
+		return nil
+	})
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}

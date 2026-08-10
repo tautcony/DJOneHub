@@ -60,7 +60,7 @@ Read these tests for a runtime fault:
 | `internal/runtime/` | Runtime | One-device lifecycle, events, locks, and scans |
 | `internal/backend/` | Modem backend | AT, QMI, and MBIM contracts and adapters |
 | `internal/modem/` | Modem control | AT commands, URCs, and modem-specific behavior |
-| `internal/application/` | Use cases | Device, SMS, eSIM, network, AT, VoWiFi, firmware, calls, and operations |
+| `internal/application/` | Use cases | Device, SMS, eSIM, network, AT, VoWiFi, device control, calls, and operations |
 | `internal/esim/` | eUICC access | APDU transport, channels, profile actions, and recovery |
 | `internal/apduarbiter/` | APDU access | Device-level APDU leases, barriers, and readiness |
 | `internal/platform/` | Platform adapter | Device discovery, transport, network, startup, and native UI support |

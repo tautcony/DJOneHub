@@ -186,11 +186,14 @@ export interface VowifiStatus {
   [key: string]: unknown
 }
 
-export interface FirmwareStatus {
+export interface DeviceControlStatus {
   available: boolean
   manufacturer?: string
   model?: string
   firmware?: string
+  firmware_version_source?: string
+  firmware_version_live?: boolean
+  firmware_version_reason?: string
   adb_key_serial?: string
   usb_config?: string
   usb_config_fields?: Array<{ index: number; key: string; value: string }>
@@ -213,10 +216,23 @@ export interface FirmwareStatus {
   }
   backup: {
     available: boolean
+    reset_available?: boolean
+    reason?: string
     command?: string
     script?: string
     default_dir?: string
   }
+  entry_methods?: string[]
+  entry_method_reasons?: Record<string, string>
+  settings: DeviceControlSettings
+}
+
+export interface DeviceControlSettings {
+  adb_command?: string
+  edl_path?: string
+  edl_runner?: string
+  loader_path?: string
+  backup_directory?: string
 }
 
 export interface CallRecord {

@@ -72,13 +72,27 @@ func (b *CommandBackend) Identity(ctx context.Context) (Identity, error) {
 	if value, err := b.command(ctx, "AT+CNUM", 3*time.Second); err == nil {
 		out.MSISDN = firstPhoneNumber(value)
 	}
-	if value, err := b.command(ctx, "AT+CGMR", 3*time.Second); err == nil {
-		out.Firmware = responseValue(value, "+CGMR")
+	if revision, err := modem.ProbeFirmwareRevision(func(command string, timeout time.Duration) (string, error) {
+		return b.command(ctx, command, timeout)
+	}); err == nil {
+		out.Firmware = revision.Value
+		out.FirmwareSource = revision.Source
+		out.FirmwareLive = revision.Live
 	}
 	if out.IMEI == "" {
 		return out, fmt.Errorf("AT identity query returned no IMEI")
 	}
 	return out, nil
+}
+
+func (b *CommandBackend) GetFirmwareRevision(ctx context.Context) (string, string, bool, error) {
+	revision, err := modem.ProbeFirmwareRevision(func(command string, timeout time.Duration) (string, error) {
+		return b.command(ctx, command, timeout)
+	})
+	if err != nil {
+		return "", "", false, err
+	}
+	return revision.Value, revision.Source, revision.Live, nil
 }
 
 func (b *CommandBackend) Radio(ctx context.Context) (RadioState, error) {

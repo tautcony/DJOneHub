@@ -94,6 +94,8 @@ const (
 	CapabilityVoWiFiInspect      Capability = "vowifi_inspect"
 	CapabilityVoWiFiControl      Capability = "vowifi_control"
 	CapabilityPacketTunnel       Capability = "packet_tunnel"
+	CapabilityFirmwareEDLSwitch  Capability = "firmware_edl_switch"
+	CapabilityFirmwareNANDBackup Capability = "firmware_nand_backup"
 )
 
 type CapabilitySet map[Capability]string

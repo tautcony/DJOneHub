@@ -74,7 +74,15 @@ func (a *BusinessAdapter) Identity(ctx context.Context) (Identity, error) {
 	out.IMSI, _ = provider.GetIMSI(ctx)
 	out.ICCID, _ = provider.GetICCID(ctx)
 	out.MSISDN, _ = provider.GetMSISDN(ctx)
-	out.Firmware, _ = provider.GetRevision(ctx)
+	if revision, ok := a.legacy.(FirmwareRevisionProvider); ok {
+		out.Firmware, out.FirmwareSource, out.FirmwareLive, _ = revision.GetFirmwareRevision(ctx)
+	} else {
+		out.Firmware, _ = provider.GetRevision(ctx)
+		if out.Firmware != "" {
+			out.FirmwareSource = "backend identity"
+			out.FirmwareLive = true
+		}
+	}
 	return out, nil
 }
 

@@ -15,6 +15,7 @@ import (
 type Config struct {
 	Discovery      transport.DeviceDiscovery
 	Backends       backend.BackendFactory
+	Platform       transport.PlatformCapabilities
 	PollInterval   time.Duration
 	ReconnectDelay time.Duration
 }
@@ -195,6 +196,13 @@ func (r *Runtime) scanLocked(ctx context.Context) error {
 		return err
 	}
 	caps := b.Capabilities(ctx).Clone()
+	if r.config.Platform != nil {
+		for name, reason := range r.config.Platform.PlatformCapabilities(ctx) {
+			if _, exists := caps[name]; !exists {
+				caps[name] = reason
+			}
+		}
+	}
 	identity, err := b.Identity(ctx)
 	if err != nil {
 		_ = b.Close()

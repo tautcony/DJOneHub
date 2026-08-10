@@ -25,7 +25,7 @@ type DeviceInfoProvider interface {
 	GetMSISDN(ctx context.Context) (string, error)
 
 	// GetRevision 获取固件版本
-	// AT 实现：AT+CGMR
+	// AT 实现：AT+QGMR, fallback AT+CGMR
 	// QMI 实现：DMS.GetDeviceRevision
 	GetRevision(ctx context.Context) (string, error)
 

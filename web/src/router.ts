@@ -11,7 +11,7 @@ export type ViewID =
   | 'vowifi'
   | 'notifications'
   | 'settings'
-  | 'firmware'
+  | 'device-control'
   | 'runtime'
 
 export const viewPaths: Record<ViewID, string> = {
@@ -25,7 +25,7 @@ export const viewPaths: Record<ViewID, string> = {
   vowifi: '/vowifi',
   notifications: '/notifications',
   settings: '/settings',
-  firmware: '/firmware',
+  'device-control': '/device-control',
   runtime: '/runtime',
 }
 
@@ -40,7 +40,7 @@ const viewComponents: Record<ViewID, RouteComponent> = {
   vowifi: () => import('./views/VowifiView.vue'),
   notifications: () => import('./views/NotificationsView.vue'),
   settings: () => import('./views/SettingsView.vue'),
-  firmware: () => import('./views/FirmwareView.vue'),
+  'device-control': () => import('./views/FirmwareView.vue'),
   runtime: () => import('./views/RuntimeView.vue'),
 }
 

@@ -28,8 +28,8 @@ import (
 	"github.com/iniwex5/vohive/internal/modem"
 	"github.com/iniwex5/vohive/internal/notify"
 	"github.com/iniwex5/vohive/internal/platform/darwin"
-	"github.com/iniwex5/vohive/internal/platform/native"
 	"github.com/iniwex5/vohive/internal/platform/linux"
+	"github.com/iniwex5/vohive/internal/platform/native"
 	"github.com/iniwex5/vohive/internal/platform/startup"
 	"github.com/iniwex5/vohive/internal/platform/unsupported"
 	"github.com/iniwex5/vohive/internal/platform/windows"
@@ -65,19 +65,19 @@ func (noHardwareBackends) Open(context.Context, domain.Candidate) (backend.Modem
 }
 
 type App struct {
-	Runtime      *runtime.Runtime
-	Operations   *operation.Manager
-	Device       *device.Service
-	SMS          *sms.Service
-	ESIM         *esim.Service
-	SimProfiles  *simprofiles.Service
-	Network      *network.Service
-	RawAT        *rawat.Service
-	VoWiFi       *vowifi.Service
-	Extras       *extras.Service
-	Firmware     *firmware.Service
-	Notification *notification.Service
-	NativeUI     *native.Bridge
+	Runtime       *runtime.Runtime
+	Operations    *operation.Manager
+	Device        *device.Service
+	SMS           *sms.Service
+	ESIM          *esim.Service
+	SimProfiles   *simprofiles.Service
+	Network       *network.Service
+	RawAT         *rawat.Service
+	VoWiFi        *vowifi.Service
+	Extras        *extras.Service
+	DeviceControl *firmware.Service
+	Notification  *notification.Service
+	NativeUI      *native.Bridge
 	// NotifyChannels 是与 NativeUI 并列的远程通知渠道管理器：同一条事件会同时
 	// 投给 Swift 原生通知和用户勾选的每个远程渠道。
 	NotifyChannels *notify.Manager
@@ -102,24 +102,28 @@ func New() (*App, error) {
 	var discovery transport.DeviceDiscovery
 	var backends backend.BackendFactory
 	var networkAdapter transport.NetworkController
+	var platformCapabilities transport.PlatformCapabilities
 	switch goruntime.GOOS {
 	case "darwin":
 		adapter := darwin.New()
 		discovery, backends, networkAdapter = adapter, backend.NewATFactory(adapter.OpenAT), adapter
+		platformCapabilities = adapter
 	case "linux":
 		adapter := linux.New()
 		factory := backend.NewATFactory(nil)
 		factory.ESIMPort = serialESIMPortBuilder()
 		discovery, backends, networkAdapter = adapter, factory, adapter
+		platformCapabilities = adapter
 	case "windows":
 		adapter := windows.New()
 		factory := backend.NewATFactory(nil)
 		factory.ESIMPort = serialESIMPortBuilder()
 		discovery, backends, networkAdapter = adapter, factory, adapter
+		platformCapabilities = adapter
 	default:
 		return NewOffline()
 	}
-	r, err := runtime.New(runtime.Config{Discovery: discovery, Backends: backends})
+	r, err := runtime.New(runtime.Config{Discovery: discovery, Backends: backends, Platform: platformCapabilities})
 	return newApp(r, err, networkAdapter)
 }
 
@@ -158,11 +162,16 @@ func newApp(r *runtime.Runtime, err error, platformAdapter transport.NetworkCont
 	networkService := network.NewService(devices, ops, r, platformAdapter, database)
 	rawATService := rawat.NewService(devices, r)
 	firmwareConfig := firmware.ConfigFromEnvironment()
-	firmwareConfig.Store = database.Namespace("firmware_settings")
+	firmwareConfig.Store = database.Namespace("device_control_settings")
 	if detector, ok := platformAdapter.(interface {
 		DetectEDL(context.Context) (bool, error)
 	}); ok {
 		firmwareConfig.DetectEDL = detector.DetectEDL
+	}
+	if edlPort, ok := platformAdapter.(transport.EDLPort); ok {
+		if capabilities, ok := platformAdapter.(transport.PlatformCapabilities); ok && capabilities.PlatformCapabilities(context.Background()).Has(domain.CapabilityFirmwareEDLSwitch) {
+			firmwareConfig.EDLPort = edlPort
+		}
 	}
 	firmwareService := firmware.NewService(rawATService, ops, r, firmwareConfig)
 	platformDependencies := vowifi.PlatformDependencies{Network: platformAdapter}
@@ -231,7 +240,7 @@ func newApp(r *runtime.Runtime, err error, platformAdapter transport.NetworkCont
 		RawAT:             rawATService,
 		VoWiFi:            vowifiService,
 		Extras:            extraService,
-		Firmware:          firmwareService,
+		DeviceControl:     firmwareService,
 		Notification:      notifications,
 		NativeUI:          bridge,
 		NotifyChannels:    notifyManager,
@@ -248,7 +257,7 @@ func newApp(r *runtime.Runtime, err error, platformAdapter transport.NetworkCont
 		RawAT:                         rawATService,
 		VoWiFi:                        vowifiService,
 		Extras:                        extraService,
-		Firmware:                      firmwareService,
+		DeviceControl:                 firmwareService,
 		Operations:                    ops,
 		Runtime:                       r,
 		NotificationUIAvailable:       bridge.HasUI,

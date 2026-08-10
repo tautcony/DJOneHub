@@ -4,7 +4,6 @@ import (
 	"context"
 	stdErrors "errors"
 	"log"
-	"strings"
 	"sync"
 	"time"
 
@@ -153,7 +152,15 @@ func (m *Manager) run(ctx context.Context, status *Status, task Task) {
 				s.Message = "operation cancelled"
 				// 取消是显式分类错误 (design D15): 客户端可据 error.code 判断,
 				// 而不是把取消误报为通用失败。
-				s.Error = derrors.New(derrors.OperationCancelled, "operation cancelled", false, nil)
+				details := map[string]any(nil)
+				var structured *derrors.Error
+				if stdErrors.As(err, &structured) && len(structured.Details) > 0 {
+					details = make(map[string]any, len(structured.Details))
+					for key, value := range structured.Details {
+						details[key] = value
+					}
+				}
+				s.Error = derrors.New(derrors.OperationCancelled, "operation cancelled", false, details)
 				s.FinishedAt = time.Now().UTC()
 			})
 		} else {
@@ -187,7 +194,7 @@ func (m *Manager) Publish(eventType string, data any) {
 }
 
 func (m *Manager) Log(id, message string) {
-	if strings.TrimSpace(message) == "" {
+	if message == "" {
 		return
 	}
 	status, ok := m.Get(id)
