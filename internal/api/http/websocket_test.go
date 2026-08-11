@@ -3,6 +3,7 @@ package httpapi
 import (
 	"encoding/json"
 	"net"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -36,6 +37,16 @@ func TestWebSocketInitialSnapshotIncludesPublicEDLSession(t *testing.T) {
 	ts := httptest.NewServer(server.Handler())
 	defer ts.Close()
 	server.SetLoopbackPort(ts.Listener.Addr().(*net.TCPAddr).Port)
+	// WS 快照只读缓存且附加当前会话: 先通过 HTTP 状态请求暖缓存,
+	// 模拟真实前端行为, 并验证连接本身不触发探测。
+	response, err := http.Get(ts.URL + "/api/v1/device-control")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status warm-up: %d", response.StatusCode)
+	}
 	conn := dialEvents(t, ts)
 	_ = conn.SetReadDeadline(time.Now().Add(time.Second))
 	_, payload, err := conn.ReadMessage()

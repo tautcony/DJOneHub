@@ -55,7 +55,7 @@ The server capability snapshot controls feature actions. Navigation stays visibl
 
 Long-running actions return an operation ID. Show the operation state until it is final. When the event sequence has a gap, get a new snapshot.
 
-The Device Control view stores its opaque control lease in `sessionStorage`. The API service sends it in `X-DJOneHub-Device-Lease`. The view disables device mutations only when an operation is active or another browser owns the lease. It renders EDL facts from the server response.
+The Device Control view renders EDL facts from the server response and disables device mutations while a device-control operation is active (its own operation, or `active_operation` reported by the server for another client). Device mutual exclusion is enforced server-side through the busy state; the view has no client token or lease.
 
 The `device_control.edl_session_changed` event schedules a fresh Device Control status request. The event payload is not treated as an unmasked UI source.
 

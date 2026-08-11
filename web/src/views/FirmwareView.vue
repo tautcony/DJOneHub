@@ -15,7 +15,6 @@ import EmptyState from '../components/EmptyState.vue'
 import Panel from '../components/Panel.vue'
 import StatusLight from '../components/StatusLight.vue'
 import type { OperationStatus } from '../types'
-import { deviceControlLeaseWebSocketProtocol, ensureDeviceControlLease } from '../services/api'
 import { confirmDanger } from '../utils/confirm'
 import { useViewContext } from './context'
 
@@ -69,8 +68,10 @@ const busy = computed(() => {
   const state = firmwareOperation.value?.state
   return state === 'pending' || state === 'running'
 })
+// 设备忙 = 服务端有进行中的 device-control 操作且不是本页发起的操作
+// (本页操作由 busy 覆盖)。互斥在服务端, 这里只是展示提示。
 const controlBlocked = computed(
-  () => firmware.value?.edl_session?.lease_held === true && firmware.value?.edl_session?.lease_owned !== true,
+  () => !!firmware.value?.edl_session?.active_operation && !busy.value,
 )
 const controlDisabled = computed(() => busy.value || controlBlocked.value)
 const edlObservation = computed(() => firmware.value?.edl)
@@ -116,10 +117,11 @@ const adbModeAction = computed<'enable' | 'disable' | undefined>(() => {
 const canToggleADB = computed(
   () => !controlDisabled.value && device.has('raw_at') && adbModeAction.value !== undefined,
 )
-const canShowEnterEDL = computed(
-  () => ['normal', 'adb'].includes(firmware.value?.mode || '') && directEDLAvailable.value,
-)
-const canShowResetEDL = computed(() => firmware.value?.mode === 'edl' && resetAvailable.value)
+// 门控依据能力快照 (entry_methods 由 CapabilityFirmwareEDLSwitch 派生) 与
+// 设备状态 (EDL 观察存在), 不再按 USB mode 名称判断 (AGENTS.md)。
+const inEDLMode = computed(() => firmware.value?.edl != null)
+const canShowEnterEDL = computed(() => directEDLAvailable.value && !inEDLMode.value)
+const canShowResetEDL = computed(() => inEDLMode.value && resetAvailable.value)
 const adbConfigLabel = computed(() => {
   if (firmware.value?.adb.enabled_known) {
     return firmware.value.adb.enabled ? t('firmware.adb.enabled') : t('firmware.adb.disabled')
@@ -463,12 +465,6 @@ async function runADBCommandAction(action?: string) {
 
 async function openShell() {
   if (!selectedADBOnline.value || controlDisabled.value) return
-  try {
-    await ensureDeviceControlLease()
-  } catch {
-    await refreshFirmware()
-    return
-  }
   shellOpen.value = true
   shellConnecting.value = true
   shellConnected.value = false
@@ -489,10 +485,8 @@ async function openShell() {
     shellTerminal.focus()
   }
   const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
-  const leaseProtocol = deviceControlLeaseWebSocketProtocol()
   const socket = new WebSocket(
     `${protocol}://${window.location.host}/api/v1/device-control/actions/adb/shell/ws?serial=${encodeURIComponent(selectedADBSerial.value)}`,
-    leaseProtocol ? [leaseProtocol] : undefined,
   )
   shellSocket = socket
   socket.binaryType = 'arraybuffer'

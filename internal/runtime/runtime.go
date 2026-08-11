@@ -105,7 +105,7 @@ func (r *Runtime) EDLSessions() *EDLSessionManager {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.edlSessions == nil {
-		r.edlSessions = NewEDLSessionManager(r.bus, 0)
+		r.edlSessions = NewEDLSessionManager(r.bus)
 	}
 	return r.edlSessions
 }

@@ -89,6 +89,10 @@ type Service struct {
 	lastFirmwareReason  string
 	lastNormalCandidate device.Candidate
 	lastEDLCandidate    device.Candidate
+	// edlProbe 串行化只读状态路径的 Sahara 探测: 并发轮询不得同时打开
+	// libusb 会话对同一设备探测, 也不得与进行中的 Firehose 传输竞争。
+	edlProbeMu       sync.Mutex
+	edlProbeInFlight bool
 }
 
 func (s *Service) sessionLocation() (string, error) {
@@ -104,45 +108,27 @@ func (s *Service) sessionLocation() (string, error) {
 	}
 	s.statusCacheMu.Unlock()
 	if location == "" {
+		// 冷 EDL 启动时运行时只发现正常模式身份 (05c6:9008 仅由 EDL 端口
+		// 匹配), 状态探测也尚未缓存 EDL 候选: 直接询问平台 EDL 端口, 让
+		// 租约操作在设备已处于 EDL 时依然可用。
+		if s.config.EDLPort != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			if candidate, findErr := s.config.EDLPort.FindEDL(ctx, device.Candidate{}); findErr == nil && strings.TrimSpace(candidate.Identity.PhysicalLocation) != "" {
+				s.statusCacheMu.Lock()
+				s.lastEDLCandidate = candidate
+				s.statusCacheMu.Unlock()
+				return candidate.Identity.PhysicalLocation, nil
+			}
+		}
 		return "", derrors.New(derrors.DeviceOffline, "the managed device has no stable physical location", true, nil)
 	}
 	return location, nil
 }
 
-func (s *Service) AcquireControlLease() (string, device.EDLSessionSnapshot, error) {
-	if s.runtime == nil {
-		return "", device.EDLSessionSnapshot{}, derrors.New(derrors.CapabilityNotSupported, "device session control is unavailable", false, nil)
-	}
-	location, err := s.sessionLocation()
-	if err != nil {
-		return "", device.EDLSessionSnapshot{}, err
-	}
-	return s.runtime.EDLSessions().Acquire(location)
-}
-
-func (s *Service) RenewControlLease(token string) (device.EDLSessionSnapshot, error) {
-	if s.runtime == nil {
-		return device.EDLSessionSnapshot{}, derrors.New(derrors.CapabilityNotSupported, "device session control is unavailable", false, nil)
-	}
-	location, err := s.sessionLocation()
-	if err != nil {
-		return device.EDLSessionSnapshot{}, err
-	}
-	return s.runtime.EDLSessions().Renew(location, strings.TrimSpace(token))
-}
-
-func (s *Service) ReleaseControlLease(token string) error {
-	if s.runtime == nil {
-		return derrors.New(derrors.CapabilityNotSupported, "device session control is unavailable", false, nil)
-	}
-	location, err := s.sessionLocation()
-	if err != nil {
-		return err
-	}
-	return s.runtime.EDLSessions().Release(location, strings.TrimSpace(token))
-}
-
-func (s *Service) BeginControlOperation(token, operation string) (func(), error) {
+// BeginControlOperation 申请设备互斥 (busy)。返回的 finish 必须在操作到达
+// 终态后调用以释放设备; shell 连接在连接关闭时调用。
+func (s *Service) BeginControlOperation(operation string) (func(), error) {
 	if s.runtime == nil {
 		return nil, derrors.New(derrors.CapabilityNotSupported, "device session control is unavailable", false, nil)
 	}
@@ -150,14 +136,18 @@ func (s *Service) BeginControlOperation(token, operation string) (func(), error)
 	if err != nil {
 		return nil, err
 	}
-	if err := s.runtime.EDLSessions().BeginOperation(location, strings.TrimSpace(token), operation); err != nil {
+	if err := s.runtime.EDLSessions().BeginOperation(location, operation); err != nil {
 		return nil, err
 	}
-	return func() { s.runtime.EDLSessions().EndOperation(location, strings.TrimSpace(token)) }, nil
+	return func() { s.runtime.EDLSessions().EndOperation(location) }, nil
 }
 
 const deviceControlStatusCacheTTL = 1500 * time.Millisecond
 const edlObservationReuseTTL = 5 * time.Second
+
+// edlOperationStateReuseTTL 保留操作记录的 EDL 状态 (备份完成、复位请求等),
+// 防止只读状态轮询在操作结束后数秒内用探测结果擦掉操作结论。
+const edlOperationStateReuseTTL = 30 * time.Second
 
 func NewService(at ATExecutor, ops *operation.Manager, rt *runtime.Runtime, config Config) *Service {
 	service := &Service{at: at, ops: ops, runtime: rt, config: config}
@@ -336,11 +326,13 @@ type BackupStatus struct {
 }
 
 // Status 从短 TTL 缓存提供固件状态; 缓存过期时才运行完整探测序列。
+// 每次返回都会附加当前 (掩码) 会话快照, 供前端展示设备忙状态。
 func (s *Service) Status(ctx context.Context) (Status, error) {
 	s.statusCacheMu.Lock()
 	if s.cachedStatus != nil && time.Since(s.cachedAt) < deviceControlStatusCacheTTL {
 		cached := *s.cachedStatus
 		s.statusCacheMu.Unlock()
+		s.attachEDLSession(&cached)
 		return cached, nil
 	}
 	s.statusCacheMu.Unlock()
@@ -351,27 +343,61 @@ func (s *Service) Status(ctx context.Context) (Status, error) {
 		s.cachedStatus = &copy
 		s.cachedAt = time.Now()
 		s.statusCacheMu.Unlock()
+		s.attachEDLSession(&status)
 	}
 	return status, err
 }
 
-func (s *Service) StatusForLease(ctx context.Context, token string) (Status, error) {
-	status, err := s.Status(ctx)
-	if err != nil || s.runtime == nil {
-		return status, err
+// attachEDLSession 附加当前 (掩码) 会话快照。不做任何探测, 失败静默。
+func (s *Service) attachEDLSession(status *Status) {
+	if s.runtime == nil {
+		return
 	}
 	location, locationErr := s.sessionLocation()
 	if locationErr != nil {
-		return status, nil
+		return
 	}
 	if snapshot, ok := s.runtime.EDLSessions().Snapshot(location); ok {
 		public := snapshot
 		public.PhysicalLocation = ""
 		public.Observation = device.PublicEDLObservation(public.Observation)
-		public.LeaseOwned = s.runtime.EDLSessions().Owns(location, strings.TrimSpace(token))
 		status.EDLSession = &public
 	}
-	return status, nil
+}
+
+// StatusSnapshot returns the last cached status without running any probe,
+// attaching the current (masked) EDL session when its location is known.
+// The websocket initial snapshot uses it so a connection never triggers
+// AT or USB I/O (including Sahara probing) on the device.
+func (s *Service) StatusSnapshot() (Status, bool) {
+	s.statusCacheMu.Lock()
+	if s.cachedStatus == nil {
+		s.statusCacheMu.Unlock()
+		return Status{}, false
+	}
+	status := *s.cachedStatus
+	location := ""
+	if s.runtime != nil {
+		if candidate, err := s.runtime.Candidate(); err == nil {
+			location = strings.TrimSpace(candidate.Identity.PhysicalLocation)
+		}
+	}
+	if location == "" {
+		location = strings.TrimSpace(s.lastNormalCandidate.Identity.PhysicalLocation)
+	}
+	if location == "" {
+		location = strings.TrimSpace(s.lastEDLCandidate.Identity.PhysicalLocation)
+	}
+	s.statusCacheMu.Unlock()
+	if location != "" && s.runtime != nil {
+		if snapshot, ok := s.runtime.EDLSessions().Snapshot(location); ok {
+			public := snapshot
+			public.PhysicalLocation = ""
+			public.Observation = device.PublicEDLObservation(public.Observation)
+			status.EDLSession = &public
+		}
+	}
+	return status, true
 }
 
 func (s *Service) invalidateStatusCache() {
@@ -514,69 +540,122 @@ func (s *Service) observeEDLStatus(ctx context.Context, status *Status) {
 			original = candidate
 		}
 		if original.Identity.PhysicalLocation != "" {
-			if snapshot, ok := s.runtime.EDLSessions().Snapshot(original.Identity.PhysicalLocation); ok && reusableEDLObservation(snapshot.Observation, time.Now()) {
-				public := device.PublicEDLObservation(snapshot.Observation)
-				status.EDL = &public
-				publicSnapshot := snapshot
-				publicSnapshot.PhysicalLocation = ""
-				publicSnapshot.Observation = public
-				status.EDLSession = &publicSnapshot
-				return
+			if snapshot, ok := s.runtime.EDLSessions().Snapshot(original.Identity.PhysicalLocation); ok {
+				// 进行中的 device-control 操作独占 Sahara 接口 (Firehose 工具
+				// 在其上传输): 状态轮询不得并发探测, 否则会破坏传输并覆盖操作
+				// 记录的状态。新鲜观察本身是事实, 直接复用。
+				if snapshot.ActiveOperation != "" || reusableEDLObservation(snapshot.Observation, time.Now()) {
+					s.serveEDLSession(status, snapshot)
+					return
+				}
+				// 保留上次观察的已验证事实, 瞬态探测失败不会抹掉
+				// serial/HWID/PKHash。
+				observation = snapshot.Observation
 			}
 		}
 	}
-	if s.config.EDLPort != nil {
-		probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-		defer cancel()
-		if edlCandidate, err := s.config.EDLPort.FindEDL(probeCtx, original); err == nil {
-			if original.Identity.PhysicalLocation == "" {
-				original = edlCandidate
-			}
-			s.statusCacheMu.Lock()
-			s.lastEDLCandidate = edlCandidate
-			s.statusCacheMu.Unlock()
-			if s.runtime != nil {
-				_, _ = s.runtime.EDLSessions().Correlate(original, edlCandidate)
-			}
-			observed, observeErr := s.config.EDLPort.ObserveEDL(probeCtx, edlCandidate)
+	if s.config.EDLPort == nil {
+		s.serveEDLObservation(status, observation)
+		return
+	}
+	if !s.tryBeginEDLProbe() {
+		// 已有并发轮询在探测同一设备; 直接提供当前观察, 避免重叠探测。
+		s.serveEDLObservation(status, observation)
+		return
+	}
+	defer s.endEDLProbe()
+	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	if edlCandidate, err := s.config.EDLPort.FindEDL(probeCtx, original); err == nil {
+		if original.Identity.PhysicalLocation == "" {
+			original = edlCandidate
+		}
+		s.statusCacheMu.Lock()
+		s.lastEDLCandidate = edlCandidate
+		s.statusCacheMu.Unlock()
+		if s.runtime != nil {
+			_, _ = s.runtime.EDLSessions().Correlate(original, edlCandidate)
+		}
+		observed, observeErr := s.config.EDLPort.ObserveEDL(probeCtx, edlCandidate)
+		if observeErr == nil {
 			if observed.State != "" {
 				observation = observed
 			}
-			if observeErr != nil {
-				observation.State = device.EDLStateRecoveryRequired
-				observation.RecoveryNeeded = true
-				if observation.Reason == "" {
-					observation.Reason = "Sahara observation failed"
-				}
-			}
 		} else {
-			observation.Reason = "matching EDL device could not be correlated"
 			observation.State = device.EDLStateRecoveryRequired
 			observation.RecoveryNeeded = true
+			switch {
+			case observed.Reason != "":
+				observation.Reason = observed.Reason
+			case observation.Reason == "":
+				observation.Reason = "Sahara observation failed"
+			}
 		}
-	}
-	if observation.ObservedAt.IsZero() {
-		observation.ObservedAt = time.Now().UTC()
+	} else {
+		observation.State = device.EDLStateRecoveryRequired
+		observation.RecoveryNeeded = true
+		observation.Reason = "matching EDL device could not be correlated"
 	}
 	if s.runtime != nil && original.Identity.PhysicalLocation != "" {
 		if snapshot, err := s.runtime.EDLSessions().Observe(original.Identity.PhysicalLocation, observation); err == nil {
-			publicSnapshot := snapshot
-			publicSnapshot.PhysicalLocation = ""
-			publicSnapshot.Observation = device.PublicEDLObservation(snapshot.Observation)
-			status.EDLSession = &publicSnapshot
+			s.serveEDLSession(status, snapshot)
+			return
 		}
+	}
+	s.serveEDLObservation(status, observation)
+}
+
+// serveEDLSession publishes the masked session snapshot and its observation
+// on the status payload.
+func (s *Service) serveEDLSession(status *Status, snapshot device.EDLSessionSnapshot) {
+	public := device.PublicEDLObservation(snapshot.Observation)
+	publicSnapshot := snapshot
+	publicSnapshot.PhysicalLocation = ""
+	publicSnapshot.Observation = public
+	status.EDL = &public
+	status.EDLSession = &publicSnapshot
+}
+
+// serveEDLObservation publishes only the public observation on the status
+// payload when no session snapshot is available.
+func (s *Service) serveEDLObservation(status *Status, observation device.EDLObservation) {
+	if observation.ObservedAt.IsZero() {
+		observation.ObservedAt = time.Now().UTC()
 	}
 	public := device.PublicEDLObservation(observation)
 	status.EDL = &public
 }
 
+// tryBeginEDLProbe 尝试抢占只读探测槽。返回 false 表示已有轮询在探测。
+func (s *Service) tryBeginEDLProbe() bool {
+	s.edlProbeMu.Lock()
+	defer s.edlProbeMu.Unlock()
+	if s.edlProbeInFlight {
+		return false
+	}
+	s.edlProbeInFlight = true
+	return true
+}
+
+func (s *Service) endEDLProbe() {
+	s.edlProbeMu.Lock()
+	s.edlProbeInFlight = false
+	s.edlProbeMu.Unlock()
+}
+
 func reusableEDLObservation(observation device.EDLObservation, now time.Time) bool {
-	if observation.ObservedAt.IsZero() || now.Sub(observation.ObservedAt) < 0 || now.Sub(observation.ObservedAt) > edlObservationReuseTTL {
+	if observation.ObservedAt.IsZero() || now.Sub(observation.ObservedAt) < 0 {
 		return false
 	}
 	switch observation.State {
+	// 验证过的事实是成功观察 (spec: MAY reuse for a bounded interval);
+	// recovery 观察按 spec 不复用, 每次过期后都重新探测。
 	case device.EDLStateSaharaIdentified, device.EDLStateFirehoseReady:
-		return true
+		return now.Sub(observation.ObservedAt) <= edlObservationReuseTTL
+	// 操作记录的状态 (备份完成、复位请求等) 在更长窗口内复用, 防止只读轮询
+	// 在操作刚结束后立即用探测结果擦掉操作结论。
+	case device.EDLStateNANDReading, device.EDLStateBackupSucceeded, device.EDLStateResetRequested, device.EDLStateReconnecting:
+		return now.Sub(observation.ObservedAt) <= edlOperationStateReuseTTL
 	default:
 		return false
 	}

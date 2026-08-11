@@ -26,7 +26,6 @@ Read `internal/api/http/boundary_test.go`, `server_test.go`, `sanitize_test.go`,
 | `/network` | Network service | `internal/application/network/` |
 | `/device/actions/raw-at` | Raw AT service | `internal/application/rawat/` |
 | `/device-control` | Device-control service | `internal/application/firmware/` |
-| `/device-control/session/lease` | EDL session manager | `internal/runtime/edl_session.go` |
 | `/vowifi` | VoWiFi service | `internal/application/vowifi/` |
 | `/calls` | Extras service | `internal/application/extras/` |
 | `/notifications`, `/settings/startup` | Notification and startup services | `internal/application/notification/`, `internal/platform/startup/` |

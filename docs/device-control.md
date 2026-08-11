@@ -18,11 +18,9 @@ The view can show these values when the device provides them:
 
 Sahara does not provide the modem firmware revision that the AT interface reports. DJOneHub leaves that revision empty in EDL and shows a separate reason.
 
-## Browser Control Lease
+## Device Busy Mutex
 
-The server owns one control session for one physical device. A browser tab acquires a renewable lease before it changes device state. Another tab can read status, but it cannot start a conflicting device operation.
-
-The browser stores the lease token in tab-local session storage. A second tab does not share the token.
+The server owns one control session for one physical device. The device is mutually exclusive through a server-side busy state: at most one device-control operation (including an open ADB shell) runs at a time. Any client can start an operation on an idle device; a second concurrent request receives HTTP 409. The busy state is released when the operation reaches a terminal state or the shell connection closes, so the device is never locked by an idle page. Other tabs stay synchronized through the `device_control.edl_session_changed` events stream.
 
 ## NAND Backup And Reset
 

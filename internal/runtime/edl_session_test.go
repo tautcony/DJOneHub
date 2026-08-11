@@ -5,23 +5,22 @@ import (
 	"fmt"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/iniwex5/vohive/internal/domain/device"
 	derrors "github.com/iniwex5/vohive/internal/domain/errors"
 )
 
-func TestEDLSessionManagerAllowsOneLease(t *testing.T) {
-	manager := NewEDLSessionManager(nil, time.Minute)
+func TestEDLSessionManagerAllowsOneOperation(t *testing.T) {
+	manager := NewEDLSessionManager(nil)
 	const location = "usb/1-2"
+	manager.Observe(location, device.EDLObservation{State: device.EDLStateDetected})
 	var wg sync.WaitGroup
 	results := make(chan error, 2)
 	for range 2 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, _, err := manager.Acquire(location)
-			results <- err
+			results <- manager.BeginOperation(location, "device_control.nand_backup")
 		}()
 	}
 	wg.Wait()
@@ -34,7 +33,7 @@ func TestEDLSessionManagerAllowsOneLease(t *testing.T) {
 		}
 		var structured *derrors.Error
 		if !errors.As(err, &structured) || structured.Code != derrors.DeviceSessionConflict {
-			t.Fatalf("Acquire() error = %v", err)
+			t.Fatalf("BeginOperation() error = %v", err)
 		}
 		conflicts++
 	}
@@ -43,44 +42,67 @@ func TestEDLSessionManagerAllowsOneLease(t *testing.T) {
 	}
 }
 
-func TestEDLSessionLeaseExpiresAndCanBeReacquired(t *testing.T) {
-	now := time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC)
-	manager := NewEDLSessionManager(nil, time.Second)
-	manager.now = func() time.Time { return now }
-	token, _, err := manager.Acquire("usb/1-2")
-	if err != nil || token == "" {
-		t.Fatalf("Acquire() = %q, %v", token, err)
+func TestEDLSessionOperationFreesDeviceAfterEnd(t *testing.T) {
+	manager := NewEDLSessionManager(nil)
+	const location = "usb/1-2"
+	manager.Observe(location, device.EDLObservation{State: device.EDLStateDetected})
+	if err := manager.BeginOperation(location, "device_control.nand_backup"); err != nil {
+		t.Fatal(err)
 	}
-	now = now.Add(2 * time.Second)
-	second, snapshot, err := manager.Acquire("usb/1-2")
-	if err != nil || second == "" || second == token {
-		t.Fatalf("Acquire() after expiry = %q, %+v, %v", second, snapshot, err)
+	if err := manager.BeginOperation(location, "device_control.reset"); err == nil {
+		t.Fatal("second operation acquired the busy device")
+	}
+	manager.EndOperation(location)
+	if err := manager.BeginOperation(location, "device_control.reset"); err != nil {
+		t.Fatalf("device was not released after the operation ended: %v", err)
 	}
 }
 
-func TestEDLSessionActiveOperationPinsExpiredLease(t *testing.T) {
-	now := time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC)
-	manager := NewEDLSessionManager(nil, time.Second)
-	manager.now = func() time.Time { return now }
-	token, _, err := manager.Acquire("usb/1-2")
-	if err != nil {
+func TestEDLSessionBusySessionIsNotEvicted(t *testing.T) {
+	manager := NewEDLSessionManager(nil)
+	busy := "usb/0"
+	if err := manager.BeginOperation(busy, "device_control.adb_shell"); err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.BeginOperation("usb/1-2", token, "device_control.nand_backup"); err != nil {
-		t.Fatal(err)
+	for index := 1; index < maxEDLSessions; index++ {
+		location := fmt.Sprintf("usb/%d", index)
+		if _, err := manager.Observe(location, device.EDLObservation{State: device.EDLStateDetected}); err != nil {
+			t.Fatal(err)
+		}
 	}
-	now = now.Add(2 * time.Second)
-	if _, _, err := manager.Acquire("usb/1-2"); err == nil {
-		t.Fatal("active operation allowed the expired lease to be stolen")
+	// 容量已满: 新会话驱逐最旧的空闲会话, busy 会话必须保留。
+	if _, err := manager.Observe(fmt.Sprintf("usb/%d", maxEDLSessions), device.EDLObservation{State: device.EDLStateDetected}); err != nil {
+		t.Fatalf("idle session was not evictable: %v", err)
 	}
-	manager.EndOperation("usb/1-2", token)
-	if _, _, err := manager.Acquire("usb/1-2"); err != nil {
-		t.Fatalf("lease was not released after the operation ended: %v", err)
+	manager.mu.Lock()
+	_, busyStillPresent := manager.sessions[busy]
+	manager.mu.Unlock()
+	if !busyStillPresent {
+		t.Fatal("busy session was evicted")
+	}
+}
+
+func TestEDLSessionAllBusyRejectsNewSession(t *testing.T) {
+	manager := NewEDLSessionManager(nil)
+	for index := 0; index < maxEDLSessions; index++ {
+		location := fmt.Sprintf("usb/%d", index)
+		if err := manager.BeginOperation(location, "device_control.nand_backup"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 全部会话 busy 时, 新会话被拒绝而不是驱逐 busy 会话。
+	if _, err := manager.Observe(fmt.Sprintf("usb/%d", maxEDLSessions), device.EDLObservation{State: device.EDLStateDetected}); err == nil {
+		t.Fatal("session capacity admitted a new session while every session is busy")
+	}
+	// 任一 busy 会话结束后, 驱逐恢复可用。
+	manager.EndOperation("usb/0")
+	if _, err := manager.Observe(fmt.Sprintf("usb/%d", maxEDLSessions), device.EDLObservation{State: device.EDLStateDetected}); err != nil {
+		t.Fatalf("session eviction did not recover after an operation ended: %v", err)
 	}
 }
 
 func TestEDLSessionObservationDoesNotInventFirmwareRevision(t *testing.T) {
-	manager := NewEDLSessionManager(nil, time.Minute)
+	manager := NewEDLSessionManager(nil)
 	snapshot, err := manager.Observe("usb/1-2", device.EDLObservation{
 		State:      device.EDLStateSaharaIdentified,
 		Protocol:   "sahara",
@@ -96,7 +118,7 @@ func TestEDLSessionObservationDoesNotInventFirmwareRevision(t *testing.T) {
 }
 
 func TestEDLSessionHistoryIsBounded(t *testing.T) {
-	manager := NewEDLSessionManager(nil, time.Minute)
+	manager := NewEDLSessionManager(nil)
 	for index := 0; index < maxEDLSessions+3; index++ {
 		location := fmt.Sprintf("usb/%d", index)
 		if _, err := manager.Observe(location, device.EDLObservation{State: device.EDLStateDetected}); err != nil {

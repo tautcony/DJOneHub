@@ -122,6 +122,8 @@ type usbIdentity struct {
 	location  string
 }
 
+// supportedUSBIdentities 的 VID/PID 必须与 transport.NormalModeIdentities
+// (模块变体唯一清单) 保持一致; FindOriginal 的复位白名单由该清单派生。
 var supportedUSBIdentities = []struct {
 	vendorID  int
 	productID int

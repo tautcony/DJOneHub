@@ -38,9 +38,6 @@ type EDLSessionSnapshot struct {
 	SessionID        string         `json:"session_id,omitempty"`
 	PhysicalLocation string         `json:"physical_location,omitempty"`
 	Observation      EDLObservation `json:"observation"`
-	LeaseHeld        bool           `json:"lease_held"`
-	LeaseOwned       bool           `json:"lease_owned"`
-	LeaseExpiresAt   time.Time      `json:"lease_expires_at,omitempty"`
 	ActiveOperation  string         `json:"active_operation,omitempty"`
 }
 

@@ -138,10 +138,10 @@ func TestSanitizeEventMatrix(t *testing.T) {
 		{
 			name: "EDL session event masks protocol identifiers and location",
 			event: runtime.Event{Type: "device_control.edl_session_changed", Data: domain.EDLSessionSnapshot{
-				SessionID: "session-1", PhysicalLocation: "usb/1-2", LeaseHeld: true,
+				SessionID: "session-1", PhysicalLocation: "usb/1-2", ActiveOperation: "device_control.adb_shell",
 				Observation: domain.EDLObservation{State: domain.EDLStateSaharaIdentified, SerialNumber: "12345678", HardwareID: "0102030405060708", PKHash: "aabbccdd"},
 			}},
-			want: domain.EDLSessionSnapshot{SessionID: "session-1", LeaseHeld: true,
+			want: domain.EDLSessionSnapshot{SessionID: "session-1", ActiveOperation: "device_control.adb_shell",
 				Observation: domain.EDLObservation{State: domain.EDLStateSaharaIdentified, SerialNumber: "****5678", HardwareID: "****0708", PKHash: "****ccdd"}},
 		},
 	}

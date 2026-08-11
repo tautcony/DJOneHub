@@ -26,12 +26,11 @@ func openAPIDocument() map[string]any {
 			"/api/v1/device/actions/raw-at":             commandPath("raw AT response", false),
 			"/api/v1/device-control":                    readPath("device control status"),
 			"/api/v1/device-control/settings":           commandPath("device control settings", false),
-			"/api/v1/device-control/session/lease":      deviceControlLeasePath(),
 			"/api/v1/device-control/actions/adb-unlock": deviceControlCommandPath("ADB unlock operation"),
 			"/api/v1/device-control/actions/adb-mode":   deviceControlCommandPath("ADB mode operation"),
 			"/api/v1/device-control/actions/adb/reboot": deviceControlCommandPath("ADB reboot operation"),
 			"/api/v1/device-control/actions/adb/shell/ws": map[string]any{
-				"get": map[string]any{"description": "interactive ADB shell; the WebSocket subprotocol carries the device-control lease", "responses": map[string]any{"101": map[string]any{"description": "interactive ADB shell"}, "409": map[string]any{"$ref": "#/components/responses/Error"}}},
+				"get": map[string]any{"description": "interactive ADB shell; opening the shell holds the device busy until the connection closes", "responses": map[string]any{"101": map[string]any{"description": "interactive ADB shell"}, "409": map[string]any{"$ref": "#/components/responses/Error"}}},
 			},
 			"/api/v1/device-control/actions/usb-id":                    deviceControlCommandPath("USB ID operation"),
 			"/api/v1/device-control/actions/edl":                       deviceControlCommandPath("EDL entry operation"),
@@ -154,25 +153,9 @@ func commandPath(description string, async bool) map[string]any {
 	}}}
 }
 
-func deviceControlLeasePath() map[string]any {
-	responses := map[string]any{
-		"200": map[string]any{"description": "lease renewed or released"},
-		"201": map[string]any{"description": "lease acquired"},
-		"409": map[string]any{"$ref": "#/components/responses/Error"},
-		"422": map[string]any{"$ref": "#/components/responses/Error"},
-	}
-	header := []any{map[string]any{"name": deviceControlLeaseHeader, "in": "header", "required": true, "schema": map[string]any{"type": "string"}}}
-	return map[string]any{
-		"post":   map[string]any{"responses": responses},
-		"put":    map[string]any{"parameters": header, "responses": responses},
-		"delete": map[string]any{"parameters": header, "responses": responses},
-	}
-}
-
 func deviceControlCommandPath(description string) map[string]any {
 	path := commandPath(description, true)
 	operation := path["post"].(map[string]any)
-	operation["parameters"] = []any{map[string]any{"name": deviceControlLeaseHeader, "in": "header", "required": true, "schema": map[string]any{"type": "string"}}}
 	operation["responses"].(map[string]any)["409"] = map[string]any{"$ref": "#/components/responses/Error"}
 	return path
 }

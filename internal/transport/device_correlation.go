@@ -8,6 +8,18 @@ import (
 	derrors "github.com/iniwex5/vohive/internal/domain/errors"
 )
 
+// Qualcomm EDL 身份的 VID:PID。EDL 端口 (darwin EDLPort) 的查找与进入
+// 路径统一引用这两个常量, 避免各适配器间字面量漂移。
+const (
+	QualcommEDLVendorID  = "05c6"
+	QualcommEDLProductID = "9008"
+)
+
+// NormalModeIdentities 列出受支持模块的正常模式 USB 身份 ("vid:pid"),
+// 是模块变体清单的唯一来源。平台适配器表 (darwin supportedUSBIdentities,
+// linux usbProduct) 与 FindOriginal 的复位白名单都必须由此派生。
+var NormalModeIdentities = []string{"2ca3:4006", "2c7c:0125"}
+
 // MatchPhysicalDevice selects one candidate with the requested USB identity
 // at the original physical location. It rejects missing location data and
 // ambiguous observations.

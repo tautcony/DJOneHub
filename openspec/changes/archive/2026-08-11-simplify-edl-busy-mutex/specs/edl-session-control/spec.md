@@ -1,27 +1,4 @@
-# edl-session-control Specification
-
-## Purpose
-定义设备处于 Qualcomm EDL 模式时的会话模型与控制语义: 状态路径通过有限
-deadline 内的实时 Sahara 观察提供设备事实, 并保护进行中的 Firehose 传输;
-每个物理设备持有一个会话, 通过服务端 busy 互斥保证同时刻至多一个操作
-(含打开的 ADB shell), 无客户端 token 或租约; NAND 备份完成后设备保持
-EDL, 复位与恢复是独立的显式操作。
-## Requirements
-### Requirement: EDL status SHALL use live Sahara observation
-
-When the selected physical device is in Qualcomm EDL, the service SHALL probe the active Sahara endpoint within a finite deadline and SHALL expose the observed protocol state and available device facts. It SHALL not use a normal-mode cache as the source of current EDL facts.
-
-When no normal-mode candidate exists, the adapter SHALL accept one unique `05c6:9008` candidate. It SHALL reject zero or multiple candidates. It SHALL use the unique candidate physical location as the EDL-only session key.
-
-The service SHALL NOT reuse a `detected` placeholder or a recovery observation as a successful live observation. It MAY reuse a recent `sahara_identified` or `firehose_ready` observation for a bounded interval. It SHALL retry live observation after that interval.
-
-#### Scenario: EDL is detected with an empty normal-mode cache
-- **WHEN** USB `05c6:9008` is found and Sahara observation succeeds
-- **THEN** status reports the live Sahara state and observed facts without returning an unavailable firmware reason only because the cache is empty
-
-#### Scenario: Sahara does not expose modem firmware revision
-- **WHEN** Sahara returns HWID, serial, or SBL version but no verified modem revision
-- **THEN** status keeps `firmware_revision` empty, reports each fact under `edl`, and states that AT firmware revision is not available in EDL
+## MODIFIED Requirements
 
 ### Requirement: The service SHALL own one EDL session per physical device
 
@@ -57,18 +34,6 @@ The device SHALL NOT have a lease endpoint (`/device-control/session/lease`), a 
 - **WHEN** the device is idle and a browser tab starts an operation without any prior token exchange
 - **THEN** the operation starts and other tabs learn about it through the events stream
 
-### Requirement: NAND backup SHALL not reset the device
-
-After a valid NAND image is atomically published, the backup operation SHALL report success while the EDL session remains active. Reset and normal-mode reconnect SHALL be separate explicit operations.
-
-#### Scenario: Valid image is read
-- **WHEN** Firehose read and image validation succeed
-- **THEN** the operation completes without calling Firehose reset and status remains in EDL
-
-#### Scenario: Read fails or is cancelled
-- **WHEN** the read fails or is cancelled after protocol setup
-- **THEN** the service may attempt one bounded cleanup reset and reports whether recovery is still required
-
 ### Requirement: The status read path SHALL not probe during an active operation
 
 While a device-control operation is active, the read-only status path SHALL serve the current session observation without live Sahara probing, so a poll never competes with the Firehose transfer or overwrites operation-recorded state. Live observation SHALL be single-flight: concurrent status polls SHALL NOT open overlapping probes of the same device.
@@ -92,4 +57,3 @@ A hung device-control operation SHALL be cancelled after a bounded deadline so t
 #### Scenario: A client reconnects the events websocket
 - **WHEN** the browser reconnects after a network blip while a backup is running
 - **THEN** the snapshot is served from cache without USB I/O and the backup is undisturbed
-

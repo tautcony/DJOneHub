@@ -141,7 +141,6 @@ func (s *Server) Handler() nethttp.Handler {
 	// Device Control is the only public namespace for ADB and EDL controls.
 	mux.HandleFunc("/api/v1/device-control", s.deviceControlStatus)
 	mux.HandleFunc("/api/v1/device-control/settings", s.deviceControlSettings)
-	mux.HandleFunc("/api/v1/device-control/session/lease", s.deviceControlLease)
 	mux.HandleFunc("/api/v1/device-control/actions/adb-unlock", s.deviceControlADBUnlock)
 	mux.HandleFunc("/api/v1/device-control/actions/adb-mode", s.deviceControlADBMode)
 	mux.HandleFunc("/api/v1/device-control/actions/adb/reboot", s.deviceControlADBReboot)
@@ -785,7 +784,7 @@ func (s *Server) deviceControlStatus(w nethttp.ResponseWriter, r *nethttp.Reques
 		writeError(w, derrors.New(derrors.CapabilityNotSupported, "device control is unavailable", false, nil))
 		return
 	}
-	value, err := s.config.DeviceControl.StatusForLease(r.Context(), r.Header.Get(deviceControlLeaseHeader))
+	value, err := s.config.DeviceControl.Status(r.Context())
 	if err != nil {
 		writeError(w, err)
 		return
@@ -812,47 +811,11 @@ func (s *Server) deviceControlSettings(w nethttp.ResponseWriter, r *nethttp.Requ
 	writeJSON(w, nethttp.StatusOK, s.config.DeviceControl.DeviceControlSettings())
 }
 
-const deviceControlLeaseHeader = "X-DJOneHub-Device-Lease"
-
+// publicEDLSession 清除物理位置并掩码观察标识, 用于事件流与快照投影。
 func publicEDLSession(snapshot domain.EDLSessionSnapshot) domain.EDLSessionSnapshot {
 	snapshot.PhysicalLocation = ""
 	snapshot.Observation = domain.PublicEDLObservation(snapshot.Observation)
 	return snapshot
-}
-
-func (s *Server) deviceControlLease(w nethttp.ResponseWriter, r *nethttp.Request) {
-	if !s.protected(w, r) || s.config.DeviceControl == nil {
-		if s.config.DeviceControl == nil {
-			writeError(w, derrors.New(derrors.CapabilityNotSupported, "device control is unavailable", false, nil))
-		}
-		return
-	}
-	switch r.Method {
-	case nethttp.MethodPost:
-		token, snapshot, err := s.config.DeviceControl.AcquireControlLease()
-		if err != nil {
-			writeError(w, err)
-			return
-		}
-		snapshot.LeaseOwned = true
-		writeJSON(w, nethttp.StatusCreated, map[string]any{"lease_token": token, "session": publicEDLSession(snapshot)})
-	case nethttp.MethodPut:
-		snapshot, err := s.config.DeviceControl.RenewControlLease(r.Header.Get(deviceControlLeaseHeader))
-		if err != nil {
-			writeError(w, err)
-			return
-		}
-		snapshot.LeaseOwned = true
-		writeJSON(w, nethttp.StatusOK, map[string]any{"session": publicEDLSession(snapshot)})
-	case nethttp.MethodDelete:
-		if err := s.config.DeviceControl.ReleaseControlLease(r.Header.Get(deviceControlLeaseHeader)); err != nil {
-			writeError(w, err)
-			return
-		}
-		writeJSON(w, nethttp.StatusOK, map[string]string{"state": "released"})
-	default:
-		s.requireMethod(w, r, nethttp.MethodPost)
-	}
 }
 
 func (s *Server) beginDeviceControlOperation(w nethttp.ResponseWriter, r *nethttp.Request, operation string) (func(), bool) {
@@ -860,7 +823,7 @@ func (s *Server) beginDeviceControlOperation(w nethttp.ResponseWriter, r *nethtt
 		writeError(w, derrors.New(derrors.CapabilityNotSupported, "device control is unavailable", false, nil))
 		return nil, false
 	}
-	finish, err := s.config.DeviceControl.BeginControlOperation(r.Header.Get(deviceControlLeaseHeader), operation)
+	finish, err := s.config.DeviceControl.BeginControlOperation(operation)
 	if err != nil {
 		writeError(w, err)
 		return nil, false
@@ -868,6 +831,13 @@ func (s *Server) beginDeviceControlOperation(w nethttp.ResponseWriter, r *nethtt
 	return finish, true
 }
 
+// deviceControlOperationDeadline 是设备操作挂死时的上限。到期先取消操作
+// (操作管理器会记录 Cancelled), 再释放租约, 保证释放与操作真实结束一致。
+const deviceControlOperationDeadline = 30 * time.Minute
+
+// trackDeviceControlOperation 在操作到达终态时释放租约锁。完成通知来自
+// operation.completed 总线事件; 低频兜底轮询覆盖事件先于订阅发布的竞态。
+// 挂死操作在 deadline 后被取消, 而不是无限期钉住租约锁死所有客户端。
 func (s *Server) trackDeviceControlOperation(operationID string, finish func()) {
 	if finish == nil {
 		return
@@ -878,22 +848,54 @@ func (s *Server) trackDeviceControlOperation(operationID string, finish func()) 
 	}
 	go func() {
 		defer finish()
-		ticker := time.NewTicker(250 * time.Millisecond)
+		if status, ok := s.config.Operations.Get(operationID); ok && operationTerminal(status.State) {
+			return
+		}
+		_, events, unsubscribe := s.config.Operations.Events().SubscribeNamed("device-control-op-tracker", 8)
+		defer unsubscribe()
+		ticker := time.NewTicker(2 * time.Second)
 		defer ticker.Stop()
-		deadline := time.NewTimer(24 * time.Hour)
+		deadline := time.NewTimer(deviceControlOperationDeadline)
 		defer deadline.Stop()
 		for {
-			status, ok := s.config.Operations.Get(operationID)
-			if !ok || status.State == operation.Succeeded || status.State == operation.Failed || status.State == operation.Cancelled {
-				return
-			}
 			select {
-			case <-ticker.C:
-			case <-deadline.C:
+			case event, ok := <-events:
+				if !ok {
+					return
+				}
+				if event.Type != "operation.completed" {
+					continue
+				}
+				status, ok := event.Data.(operation.Status)
+				if !ok || status.ID != operationID {
+					continue
+				}
 				return
+			case <-ticker.C:
+				if status, ok := s.config.Operations.Get(operationID); ok && operationTerminal(status.State) {
+					return
+				}
+			case <-deadline.C:
+				s.config.Operations.Cancel(operationID)
+				cancelWait := time.NewTimer(10 * time.Second)
+				defer cancelWait.Stop()
+				for {
+					if status, ok := s.config.Operations.Get(operationID); ok && operationTerminal(status.State) {
+						return
+					}
+					select {
+					case <-cancelWait.C:
+						return
+					case <-time.After(500 * time.Millisecond):
+					}
+				}
 			}
 		}
 	}()
+}
+
+func operationTerminal(state operation.State) bool {
+	return state == operation.Succeeded || state == operation.Failed || state == operation.Cancelled
 }
 
 func (s *Server) deviceControlADBUnlock(w nethttp.ResponseWriter, r *nethttp.Request) {
@@ -1039,8 +1041,9 @@ func (s *Server) deviceControlADBShellWS(w nethttp.ResponseWriter, r *nethttp.Re
 		writeError(w, derrors.New(derrors.InvalidRequest, "websocket upgrade required", false, nil))
 		return
 	}
-	leaseToken, leaseProtocol := deviceControlWebSocketLease(r)
-	finish, err := s.config.DeviceControl.BeginControlOperation(leaseToken, "device_control.adb_shell")
+	// 打开 shell 即持有设备互斥 (busy), 直到连接关闭; 其他操作/第二个
+	// shell 在期间收到 409 busy。
+	finish, err := s.config.DeviceControl.BeginControlOperation("device_control.adb_shell")
 	if err != nil {
 		writeError(w, err)
 		return
@@ -1054,12 +1057,27 @@ func (s *Server) deviceControlADBShellWS(w nethttp.ResponseWriter, r *nethttp.Re
 	}
 	defer shell.Close()
 	upgrader := s.adbShellUpgrader()
-	upgrader.Subprotocols = []string{leaseProtocol}
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
 	}
 	defer conn.Close()
+
+	// 与事件 WebSocket 相同的保活策略: 错过 pong 的静默客户端在 pongWait
+	// 后失败读超时并释放会话, 半开连接不会永久钉住 active_operation。
+	keepalive := s.keepalive
+	conn.SetReadLimit(64 * 1024)
+	_ = conn.SetReadDeadline(time.Now().Add(keepalive.pong))
+	conn.SetPongHandler(func(string) error { return conn.SetReadDeadline(time.Now().Add(keepalive.pong)) })
+
+	// gorilla 只允许一个并发写者: shell->browser 转发与 ping 共享同一锁。
+	var writeMu sync.Mutex
+	writeMessage := func(messageType int, payload []byte) error {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		_ = conn.SetWriteDeadline(time.Now().Add(keepalive.write))
+		return conn.WriteMessage(messageType, payload)
+	}
 
 	readerDone := make(chan struct{})
 	go func() {
@@ -1068,7 +1086,7 @@ func (s *Server) deviceControlADBShellWS(w nethttp.ResponseWriter, r *nethttp.Re
 		for {
 			count, readErr := shell.Read(buffer)
 			if count > 0 {
-				if writeErr := conn.WriteMessage(websocket.BinaryMessage, buffer[:count]); writeErr != nil {
+				if writeErr := writeMessage(websocket.BinaryMessage, buffer[:count]); writeErr != nil {
 					_ = shell.Close()
 					return
 				}
@@ -1081,33 +1099,42 @@ func (s *Server) deviceControlADBShellWS(w nethttp.ResponseWriter, r *nethttp.Re
 			}
 		}
 	}()
+	inputDone := make(chan struct{})
+	go func() {
+		defer close(inputDone)
+		for {
+			messageType, payload, readErr := conn.ReadMessage()
+			if readErr != nil {
+				return
+			}
+			if messageType != websocket.TextMessage && messageType != websocket.BinaryMessage {
+				continue
+			}
+			if _, writeErr := shell.Write(payload); writeErr != nil {
+				return
+			}
+		}
+	}()
+	pingTicker := time.NewTicker(keepalive.ping)
+	defer pingTicker.Stop()
 	for {
 		select {
+		case <-r.Context().Done():
+			return
 		case <-readerDone:
 			return
-		default:
-		}
-		messageType, payload, readErr := conn.ReadMessage()
-		if readErr != nil {
+		case <-inputDone:
 			return
-		}
-		if messageType != websocket.TextMessage && messageType != websocket.BinaryMessage {
-			continue
-		}
-		if _, writeErr := shell.Write(payload); writeErr != nil {
-			return
+		case <-pingTicker.C:
+			writeMu.Lock()
+			_ = conn.SetWriteDeadline(time.Now().Add(keepalive.write))
+			err := conn.WriteMessage(websocket.PingMessage, nil)
+			writeMu.Unlock()
+			if err != nil {
+				return
+			}
 		}
 	}
-}
-
-func deviceControlWebSocketLease(r *nethttp.Request) (string, string) {
-	const prefix = "djonehub-device-lease."
-	for _, protocol := range websocket.Subprotocols(r) {
-		if strings.HasPrefix(protocol, prefix) {
-			return strings.TrimPrefix(protocol, prefix), protocol
-		}
-	}
-	return "", ""
 }
 
 func (s *Server) deviceControlBackup(w nethttp.ResponseWriter, r *nethttp.Request) {
@@ -1675,7 +1702,9 @@ func (s *Server) websocket(w nethttp.ResponseWriter, r *nethttp.Request) {
 	if status, err := s.config.Device.Status(r.Context()); err == nil {
 		data := initialSnapshotData{Status: sanitizeDeviceStatus(status)}
 		if s.config.DeviceControl != nil {
-			if controlStatus, controlErr := s.config.DeviceControl.StatusForLease(r.Context(), ""); controlErr == nil {
+			// 快照只读缓存: 连接 (包括断线重连) 绝不触发 AT 或 Sahara 探测,
+			// 避免与进行中的 Firehose 传输竞争或阻塞握手。
+			if controlStatus, cached := s.config.DeviceControl.StatusSnapshot(); cached && controlStatus.EDLSession != nil {
 				data.EDLSession = controlStatus.EDLSession
 			}
 		}

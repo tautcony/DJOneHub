@@ -6,7 +6,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { notification, theme as antTheme } from 'ant-design-vue'
 import type { ThemeConfig } from 'ant-design-vue/es/config-provider/context'
 import { EditOutlined, ReloadOutlined } from '@ant-design/icons-vue'
-import { api, ensureDeviceControlLease } from './services/api'
+import { api } from './services/api'
 import { APIError } from './services/api'
 import { persistLocale } from './i18n'
 import { AT_PRESETS, parseATResponse, type RawATSMSDiagnostic } from './services/at'
@@ -859,7 +859,6 @@ async function runFirmwareAction(
   method: 'direct' | 'adb' = 'direct',
 ) {
   try {
-    await ensureDeviceControlLease()
     const result =
       action === 'unlock'
         ? await api.deviceControlADBUnlock()
@@ -881,7 +880,6 @@ async function runFirmwareAction(
 
 async function updateFirmwareUSBID(vid: string, pid: string) {
   try {
-    await ensureDeviceControlLease()
     const result = await api.deviceControlUSBID(vid, pid)
     firmwareOperationID.value = result.operation_id
     notifySuccess(t('firmware.operationAccepted', { id: result.operation_id }))
@@ -897,7 +895,6 @@ async function backupFirmware(
   edlRunner: 'python' | 'uv',
 ) {
   try {
-    await ensureDeviceControlLease()
     await api.saveDeviceControlSettings({
       ...(firmware.value?.settings || {}),
       adb_command: firmware.value?.settings?.adb_command || firmware.value?.adb.command || '',

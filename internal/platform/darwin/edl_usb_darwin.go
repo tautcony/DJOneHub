@@ -27,7 +27,7 @@ type directEDLPort struct{}
 func newEDLPort() (transport.EDLPort, bool) { return &directEDLPort{}, true }
 
 func (p *directEDLPort) EnterEDL(ctx context.Context, candidate device.Candidate) error {
-	if strings.EqualFold(candidate.Identity.VendorID, "05c6") && strings.EqualFold(candidate.Identity.ProductID, "9008") {
+	if strings.EqualFold(candidate.Identity.VendorID, transport.QualcommEDLVendorID) && strings.EqualFold(candidate.Identity.ProductID, transport.QualcommEDLProductID) {
 		return nil
 	}
 	identity := usbDeviceIdentityForCandidate(candidate)
@@ -62,9 +62,9 @@ func (p *directEDLPort) FindEDL(ctx context.Context, original device.Candidate) 
 	}
 	observed := discoverEDLIdentities(ctx)
 	if strings.TrimSpace(original.Identity.PhysicalLocation) == "" {
-		return transport.MatchUniqueUSBDevice(observed, "05c6", "9008")
+		return transport.MatchUniqueUSBDevice(observed, transport.QualcommEDLVendorID, transport.QualcommEDLProductID)
 	}
-	return transport.MatchPhysicalDevice(original, observed, "05c6", "9008")
+	return transport.MatchPhysicalDevice(original, observed, transport.QualcommEDLVendorID, transport.QualcommEDLProductID)
 }
 
 func (p *directEDLPort) FindOriginal(ctx context.Context, original device.Candidate) (device.Candidate, error) {
@@ -80,14 +80,14 @@ func (p *directEDLPort) FindOriginal(ctx context.Context, original device.Candid
 			Manufacturer: item.vendor, Product: item.product,
 		}})
 	}
-	if strings.EqualFold(original.Identity.VendorID, "05c6") && strings.EqualFold(original.Identity.ProductID, "9008") {
-		return transport.MatchPhysicalDeviceIdentities(original, candidates, "2ca3:4006", "2c7c:0125")
+	if strings.EqualFold(original.Identity.VendorID, transport.QualcommEDLVendorID) && strings.EqualFold(original.Identity.ProductID, transport.QualcommEDLProductID) {
+		return transport.MatchPhysicalDeviceIdentities(original, candidates, transport.NormalModeIdentities...)
 	}
 	return transport.MatchPhysicalDevice(original, candidates, original.Identity.VendorID, original.Identity.ProductID)
 }
 
 func (p *directEDLPort) ObserveEDL(ctx context.Context, candidate device.Candidate) (device.EDLObservation, error) {
-	if !strings.EqualFold(candidate.Identity.VendorID, "05c6") || !strings.EqualFold(candidate.Identity.ProductID, "9008") {
+	if !strings.EqualFold(candidate.Identity.VendorID, transport.QualcommEDLVendorID) || !strings.EqualFold(candidate.Identity.ProductID, transport.QualcommEDLProductID) {
 		return device.EDLObservation{}, derrors.New(derrors.InvalidRequest, "candidate is not a Qualcomm EDL device", false, nil)
 	}
 	identity := usbDeviceIdentity{VendorID: 0x05c6, ProductID: 0x9008, LocationID: candidate.Identity.PhysicalLocation}
@@ -213,29 +213,55 @@ type usbDiagEndpoint struct {
 type usbSaharaEndpoint struct {
 	ctx      context.Context
 	endpoint *usbDiagEndpoint
+	// leftover 保留一次 bulk 传输中合并到达的后续包字节: macOS libusb 后端
+	// 会把排队传输合并进同一次读取, 丢弃尾部会破坏后续包的对齐。
+	leftover []byte
 }
 
 func (u *usbSaharaEndpoint) WritePacket(packet []byte) error {
 	return u.endpoint.Write(u.ctx, packet, 2*time.Second)
 }
 
-func (u *usbSaharaEndpoint) ReadPacket() ([]byte, error) {
-	buffer := make([]byte, saharaMaxPacketSize)
+func (u *usbSaharaEndpoint) readMore(buffer []byte) error {
 	count, err := u.endpoint.Read(u.ctx, buffer, 2*time.Second)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	if count < 8 || count > len(buffer) {
-		return nil, fmt.Errorf("Sahara packet length %d is outside bounds", count)
+	if count <= 0 || count > len(buffer) {
+		return fmt.Errorf("Sahara packet read length %d is outside bounds", count)
 	}
-	if bytes.HasPrefix(bytes.TrimSpace(buffer[:count]), []byte("<?xml")) {
-		return append([]byte(nil), buffer[:count]...), nil
+	u.leftover = append(u.leftover, buffer[:count]...)
+	if len(u.leftover) > saharaMaxPacketSize {
+		return fmt.Errorf("Sahara packet stream exceeds the maximum packet size")
 	}
-	declared := binary.LittleEndian.Uint32(buffer[4:8])
-	if declared < 8 || declared > uint32(count) || declared > saharaMaxPacketSize {
+	return nil
+}
+
+func (u *usbSaharaEndpoint) ReadPacket() ([]byte, error) {
+	buffer := make([]byte, saharaMaxPacketSize)
+	// 短读不是协议错误: 按声明长度收集完整包。
+	for len(u.leftover) < 8 {
+		if err := u.readMore(buffer); err != nil {
+			return nil, err
+		}
+	}
+	if bytes.HasPrefix(bytes.TrimSpace(u.leftover), []byte("<?xml")) {
+		packet := append([]byte(nil), u.leftover...)
+		u.leftover = nil
+		return packet, nil
+	}
+	declared := binary.LittleEndian.Uint32(u.leftover[4:8])
+	if declared < 8 || declared > saharaMaxPacketSize {
 		return nil, fmt.Errorf("Sahara packet declared length %d is invalid", declared)
 	}
-	return append([]byte(nil), buffer[:declared]...), nil
+	for len(u.leftover) < int(declared) {
+		if err := u.readMore(buffer); err != nil {
+			return nil, err
+		}
+	}
+	packet := append([]byte(nil), u.leftover[:declared]...)
+	u.leftover = append(u.leftover[:0], u.leftover[declared:]...)
+	return packet, nil
 }
 
 func (u *usbSaharaEndpoint) ReadData(length int) ([]byte, error) {
@@ -257,12 +283,33 @@ func (u *usbSaharaEndpoint) ReadData(length int) ([]byte, error) {
 	return result, nil
 }
 
-func (u *usbDiagEndpoint) Write(_ context.Context, payload []byte, timeout time.Duration) error {
+// transferTimeout 把 ctx 的剩余 deadline 折进单次传输超时, 并在 ctx 已取消
+// 或到期时立即返回, 使调用方的探测 deadline 与客户端取消真正生效。
+func transferTimeout(ctx context.Context, timeout time.Duration) (C.uint, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		if remaining := time.Until(deadline); remaining < timeout {
+			if remaining <= 0 {
+				return 0, ctx.Err()
+			}
+			timeout = remaining
+		}
+	}
+	return C.uint(timeout.Milliseconds()), nil
+}
+
+func (u *usbDiagEndpoint) Write(ctx context.Context, payload []byte, timeout time.Duration) error {
 	if len(payload) == 0 {
 		return nil
 	}
+	ms, err := transferTimeout(ctx, timeout)
+	if err != nil {
+		return err
+	}
 	var transferred C.int
-	rc := C.libusb_bulk_transfer(u.handle, C.uchar(u.endpointOut), (*C.uchar)(unsafe.Pointer(&payload[0])), C.int(len(payload)), &transferred, C.uint(timeout.Milliseconds()))
+	rc := C.libusb_bulk_transfer(u.handle, C.uchar(u.endpointOut), (*C.uchar)(unsafe.Pointer(&payload[0])), C.int(len(payload)), &transferred, ms)
 	if rc != 0 {
 		return fmt.Errorf("USB DIAG bulk write: %s", C.GoString(C.libusb_error_name(rc)))
 	}
@@ -272,10 +319,18 @@ func (u *usbDiagEndpoint) Write(_ context.Context, payload []byte, timeout time.
 	return nil
 }
 
-func (u *usbDiagEndpoint) Read(_ context.Context, payload []byte, timeout time.Duration) (int, error) {
+func (u *usbDiagEndpoint) Read(ctx context.Context, payload []byte, timeout time.Duration) (int, error) {
+	ms, err := transferTimeout(ctx, timeout)
+	if err != nil {
+		return 0, err
+	}
 	var transferred C.int
-	rc := C.libusb_bulk_transfer(u.handle, C.uchar(u.endpointIn), (*C.uchar)(unsafe.Pointer(&payload[0])), C.int(len(payload)), &transferred, C.uint(timeout.Milliseconds()))
+	rc := C.libusb_bulk_transfer(u.handle, C.uchar(u.endpointIn), (*C.uchar)(unsafe.Pointer(&payload[0])), C.int(len(payload)), &transferred, ms)
 	if rc == C.LIBUSB_ERROR_TIMEOUT {
+		// 因 ctx deadline 而超时是正常的探测截止, 返回 ctx 错误而非协议超时。
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
 		return 0, errUSBTimeout
 	}
 	if rc != 0 {

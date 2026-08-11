@@ -51,7 +51,7 @@ Use `/api/v1/runtime/diagnostics` and `/api/v1/runtime/traces` before you add ne
 | VoWiFi is not available | VoWiFi service, backend capability, packet tunnel | `internal/vowifihost/*_test.go` |
 | A device-control action fails | Device-control service, raw AT service, platform adapter | Firmware service and ADB tests |
 | EDL facts are absent or stale | `application/firmware/service.go`, platform `ObserveEDL` | Sahara parser, correlation, and service tests |
-| A second browser gets HTTP 409 | `runtime/edl_session.go`, device-control lease handler | Session manager and device-control contract tests |
+| A second concurrent device-control action gets HTTP 409 | `runtime/edl_session.go`, device-control busy mutex | Session manager and device-control contract tests |
 
 Device-control EDL entry, Firehose reset, USB mode, eSIM, and raw AT actions can change device state. Use read-only API checks first. Get user authorization before you run a device-changing action. A successful NAND read leaves the device in EDL. Reset is a separate explicit action.
 

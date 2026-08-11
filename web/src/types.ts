@@ -239,9 +239,6 @@ export interface DeviceControlStatus {
   edl_session?: {
     session_id?: string
     observation: DeviceControlStatus['edl']
-    lease_held: boolean
-    lease_owned: boolean
-    lease_expires_at?: string
     active_operation?: string
   }
   settings: DeviceControlSettings

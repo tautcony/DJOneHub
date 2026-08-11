@@ -342,6 +342,7 @@ func TestReusableEDLObservationRequiresFreshProtocolFacts(t *testing.T) {
 	if reusableEDLObservation(device.EDLObservation{State: device.EDLStateDetected, ObservedAt: now}, now) {
 		t.Fatal("detected placeholder was reusable")
 	}
+	// recovery 观察按 spec 不复用: 每次过期后都必须重新探测。
 	if reusableEDLObservation(device.EDLObservation{State: device.EDLStateRecoveryRequired, ObservedAt: now}, now) {
 		t.Fatal("recovery observation was reusable")
 	}
@@ -350,6 +351,13 @@ func TestReusableEDLObservationRequiresFreshProtocolFacts(t *testing.T) {
 	}
 	if !reusableEDLObservation(device.EDLObservation{State: device.EDLStateSaharaIdentified, ObservedAt: now}, now) {
 		t.Fatal("fresh Sahara observation was not reusable")
+	}
+	// 操作记录的状态在更长的窗口内复用, 防止轮询立即擦掉操作结论。
+	if !reusableEDLObservation(device.EDLObservation{State: device.EDLStateBackupSucceeded, ObservedAt: now}, now) {
+		t.Fatal("fresh operation state was not reusable")
+	}
+	if reusableEDLObservation(device.EDLObservation{State: device.EDLStateBackupSucceeded, ObservedAt: now.Add(-time.Minute)}, now) {
+		t.Fatal("stale operation state was reusable")
 	}
 }
 

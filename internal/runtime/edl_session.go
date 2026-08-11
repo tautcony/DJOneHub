@@ -11,38 +11,30 @@ import (
 	derrors "github.com/iniwex5/vohive/internal/domain/errors"
 )
 
-const (
-	defaultEDLLeaseTTL = 30 * time.Second
-	maxEDLSessions     = 8
-)
+const maxEDLSessions = 8
 
 type edlSession struct {
 	id               string
 	physicalLocation string
 	observation      device.EDLObservation
-	leaseToken       string
-	leaseExpiresAt   time.Time
 	activeOperation  string
 	original         device.Candidate
 	edl              device.Candidate
 	updatedAt        time.Time
 }
 
-// EDLSessionManager is the single writer for process-local EDL session state.
-// Browser connections observe snapshots and use opaque leases for mutations.
+// EDLSessionManager 是进程内 EDL 会话状态的唯一写入者。互斥只表达设备忙:
+// 同时刻至多一个进行中的 device-control 操作 (含打开的 ADB shell), 没有
+// 客户端侧租约或 token。状态读路径 (探测/观察) 始终允许, 与操作互斥无关。
 type EDLSessionManager struct {
 	mu       sync.Mutex
 	sessions map[string]*edlSession
-	ttl      time.Duration
 	now      func() time.Time
 	bus      *EventBus
 }
 
-func NewEDLSessionManager(bus *EventBus, ttl time.Duration) *EDLSessionManager {
-	if ttl <= 0 {
-		ttl = defaultEDLLeaseTTL
-	}
-	return &EDLSessionManager{sessions: make(map[string]*edlSession), ttl: ttl, now: time.Now, bus: bus}
+func NewEDLSessionManager(bus *EventBus) *EDLSessionManager {
+	return &EDLSessionManager{sessions: make(map[string]*edlSession), now: time.Now, bus: bus}
 }
 
 func (m *EDLSessionManager) Observe(location string, observation device.EDLObservation) (device.EDLSessionSnapshot, error) {
@@ -88,21 +80,19 @@ func (m *EDLSessionManager) Correlate(original, edl device.Candidate) (device.ED
 	return snapshot, nil
 }
 
-func (m *EDLSessionManager) BeginOperation(location, token, operation string) error {
+// BeginOperation 申请设备互斥: 同时刻至多一个操作 (含 shell 连接) 可持有。
+// 会话不存在时按物理位置创建, 互斥不依赖任何先前的 EDL 观察。
+func (m *EDLSessionManager) BeginOperation(location, operation string) error {
 	m.mu.Lock()
-	session := m.sessions[strings.TrimSpace(location)]
-	if session == nil {
+	session, err := m.sessionLocked(strings.TrimSpace(location))
+	if err != nil {
 		m.mu.Unlock()
-		return sessionConflict(device.EDLSessionSnapshot{})
+		return operationBusy(device.EDLSessionSnapshot{})
 	}
-	expired := m.expireLocked(session, m.now())
-	if token == "" || token != session.leaseToken || session.activeOperation != "" {
+	if session.activeOperation != "" {
 		snapshot := m.snapshotLocked(session)
 		m.mu.Unlock()
-		if expired {
-			m.publish(snapshot)
-		}
-		return sessionConflict(snapshot)
+		return operationBusy(snapshot)
 	}
 	session.activeOperation = strings.TrimSpace(operation)
 	session.updatedAt = m.now()
@@ -112,10 +102,10 @@ func (m *EDLSessionManager) BeginOperation(location, token, operation string) er
 	return nil
 }
 
-func (m *EDLSessionManager) EndOperation(location, token string) {
+func (m *EDLSessionManager) EndOperation(location string) {
 	m.mu.Lock()
 	session := m.sessions[strings.TrimSpace(location)]
-	if session != nil && token == session.leaseToken {
+	if session != nil {
 		session.activeOperation = ""
 		session.updatedAt = m.now()
 	}
@@ -127,100 +117,6 @@ func (m *EDLSessionManager) EndOperation(location, token string) {
 	if session != nil {
 		m.publish(snapshot)
 	}
-}
-
-func (m *EDLSessionManager) Acquire(location string) (string, device.EDLSessionSnapshot, error) {
-	location = strings.TrimSpace(location)
-	if location == "" {
-		return "", device.EDLSessionSnapshot{}, derrors.New(derrors.InvalidRequest, "physical location is required", false, nil)
-	}
-	m.mu.Lock()
-	session, sessionErr := m.sessionLocked(location)
-	if sessionErr != nil {
-		m.mu.Unlock()
-		return "", device.EDLSessionSnapshot{}, sessionErr
-	}
-	now := m.now()
-	m.expireLocked(session, now)
-	if session.leaseToken != "" {
-		snapshot := m.snapshotLocked(session)
-		m.mu.Unlock()
-		return "", snapshot, sessionConflict(snapshot)
-	}
-	token, err := randomSessionID()
-	if err != nil {
-		m.mu.Unlock()
-		return "", device.EDLSessionSnapshot{}, err
-	}
-	session.leaseToken = token
-	session.leaseExpiresAt = now.Add(m.ttl)
-	session.updatedAt = now
-	snapshot := m.snapshotLocked(session)
-	m.mu.Unlock()
-	m.publish(snapshot)
-	return token, snapshot, nil
-}
-
-func (m *EDLSessionManager) Renew(location, token string) (device.EDLSessionSnapshot, error) {
-	m.mu.Lock()
-	session := m.sessions[strings.TrimSpace(location)]
-	now := m.now()
-	if session == nil {
-		m.mu.Unlock()
-		return device.EDLSessionSnapshot{}, sessionConflict(device.EDLSessionSnapshot{})
-	}
-	expired := m.expireLocked(session, now)
-	if token == "" || token != session.leaseToken {
-		snapshot := m.snapshotLocked(session)
-		m.mu.Unlock()
-		if expired {
-			m.publish(snapshot)
-		}
-		return snapshot, sessionConflict(snapshot)
-	}
-	session.leaseExpiresAt = now.Add(m.ttl)
-	session.updatedAt = now
-	snapshot := m.snapshotLocked(session)
-	m.mu.Unlock()
-	m.publish(snapshot)
-	return snapshot, nil
-}
-
-func (m *EDLSessionManager) Release(location, token string) error {
-	m.mu.Lock()
-	session := m.sessions[strings.TrimSpace(location)]
-	if session == nil || token == "" || token != session.leaseToken || session.activeOperation != "" {
-		var snapshot device.EDLSessionSnapshot
-		if session != nil {
-			snapshot = m.snapshotLocked(session)
-		}
-		m.mu.Unlock()
-		return sessionConflict(snapshot)
-	}
-	session.leaseToken = ""
-	session.leaseExpiresAt = time.Time{}
-	session.updatedAt = m.now()
-	snapshot := m.snapshotLocked(session)
-	m.mu.Unlock()
-	m.publish(snapshot)
-	return nil
-}
-
-func (m *EDLSessionManager) Owns(location, token string) bool {
-	m.mu.Lock()
-	session := m.sessions[strings.TrimSpace(location)]
-	if session == nil {
-		m.mu.Unlock()
-		return false
-	}
-	expired := m.expireLocked(session, m.now())
-	owned := token != "" && token == session.leaseToken
-	snapshot := m.snapshotLocked(session)
-	m.mu.Unlock()
-	if expired {
-		m.publish(snapshot)
-	}
-	return owned
 }
 
 func (m *EDLSessionManager) ClearObservation(location string) {
@@ -261,12 +157,8 @@ func (m *EDLSessionManager) Snapshot(location string) (device.EDLSessionSnapshot
 		m.mu.Unlock()
 		return device.EDLSessionSnapshot{}, false
 	}
-	expired := m.expireLocked(session, m.now())
 	snapshot := m.snapshotLocked(session)
 	m.mu.Unlock()
-	if expired {
-		m.publish(snapshot)
-	}
 	return snapshot, true
 }
 
@@ -279,8 +171,7 @@ func (m *EDLSessionManager) sessionLocked(location string) (*edlSession, error) 
 		var oldestLocation string
 		var oldest time.Time
 		for candidateLocation, candidate := range m.sessions {
-			m.expireLocked(candidate, now)
-			if candidate.leaseToken != "" || candidate.activeOperation != "" {
+			if candidate.activeOperation != "" {
 				continue
 			}
 			if oldestLocation == "" || candidate.updatedAt.Before(oldest) {
@@ -289,7 +180,7 @@ func (m *EDLSessionManager) sessionLocked(location string) (*edlSession, error) 
 			}
 		}
 		if oldestLocation == "" {
-			return nil, derrors.New(derrors.OperationConflict, "EDL session capacity is occupied by active leases", true, nil)
+			return nil, derrors.New(derrors.OperationConflict, "EDL session capacity is occupied by active operations", true, nil)
 		}
 		delete(m.sessions, oldestLocation)
 	}
@@ -302,18 +193,8 @@ func (m *EDLSessionManager) sessionLocked(location string) (*edlSession, error) 
 	return session, nil
 }
 
-func (m *EDLSessionManager) expireLocked(session *edlSession, now time.Time) bool {
-	if session.leaseToken != "" && session.activeOperation == "" && !session.leaseExpiresAt.After(now) {
-		session.leaseToken = ""
-		session.leaseExpiresAt = time.Time{}
-		session.activeOperation = ""
-		return true
-	}
-	return false
-}
-
 func (m *EDLSessionManager) snapshotLocked(session *edlSession) device.EDLSessionSnapshot {
-	return device.EDLSessionSnapshot{SessionID: session.id, PhysicalLocation: session.physicalLocation, Observation: session.observation, LeaseHeld: session.leaseToken != "", LeaseExpiresAt: session.leaseExpiresAt, ActiveOperation: session.activeOperation}
+	return device.EDLSessionSnapshot{SessionID: session.id, PhysicalLocation: session.physicalLocation, Observation: session.observation, ActiveOperation: session.activeOperation}
 }
 
 func (m *EDLSessionManager) publish(snapshot device.EDLSessionSnapshot) {
@@ -322,12 +203,15 @@ func (m *EDLSessionManager) publish(snapshot device.EDLSessionSnapshot) {
 	}
 }
 
-func sessionConflict(snapshot device.EDLSessionSnapshot) error {
+func operationBusy(snapshot device.EDLSessionSnapshot) error {
 	details := map[string]any{}
 	if snapshot.SessionID != "" {
 		details["session_id"] = snapshot.SessionID
 	}
-	return derrors.New(derrors.DeviceSessionConflict, "another client controls the device session", true, details)
+	if snapshot.ActiveOperation != "" {
+		details["active_operation"] = snapshot.ActiveOperation
+	}
+	return derrors.New(derrors.DeviceSessionConflict, "the device is busy with an in-flight operation", true, details)
 }
 
 func randomSessionID() (string, error) {
