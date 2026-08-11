@@ -193,6 +193,10 @@ func (s *Service) publishTraffic(ctx context.Context) {
 	s.ops.Publish(EventTrafficUpdated, event)
 }
 
+// currentICCID resolves the SIM used as the traffic-record key. On the AT
+// path it calls BusinessAdapter.SIM, so a cold SIM/eSIM state may send
+// AT+QSIMSTAT?/AT+CPIN?, AT+CIMI, AT+QCCID, and the eSIM AT+CSIM plus
+// AT+CCHO/AT+CGLA/AT+CCHC scan. It falls back to Identity when ICCID is empty.
 func (s *Service) currentICCID(ctx context.Context) (string, error) {
 	s.mu.Lock()
 	if s.iccid != "" && time.Since(s.iccidChecked) < 15*time.Second {
@@ -224,6 +228,8 @@ func (s *Service) currentICCID(ctx context.Context) (string, error) {
 	return iccid, nil
 }
 
+// TrafficDaily reads local traffic counters after currentICCID resolves the
+// SIM key. The database read is local; any AT cost comes from currentICCID.
 func (s *Service) TrafficDaily(ctx context.Context, date time.Time) (TrafficDailyStatus, error) {
 	if date.IsZero() {
 		date = time.Now()
@@ -251,6 +257,9 @@ func (s *Service) TrafficDaily(ctx context.Context, date time.Time) (TrafficDail
 	return status, nil
 }
 
+// TrafficDailyRange reads local traffic records after currentICCID resolves
+// the SIM key. The database read is local; any AT cost comes from
+// currentICCID.
 func (s *Service) TrafficDailyRange(ctx context.Context, period string, now time.Time) (TrafficRangeStatus, error) {
 	if now.IsZero() {
 		now = time.Now()
@@ -349,6 +358,11 @@ func (s *Service) publishRadioState(ctx context.Context) {
 	}
 }
 
+// Status reads modem network state and then merges host interface state. For
+// an AT backend the modem portion sends AT+QCFG="usbnet"?, the registration
+// and operator commands, AT+QNWINFO, AT+CSQ, and
+// AT+QENG="servingcell". Missing mode or band fields can cause a second Radio
+// query before the host network controller is consulted.
 func (s *Service) Status(ctx context.Context) (transport.NetworkStatus, error) {
 	b, err := s.devices.RequireCapability(domain.CapabilityNetworkStatus, "network_status")
 	if err != nil {

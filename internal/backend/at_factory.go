@@ -15,44 +15,39 @@ import (
 // The manager is created per runtime connection so a hot-unplug/reconnect
 // gets a fresh serial handle and fresh command loops.
 type ATFactory struct {
-	OpenAT func(context.Context, device.Candidate) (ModemBackend, error)
-	// ESIMPort 为串口 AT 路径（candidate.ATPort != ""）构建 eSIM 服务端口。
-	// arbiter 是本次连接新建的设备级 APDU 仲裁器（与 modem manager 共享同一
-	// 实例）。构建失败时 eSIM 保持不可用，不影响设备连接本身。
+	// OpenTransport opens a platform AT transport for candidates that do not
+	// expose an operating-system serial port. The factory owns the transport
+	// after it creates the modem manager.
+	OpenTransport func(context.Context, device.Candidate) (modem.ATTransport, error)
+	// ESIMPort builds an eSIM service port over the manager's shared AT session.
+	// The arbiter is created for this runtime connection and is shared by all
+	// APDU consumers. A builder error leaves eSIM unavailable without rejecting
+	// the device connection.
 	ESIMPort func(*modem.Manager, *apduarbiter.Arbiter, device.Candidate) (ESIMPort, error)
 }
 
-func NewATFactory(openAT func(context.Context, device.Candidate) (ModemBackend, error)) *ATFactory {
-	return &ATFactory{OpenAT: openAT}
+func NewATFactory(openTransport func(context.Context, device.Candidate) (modem.ATTransport, error)) *ATFactory {
+	return &ATFactory{OpenTransport: openTransport}
 }
 
 func (f *ATFactory) Open(ctx context.Context, candidate device.Candidate) (ModemBackend, string, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, "", err
 	}
+	var m *modem.Manager
+	var err error
 	if candidate.ATPort == "" {
-		if f.OpenAT == nil {
+		if f.OpenTransport == nil {
 			return nil, "", fmt.Errorf("AT port is unavailable for %s", candidate.Identity.StableID)
 		}
-		b, err := f.OpenAT(ctx, candidate)
-		if err != nil {
-			return nil, "", err
+		transport, openErr := f.OpenTransport(ctx, candidate)
+		if openErr != nil {
+			return nil, "", openErr
 		}
-		return b, "selected platform AT transport", nil
+		m, err = modem.NewWithATTransport(atManagerConfig(candidate), transport)
+	} else {
+		m, err = modem.New(atManagerConfig(candidate))
 	}
-
-	m, err := modem.New(config.DeviceConfig{
-		ID:            candidate.Identity.StableID,
-		Name:          candidate.Identity.Product,
-		ATPort:        candidate.ATPort,
-		ManagePort:    candidate.ATPort,
-		DeviceBackend: BackendAT,
-		BaudRate:      115200,
-		DataBits:      8,
-		StopBits:      1,
-		Parity:        "none",
-		SMSEnabled:    true,
-	})
 	if err != nil {
 		return nil, "", fmt.Errorf("create AT manager: %w", err)
 	}
@@ -74,5 +69,27 @@ func (f *ATFactory) Open(ctx context.Context, candidate device.Candidate) (Modem
 			at.SetESIMPort(port)
 		}
 	}
+	if candidate.ATPort == "" {
+		return Adapt(at), "selected platform AT transport", nil
+	}
 	return Adapt(at), "selected AT serial transport", nil
+}
+
+func atManagerConfig(candidate device.Candidate) config.DeviceConfig {
+	atPort := candidate.ATPort
+	if atPort == "" {
+		atPort = "injected-at/" + candidate.Identity.StableID
+	}
+	return config.DeviceConfig{
+		ID:            candidate.Identity.StableID,
+		Name:          candidate.Identity.Product,
+		ATPort:        atPort,
+		ManagePort:    candidate.ATPort,
+		DeviceBackend: BackendAT,
+		BaudRate:      115200,
+		DataBits:      8,
+		StopBits:      1,
+		Parity:        "none",
+		SMSEnabled:    true,
+	}
 }

@@ -17,7 +17,7 @@ import (
 
 // 本文件移植自 vohive-open internal/device（vowifi_modem_adapter.go /
 // qmi_modem_adapter.go），将 DJOneHub 的 modem.Manager（AT 路径）与
-// voWiFiBackend（QMI/MBIM 和 macOS USB AT 路径）适配为 vowifi-go 的 runtimehost.Modem
+// voWiFiBackend（QMI/MBIM 路径）适配为 vowifi-go 的 runtimehost.Modem
 // + simauth.ATModem 接口。
 
 type voWiFiBackend interface {
@@ -98,7 +98,7 @@ func (a *modemAdapter) GetNetworkMode() string {
 func (a *modemAdapter) Stop() { a.m.Stop() }
 
 // qmiModemAdapter 将逻辑通道后端适配为 runtimehost.Modem + simauth.ATModem。
-// 它覆盖 QMI UIM、MBIM UICC 和 macOS USB AT CommandBackend。
+// 它覆盖 QMI UIM 和 MBIM UICC。
 type qmiModemAdapter struct {
 	deviceID string
 	backend  voWiFiBackend

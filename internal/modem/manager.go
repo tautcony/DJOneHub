@@ -51,7 +51,7 @@ type commandRequest struct {
 type Manager struct {
 	cfg      config.DeviceConfig
 	atPort   string
-	port     serial.Port
+	port     ATTransport
 	portMode *serial.Mode
 
 	// 通道驱动的异步架构
@@ -69,11 +69,12 @@ type Manager struct {
 	reqPool sync.Pool
 
 	// 状态
-	running  bool
-	busy     bool
-	busyMu   sync.Mutex
-	healthy  bool
-	eofCount int // readLoop 中连续 EOF 计数，用于检测设备断开
+	running   bool
+	runningMu sync.RWMutex
+	busy      bool
+	busyMu    sync.Mutex
+	healthy   bool
+	eofCount  int // readLoop 中连续 EOF 计数，用于检测设备断开
 
 	// overLimitBytes 是 readLoop 中超长行累计丢弃的字节数（仅 readLoop 访问）。
 	overLimitBytes int
@@ -189,6 +190,20 @@ func (m *Manager) pureQMIBackend() bool {
 }
 
 func New(cfg config.DeviceConfig) (*Manager, error) {
+	return newManager(cfg, nil)
+}
+
+// NewWithATTransport creates a manager that owns an already-open AT transport.
+// The shared command session uses this path for platform transports that are
+// not exposed as operating-system serial ports, such as macOS USB bulk AT.
+func NewWithATTransport(cfg config.DeviceConfig, transport ATTransport) (*Manager, error) {
+	if transport == nil {
+		return nil, errors.New("AT transport is nil")
+	}
+	return newManager(cfg, transport)
+}
+
+func newManager(cfg config.DeviceConfig, transport ATTransport) (*Manager, error) {
 	watchdogThreshold := cfg.ATTimeoutWatchdogThreshold
 	if watchdogThreshold <= 0 {
 		watchdogThreshold = defaultATTimeoutWatchdogThreshold
@@ -196,6 +211,7 @@ func New(cfg config.DeviceConfig) (*Manager, error) {
 	m := &Manager{
 		cfg:                        cfg,
 		atPort:                     cfg.ATPort,
+		port:                       transport,
 		stop:                       make(chan struct{}),
 		cmdChan:                    make(chan commandRequest, 10),
 		cmdChanHigh:                make(chan commandRequest, 5),
@@ -224,7 +240,7 @@ func New(cfg config.DeviceConfig) (*Manager, error) {
 	}
 	// QMI 后端模式下允许 AT 端口为空（模组不依赖 AT 串口）
 	// AT 模式仍然要求 AT 端口非空
-	if m.atPort == "" && !pureQMIBackendConfig(cfg) {
+	if m.atPort == "" && transport == nil && !pureQMIBackendConfig(cfg) {
 		return nil, errors.New("AT port not configured")
 	}
 
@@ -398,7 +414,7 @@ func (m *Manager) recordATTimeout(req commandRequest) (int, bool) {
 }
 
 func (m *Manager) tripATTimeoutWatchdog(cmd string, failures int) {
-	if !m.running {
+	if !m.isRunning() {
 		return
 	}
 	logger.Warn(fmt.Sprintf("[%s] AT 连续超时达到阈值，触发控制面恢复", m.cfg.ID),
@@ -415,34 +431,42 @@ func (m *Manager) tripATTimeoutWatchdog(cmd string, failures int) {
 func (m *Manager) Start() error {
 	if m.pureQMIBackend() {
 		logger.Info(fmt.Sprintf("[%s] 纯 QMI 模式，跳过 AT 管理器启动", m.cfg.ID), "at_port", m.atPort)
-		m.running = false
+		m.setRunning(false)
 		m.markReady()
 		return nil
 	}
-	if m.atPort == "" {
+	if m.atPort == "" && m.port == nil {
 		return errors.New("AT port not configured")
 	}
 
-	// 检查并强制接管被占用的端口
-	m.forceReleasePort(m.atPort)
+	if m.port == nil {
+		// 检查并强制接管被占用的端口
+		m.forceReleasePort(m.atPort)
 
-	var err error
-	for attempt := 0; attempt < 8; attempt++ {
-		m.port, err = serial.Open(m.atPort, m.portMode)
-		if err == nil {
-			break
+		var err error
+		for attempt := 0; attempt < 8; attempt++ {
+			m.port, err = serial.Open(m.atPort, m.portMode)
+			if err == nil {
+				break
+			}
+			if !isRetryableSerialOpenErr(err) {
+				break
+			}
+			time.Sleep(time.Duration(80*(attempt+1)) * time.Millisecond)
 		}
-		if !isRetryableSerialOpenErr(err) {
-			break
+		if err != nil {
+			return fmt.Errorf("打开串口 %s 失败: %w", m.atPort, err)
 		}
-		time.Sleep(time.Duration(80*(attempt+1)) * time.Millisecond)
-	}
-	if err != nil {
-		return fmt.Errorf("打开串口 %s 失败: %w", m.atPort, err)
 	}
 
-	m.port.SetReadTimeout(100 * time.Millisecond)
-	m.running = true
+	if setter, ok := m.port.(atReadTimeoutSetter); ok {
+		if err := setter.SetReadTimeout(100 * time.Millisecond); err != nil {
+			_ = m.port.Close()
+			m.port = nil
+			return fmt.Errorf("set AT transport read timeout: %w", err)
+		}
+	}
+	m.setRunning(true)
 
 	// 启动读取协程
 	m.loopWG.Add(1)
@@ -492,17 +516,24 @@ func isFatalSerialRuntimeErr(err error) bool {
 		return false
 	}
 	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	if strings.Contains(msg, "timeout") {
+		return false
+	}
 	return strings.Contains(msg, "input/output error") ||
 		strings.Contains(msg, "no such device") ||
 		strings.Contains(msg, "bad file descriptor") ||
-		strings.Contains(msg, "device disconnected")
+		strings.Contains(msg, "device disconnected") ||
+		strings.Contains(msg, "usb bulk") ||
+		strings.Contains(msg, "libusb_error_no_device") ||
+		strings.Contains(msg, "libusb_error_io") ||
+		strings.Contains(msg, "libusb_error_pipe")
 }
 
 func (m *Manager) handleFatalSerialRuntimeErr(err error, phase string, cmd string) {
 	if !isFatalSerialRuntimeErr(err) {
 		return
 	}
-	if !m.running {
+	if !m.isRunning() {
 		return
 	}
 	logger.Warn(fmt.Sprintf("[%s] AT 串口运行期失效，触发恢复", m.cfg.ID),
@@ -520,7 +551,7 @@ func (m *Manager) Stop() {
 		if m.port != nil {
 			m.port.Close()
 		}
-		m.running = false
+		m.setRunning(false)
 	})
 }
 
@@ -610,6 +641,9 @@ func (m *Manager) handleCommand(req commandRequest) {
 RespLoop:
 	for {
 		select {
+		case <-m.stop:
+			req.errChan <- errors.New("manager stopped")
+			return
 		case <-timeoutTimer.C:
 			// 超时：先尽力排空已排队的数据（URC 照常分发），随后将命令流隔离，
 			// 直到本命令的终结响应（OK/ERROR）被观测到，或传输恢复期限触发
@@ -1961,12 +1995,13 @@ func (m *Manager) IsBusy() bool {
 
 // IsHealthy 返回健康状态
 func (m *Manager) IsHealthy() bool {
-	return m.healthy && m.running
+	return m.healthy && m.isRunning()
 }
 
-// HasATPort 返回当前管理器是否配置了可用的 AT 端口。
+// HasATPort reports whether the manager has a configured or injected AT
+// transport. The name is retained for existing backend callers.
 func (m *Manager) HasATPort() bool {
-	return strings.TrimSpace(m.atPort) != ""
+	return m.port != nil || strings.TrimSpace(m.atPort) != ""
 }
 
 // ATPort 返回配置中的 AT 端口路径。纯 QMI 模式会保留该值供人工 AT 终端使用。
@@ -1976,7 +2011,19 @@ func (m *Manager) ATPort() string {
 
 // CanExecuteAT 返回当前管理器是否已启动，可接受 AT 命令。
 func (m *Manager) CanExecuteAT() bool {
-	return !m.pureQMIBackend() && m.HasATPort() && m.running
+	return !m.pureQMIBackend() && m.HasATPort() && m.isRunning()
+}
+
+func (m *Manager) setRunning(value bool) {
+	m.runningMu.Lock()
+	m.running = value
+	m.runningMu.Unlock()
+}
+
+func (m *Manager) isRunning() bool {
+	m.runningMu.RLock()
+	defer m.runningMu.RUnlock()
+	return m.running
 }
 
 func (m *Manager) SetAPDUArbiter(arbiter *apduarbiter.Arbiter) {

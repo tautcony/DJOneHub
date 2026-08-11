@@ -15,16 +15,17 @@ import (
 
 // esimPort 将现有 LPA manager 适配为应用后端端口。
 // manager 为每个 LPA 会话创建全新的 APDU 通道，而底层 AT 传输仍由调用方
-// （CommandBackend 或 ATBackend）持有。
+// （ATBackend）持有。
 type esimPort struct {
 	manager *Manager
 }
 
-// NewATPort 创建基于纯 AT 命令传输的 eSIM 服务端口。command 由调用方注入：
-// darwin 走 CommandBackend 的 USB AT 传输，Linux/Windows 走 modem.Manager 的
-// 串口 AT 通道（ExecuteAT），因此两个平台路径共用同一实现。arbiter 必须是
+// NewATPort 创建基于纯 AT 命令传输的 eSIM 服务端口。command 由 AT manager 注入，
+// 因此 macOS USB、Linux 串口和 Windows 串口共用同一实现。arbiter 必须是
 // 设备级 APDU 仲裁器（与 modem manager 共享的同一实例）；它为纯 AT 路径启用
-// SIM 切换 barrier 与 APDU idle 等待，而不是让这些防护成为空操作。
+// SIM 切换 barrier 与 APDU idle 等待，而不是让这些防护成为空操作。eSIM
+// 操作通过 AT+CSIM 读取基本通道，或通过 AT+CCHO/AT+CGLA/AT+CCHC 打开、
+// 透传、关闭逻辑通道。
 func NewATPort(candidateID string, arbiter *apduarbiter.Arbiter, command func(string, time.Duration) (string, error), imei func(context.Context) (string, error), iccid func(context.Context) (string, error)) (backend.ESIMPort, error) {
 	manager, err := NewManager(ManagerOptions{
 		DeviceID:             candidateID,
@@ -97,6 +98,9 @@ func parseBasicCSIMResponse(resp string) (string, bool) {
 	return "", false
 }
 
+// Overview reads a lightweight eSIM profile snapshot. On an AT transport it
+// may send AT+CSIM for EF_DIR, then AT+CCHO, AT+CGLA, and AT+CCHC for AID
+// discovery, EID reads, and profile APDUs.
 func (p *esimPort) Overview(ctx context.Context) (*EsimOverview, error) {
 	if p == nil || p.manager == nil {
 		return nil, fmt.Errorf("eSIM manager is unavailable")
@@ -104,6 +108,9 @@ func (p *esimPort) Overview(ctx context.Context) (*EsimOverview, error) {
 	return p.manager.GetProfileOverview(ctx)
 }
 
+// EID returns the first EID from Overview. It reuses the Overview cache when
+// warm; a cold AT path performs the AT+CSIM and AT+CCHO/AT+CGLA/AT+CCHC scan
+// described by Overview.
 func (p *esimPort) EID(ctx context.Context) (string, error) {
 	overview, err := p.Overview(ctx)
 	if err != nil {
@@ -115,6 +122,8 @@ func (p *esimPort) EID(ctx context.Context) (string, error) {
 	return overview.ChipInfo.EIDs[0].EID, nil
 }
 
+// Profiles returns profile records from Overview and may issue AT+QCCID through
+// the live ICCID provider to correct the active state.
 func (p *esimPort) Profiles(ctx context.Context) ([]backend.Profile, error) {
 	overview, err := p.Overview(ctx)
 	if err != nil {
@@ -199,6 +208,9 @@ func (p *esimPort) ESIMDeviceInfo(ctx context.Context) (backend.ESIMDeviceInfo, 
 	}, nil
 }
 
+// ESIMSnapshot performs one full eSIM snapshot. The AT path uses AT+CSIM for
+// card probing, AT+CCHO/AT+CGLA/AT+CCHC for eUICC and profile APDUs, and the
+// same logical-channel sequence for optional product information.
 func (p *esimPort) ESIMSnapshot(ctx context.Context) (backend.ESIMSnapshot, error) {
 	if p == nil || p.manager == nil {
 		return backend.ESIMSnapshot{}, fmt.Errorf("eSIM manager is unavailable")

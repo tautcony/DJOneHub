@@ -61,14 +61,14 @@ func (a *ATBackend) SetESIMPort(port ESIMPort) { a.esimPort = port }
 
 func (a *ATBackend) EID(ctx context.Context) (string, error) {
 	if a.esimPort == nil {
-		return "", commandUnsupported("esim", "esim_eid")
+		return "", unsupported("esim", "esim_eid")
 	}
 	return a.esimPort.EID(ctx)
 }
 
 func (a *ATBackend) Profiles(ctx context.Context) ([]Profile, error) {
 	if a.esimPort == nil {
-		return nil, commandUnsupported("esim", "esim_profiles")
+		return nil, unsupported("esim", "esim_profiles")
 	}
 	return a.esimPort.Profiles(ctx)
 }
@@ -76,7 +76,7 @@ func (a *ATBackend) Profiles(ctx context.Context) ([]Profile, error) {
 func (a *ATBackend) ESIMStorage(ctx context.Context) (ESIMStorageInfo, error) {
 	port, ok := a.esimPort.(ESIMStoragePort)
 	if !ok {
-		return ESIMStorageInfo{}, commandUnsupported("esim", "esim_storage")
+		return ESIMStorageInfo{}, unsupported("esim", "esim_storage")
 	}
 	return port.ESIMStorage(ctx)
 }
@@ -84,63 +84,63 @@ func (a *ATBackend) ESIMStorage(ctx context.Context) (ESIMStorageInfo, error) {
 func (a *ATBackend) ESIMSnapshot(ctx context.Context) (ESIMSnapshot, error) {
 	port, ok := a.esimPort.(ESIMSnapshotPort)
 	if !ok {
-		return ESIMSnapshot{}, commandUnsupported("esim", "esim_snapshot")
+		return ESIMSnapshot{}, unsupported("esim", "esim_snapshot")
 	}
 	return port.ESIMSnapshot(ctx)
 }
 
 func (a *ATBackend) Download(ctx context.Context, activationCode, confirmationCode, matchingID string, opts *ESIMDownloadOptions) error {
 	if a.esimPort == nil {
-		return commandUnsupported("esim", "esim_download")
+		return unsupported("esim", "esim_download")
 	}
 	return a.esimPort.Download(ctx, activationCode, confirmationCode, matchingID, opts)
 }
 
 func (a *ATBackend) Enable(ctx context.Context, iccid string) error {
 	if a.esimPort == nil {
-		return commandUnsupported("esim", "esim_enable")
+		return unsupported("esim", "esim_enable")
 	}
 	return a.esimPort.Enable(ctx, iccid)
 }
 
 func (a *ATBackend) Disable(ctx context.Context, iccid string) error {
 	if a.esimPort == nil {
-		return commandUnsupported("esim", "esim_disable")
+		return unsupported("esim", "esim_disable")
 	}
 	return a.esimPort.Disable(ctx, iccid)
 }
 
 func (a *ATBackend) Rename(ctx context.Context, iccid, label string) error {
 	if a.esimPort == nil {
-		return commandUnsupported("esim", "esim_rename")
+		return unsupported("esim", "esim_rename")
 	}
 	return a.esimPort.Rename(ctx, iccid, label)
 }
 
 func (a *ATBackend) Delete(ctx context.Context, iccid string) error {
 	if a.esimPort == nil {
-		return commandUnsupported("esim", "esim_delete")
+		return unsupported("esim", "esim_delete")
 	}
 	return a.esimPort.Delete(ctx, iccid)
 }
 
 func (a *ATBackend) ListNotifications(ctx context.Context) ([]NotificationItem, error) {
 	if a.esimPort == nil {
-		return nil, commandUnsupported("esim", "esim_notifications")
+		return nil, unsupported("esim", "esim_notifications")
 	}
 	return a.esimPort.ListNotifications(ctx)
 }
 
 func (a *ATBackend) ProcessNotification(ctx context.Context, sequenceNumber int64) error {
 	if a.esimPort == nil {
-		return commandUnsupported("esim", "esim_notifications")
+		return unsupported("esim", "esim_notifications")
 	}
 	return a.esimPort.ProcessNotification(ctx, sequenceNumber)
 }
 
 func (a *ATBackend) RemoveNotification(ctx context.Context, sequenceNumber int64) error {
 	if a.esimPort == nil {
-		return commandUnsupported("esim", "esim_notifications")
+		return unsupported("esim", "esim_notifications")
 	}
 	return a.esimPort.RemoveNotification(ctx, sequenceNumber)
 }
@@ -256,6 +256,8 @@ func (a *ATBackend) GetFirmwareRevision(ctx context.Context) (string, string, bo
 	return revision.Value, revision.Source, revision.Live, nil
 }
 
+// GetSignalInfo sends AT+CSQ for RSSI and AT+QENG="servingcell" for LTE
+// RSRP, RSRQ, and SINR on an AT transport.
 func (a *ATBackend) GetSignalInfo(ctx context.Context) (*SignalInfo, error) {
 	info := &SignalInfo{}
 
@@ -274,6 +276,9 @@ func (a *ATBackend) GetSignalInfo(ctx context.Context) (*SignalInfo, error) {
 	return info, nil
 }
 
+// GetServingSystem sends AT+CEREG?/AT+CGREG?/AT+CREG? for registration,
+// AT+COPS? for the operator, and AT+QNWINFO for mode, duplex, band, and
+// channel on an AT transport.
 func (a *ATBackend) GetServingSystem(ctx context.Context) (*ServingSystem, error) {
 	ss := &ServingSystem{}
 
@@ -301,9 +306,10 @@ func (a *ATBackend) GetServingSystem(ctx context.Context) (*ServingSystem, error
 	return ss, nil
 }
 
-// Status implements NetworkPort for serial AT transports. The AT backend is
-// used by both Linux and Windows COM discovery, so network pages must not
-// depend on a separate platform network controller.
+// Status implements NetworkPort for serial and injected AT transports. It sends
+// AT+QCFG="usbnet"? and then calls GetServingSystem and GetSignalInfo, which
+// add registration/operator/radio commands plus AT+CSQ and
+// AT+QENG="servingcell".
 func (a *ATBackend) Status(ctx context.Context) (map[string]any, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err

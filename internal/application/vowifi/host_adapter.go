@@ -427,8 +427,7 @@ func waitForCondition(ctx context.Context, interval time.Duration, check func() 
 
 // unwrapLegacyBackend 从业务后端取出协议后端（DeviceBackend）与 AT 路径的
 // modem.Manager。BusinessAdapter 通过 Legacy() 暴露被包装的 DeviceBackend；
-// 直连 CommandBackend 等实现 ModemBackend 但非 BusinessAdapter 的后端，
-// 若本身实现 VoWiFi 所需的窄接口则直接使用。
+// 其他直接实现 VoWiFi 窄接口的后端也可以直接使用。
 func unwrapLegacyBackend(b backend.ModemBackend) (voWiFiBackend, *modem.Manager) {
 	if b == nil {
 		return nil, nil

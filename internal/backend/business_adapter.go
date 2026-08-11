@@ -71,6 +71,9 @@ func (a *BusinessAdapter) Legacy() DeviceBackend {
 	return a.legacy
 }
 
+// Identity reads live modem identity fields. The AT path sends AT+CGSN for
+// IMEI, AT+CIMI for IMSI, AT+QCCID for ICCID, AT+CNUM for MSISDN, and
+// AT+QGMR with AT+CGMR as the firmware fallback.
 func (a *BusinessAdapter) Identity(ctx context.Context) (Identity, error) {
 	provider, ok := a.legacy.(DeviceInfoProvider)
 	if !ok {
@@ -96,6 +99,10 @@ func (a *BusinessAdapter) Identity(ctx context.Context) (Identity, error) {
 	return out, nil
 }
 
+// Radio reads registration, operator, serving-cell, and signal fields. The AT
+// path sends AT+CEREG?/AT+CGREG?/AT+CREG? for registration, AT+COPS? for the
+// operator, AT+QNWINFO for radio mode and band, AT+CSQ for RSSI, and
+// AT+QENG="servingcell" for LTE signal details.
 func (a *BusinessAdapter) Radio(ctx context.Context) (RadioState, error) {
 	provider, ok := a.legacy.(DeviceInfoProvider)
 	if !ok {
@@ -113,6 +120,10 @@ func (a *BusinessAdapter) Radio(ctx context.Context) (RadioState, error) {
 	return out, nil
 }
 
+// SIM reads SIM presence and identifiers. The AT path sends AT+QSIMSTAT? and
+// falls back to AT+CPIN?, then sends AT+CIMI and AT+QCCID. When the eSIM EID
+// is not cached, the eSIM port additionally probes with AT+CSIM and scans
+// logical channels with AT+CCHO, AT+CGLA, and AT+CCHC.
 func (a *BusinessAdapter) SIM(ctx context.Context) (SIMState, error) {
 	provider, ok := a.legacy.(DeviceInfoProvider)
 	if !ok {

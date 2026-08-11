@@ -16,6 +16,8 @@ import (
 	"sync"
 	"time"
 	"unsafe"
+
+	"github.com/iniwex5/vohive/internal/modem"
 )
 
 type usbDeviceIdentity struct {
@@ -31,6 +33,7 @@ type usbAT struct {
 	endpointIn  byte
 	endpointOut byte
 	mu          sync.Mutex
+	readTimeout time.Duration
 }
 
 type usbATCandidate struct {
@@ -70,7 +73,7 @@ func openUSBAT(identity usbDeviceIdentity) (*usbAT, error) {
 			lastErr = fmt.Errorf("claim USB AT interface %d: %s", candidate.iface, C.GoString(C.libusb_error_name(rc)))
 			continue
 		}
-		dev := &usbAT{ctx: ctx, handle: handle, locationID: location, iface: candidate.iface, endpointIn: candidate.endpointIn, endpointOut: candidate.endpointOut}
+		dev := &usbAT{ctx: ctx, handle: handle, locationID: location, iface: candidate.iface, endpointIn: candidate.endpointIn, endpointOut: candidate.endpointOut, readTimeout: 100 * time.Millisecond}
 		if response, probeErr := dev.Command("AT", 900*time.Millisecond); probeErr == nil && atProbeSucceeded(response) {
 			return dev, nil
 		} else if probeErr != nil {
@@ -86,6 +89,62 @@ func openUSBAT(identity usbDeviceIdentity) (*usbAT, error) {
 		return nil, lastErr
 	}
 	return nil, errors.New("no USB bulk AT interface found")
+}
+
+var _ modem.ATTransport = (*usbAT)(nil)
+
+// Read implements the stream transport consumed by modem.Manager. The short
+// timeout lets the manager observe shutdown and continue its command loop when
+// the USB endpoint has no data.
+func (u *usbAT) Read(buffer []byte) (int, error) {
+	if len(buffer) == 0 {
+		return 0, nil
+	}
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.handle == nil {
+		return 0, errors.New("USB AT device is not open")
+	}
+	timeout := u.readTimeout
+	if timeout <= 0 {
+		timeout = 100 * time.Millisecond
+	}
+	data, err := u.bulkReadLocked(timeout)
+	if err != nil {
+		return 0, err
+	}
+	return copy(buffer, data), nil
+}
+
+// Write implements the stream transport consumed by modem.Manager.
+func (u *usbAT) Write(payload []byte) (int, error) {
+	if len(payload) == 0 {
+		return 0, nil
+	}
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.handle == nil {
+		return 0, errors.New("USB AT device is not open")
+	}
+	if err := u.bulkWriteLocked(payload, 3*time.Second); err != nil {
+		return 0, err
+	}
+	return len(payload), nil
+}
+
+// SetReadTimeout lets the shared manager tune the polling interval without
+// depending on libusb types.
+func (u *usbAT) SetReadTimeout(timeout time.Duration) error {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.handle == nil {
+		return errors.New("USB AT device is not open")
+	}
+	if timeout <= 0 {
+		timeout = 100 * time.Millisecond
+	}
+	u.readTimeout = timeout
+	return nil
 }
 
 func openUSBDevice(ctx *C.libusb_context, identity usbDeviceIdentity) (*C.libusb_device_handle, string, error) {
@@ -247,75 +306,6 @@ func (u *usbAT) Command(command string, timeout time.Duration) (string, error) {
 	return normalizeATResponse(response.String()), nil
 }
 
-// CommandWithPrompt executes an AT command that enters an interactive input
-// state, then submits followUp after the modem returns its ">" prompt. This
-// is required by AT+CMGS in PDU mode.
-func (u *usbAT) CommandWithPrompt(command string, followUp []byte, timeout time.Duration) (string, error) {
-	if u == nil || u.handle == nil {
-		return "", errors.New("USB AT device is not open")
-	}
-	command = strings.TrimSpace(command)
-	if command == "" || !strings.HasPrefix(strings.ToUpper(command), "AT") {
-		return "", errors.New("AT command must start with AT")
-	}
-	if len(followUp) == 0 {
-		return "", errors.New("interactive AT follow-up is empty")
-	}
-	if timeout <= 0 {
-		timeout = 30 * time.Second
-	}
-
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	u.drainLocked()
-	if err := u.bulkWriteLocked([]byte(command+"\r"), timeout); err != nil {
-		return "", err
-	}
-
-	deadline := time.Now().Add(timeout)
-	var response strings.Builder
-	promptReceived := false
-	for time.Now().Before(deadline) {
-		remaining := time.Until(deadline)
-		if remaining > 900*time.Millisecond {
-			remaining = 900 * time.Millisecond
-		}
-		data, err := u.bulkReadLocked(remaining)
-		if errors.Is(err, errUSBTimeout) {
-			continue
-		}
-		if err != nil {
-			return normalizeATResponse(response.String()), err
-		}
-		response.Write(data)
-		joined := response.String()
-		if !promptReceived {
-			if atResponseIsError(joined) {
-				return normalizeATResponse(joined), nil
-			}
-			if !atResponseHasPrompt(joined) {
-				continue
-			}
-			if err := u.bulkWriteLocked(followUp, time.Until(deadline)); err != nil {
-				return normalizeATResponse(joined), err
-			}
-			promptReceived = true
-			continue
-		}
-		if atResponseComplete(joined) {
-			return normalizeATResponse(joined), nil
-		}
-	}
-
-	if promptReceived {
-		_ = u.bulkWriteLocked([]byte{0x1b}, 300*time.Millisecond)
-	}
-	if response.Len() == 0 {
-		return "", errors.New("USB interactive AT command timed out without response")
-	}
-	return normalizeATResponse(response.String()), errors.New("USB interactive AT command timed out before completion")
-}
-
 func (u *usbAT) Close() error {
 	if u == nil {
 		return nil
@@ -372,11 +362,6 @@ func (u *usbAT) bulkReadLocked(timeout time.Duration) ([]byte, error) {
 func atResponseComplete(response string) bool {
 	normalized := strings.ReplaceAll(response, "\r\n", "\n")
 	return strings.Contains(normalized, "\nOK\n") || strings.HasSuffix(normalized, "\nOK") || atResponseIsError(normalized)
-}
-
-func atResponseHasPrompt(response string) bool {
-	trimmed := strings.TrimRight(response, " \t\r\n")
-	return strings.HasSuffix(trimmed, ">")
 }
 
 func atResponseIsError(response string) bool {

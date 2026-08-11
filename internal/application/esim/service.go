@@ -110,6 +110,10 @@ func (s *Service) port(operationName string) (backend.ESIMPort, error) {
 	return port, nil
 }
 
+// Overview returns the eSIM snapshot. The AT snapshot path uses AT+CSIM to
+// probe EF_DIR, AT+CCHO to open each candidate AID, AT+CGLA for eUICC APDUs,
+// and AT+CCHC to close channels. The fallback path can perform a lightweight
+// profile scan and a second full chip-information scan.
 func (s *Service) Overview(ctx context.Context) (map[string]any, error) {
 	port, err := s.port("esim_overview")
 	if err != nil {
@@ -366,6 +370,10 @@ func isBootstrapProfile(profile backend.Profile) bool {
 	return false
 }
 
+// ListNotifications discovers the notification eUICC when needed and reads
+// its notification records. The AT path uses AT+CSIM for card probing and
+// AT+CCHO/AT+CGLA/AT+CCHC for AID selection, APDU reads, and channel cleanup.
+// An invalid discovered target can trigger a full static AID rescan.
 func (s *Service) ListNotifications(ctx context.Context) ([]backend.NotificationItem, error) {
 	port, err := s.port("esim_notifications")
 	if err != nil {

@@ -57,6 +57,11 @@ func (s *Service) CurrentICCID(ctx context.Context) string {
 	return s.iccidCache
 }
 
+// Status builds a live device snapshot from Identity, Radio, and SIM. For an
+// AT backend this can send AT+CGSN, AT+CIMI, AT+QCCID, AT+CNUM, AT+QGMR with
+// AT+CGMR fallback, the registration/operator/radio commands from Radio, and
+// the SIM commands AT+QSIMSTAT?/AT+CPIN?, AT+CIMI, and AT+QCCID. SIM may also
+// trigger the eSIM AT+CSIM plus AT+CCHO/AT+CGLA/AT+CCHC scan when EID is cold.
 func (s *Service) Status(ctx context.Context) (Status, error) {
 	snapshot := s.runtime.Snapshot()
 	out := Status{Snapshot: snapshot}

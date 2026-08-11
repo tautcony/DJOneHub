@@ -10,6 +10,7 @@ import (
 	"github.com/iniwex5/vohive/internal/simaid"
 )
 
+// QueryIMEI sends AT+CGSN and parses the modem IMEI.
 func (m *Manager) QueryIMEI() (string, error) {
 	resp, err := m.ExecuteATSilent("AT+CGSN", 2*time.Second)
 	if err != nil {
@@ -26,10 +27,14 @@ func (m *Manager) QueryFirmware() (string, error) {
 	return revision.Value, nil
 }
 
+// QueryFirmwareRevision sends AT+QGMR and uses AT+CGMR when the QGMR response
+// is unusable.
 func (m *Manager) QueryFirmwareRevision() (FirmwareRevision, error) {
 	return ProbeFirmwareRevision(m.ExecuteATSilent)
 }
 
+// QuerySIMInserted sends AT+QSIMSTAT? and falls back to AT+CPIN? to determine
+// whether the SIM is present and usable.
 func (m *Manager) QuerySIMInserted() (bool, error) {
 	if resp, err := m.ExecuteATSilent("AT+QSIMSTAT?", 2*time.Second); err == nil {
 		if inserted, ok := parseQSIMSTATInserted(resp); ok {
@@ -51,6 +56,7 @@ func (m *Manager) QuerySIMInserted() (bool, error) {
 	return false, nil
 }
 
+// QueryIMSI sends AT+CIMI and parses the active SIM IMSI.
 func (m *Manager) QueryIMSI() (string, error) {
 	resp, err := m.ExecuteATSilent("AT+CIMI", 2*time.Second)
 	if err != nil {
@@ -59,6 +65,7 @@ func (m *Manager) QueryIMSI() (string, error) {
 	return parseIMSI(resp), nil
 }
 
+// QueryICCID sends AT+QCCID and parses the active SIM ICCID.
 func (m *Manager) QueryICCID() (string, error) {
 	resp, err := m.ExecuteATSilent("AT+QCCID", 2*time.Second)
 	if err != nil {
@@ -67,6 +74,7 @@ func (m *Manager) QueryICCID() (string, error) {
 	return parseQCCID(resp), nil
 }
 
+// QueryOperator sends AT+COPS? and parses the currently reported operator.
 func (m *Manager) QueryOperator() (string, error) {
 	return queryOperator(m.ExecuteATSilent)
 }
@@ -82,6 +90,8 @@ func queryOperator(exec func(string, time.Duration) (string, error)) (string, er
 	return parseCOPSOperatorResponse(resp)
 }
 
+// QueryRegistration tries AT+CEREG?, AT+CGREG?, and AT+CREG? in order to read
+// packet, circuit, and fallback registration state with LAC and CellID.
 func (m *Manager) QueryRegistration() (int, string, string, string, error) {
 	var fallbackStatus int
 	var fallbackLAC, fallbackCellID string
@@ -119,6 +129,7 @@ func (m *Manager) QueryRegistration() (int, string, string, string, error) {
 	return 0, "", "", "", lastErr
 }
 
+// QueryCSQ sends AT+CSQ and converts RSSI to dBm.
 func (m *Manager) QueryCSQ() (int, int, error) {
 	resp, err := m.ExecuteATSilent("AT+CSQ", 2*time.Second)
 	if err != nil {
@@ -139,6 +150,8 @@ func (m *Manager) QueryServingCellLTE() (int, int, error) {
 	return info.RSRP, info.RSRQ, nil
 }
 
+// QueryServingCellLTEInfo sends AT+QENG="servingcell" and parses LTE RSRP,
+// RSRQ, SINR, band, and cell details.
 func (m *Manager) QueryServingCellLTEInfo() (ServingCellLTEInfo, error) {
 	resp, err := m.ExecuteATSilent("AT+QENG=\"servingcell\"", 3*time.Second)
 	if err != nil {
@@ -173,6 +186,8 @@ func (m *Manager) QueryNetworkModeAndDuplex() (string, string, error) {
 	return mode, duplex, err
 }
 
+// QueryNetworkRadio sends AT+QNWINFO and parses network mode, duplex, band,
+// and channel.
 func (m *Manager) QueryNetworkRadio() (string, string, string, uint32, error) {
 	resp, err := m.ExecuteATSilent("AT+QNWINFO", 2*time.Second)
 	if err != nil {
@@ -269,7 +284,7 @@ func (m *Manager) QueryMSISDN() (string, error) {
 	return parseCNUM(resp), nil
 }
 
-// QueryUSBNetMode 查询 USBNET 模式
+// QueryUSBNetMode sends AT+QCFG="usbnet"? and parses the USB network mode.
 func (m *Manager) QueryUSBNetMode() (int, error) {
 	resp, err := m.ExecuteATSilent("AT+QCFG=\"usbnet\"?", 2*time.Second)
 	if err != nil {
@@ -298,7 +313,8 @@ func (m *Manager) SetUSBNetMode(mode int) error {
 	return nil
 }
 
-// OpenLogicalChannel 通过 AT+CCHO 打开 eUICC 的 logical channel
+// OpenLogicalChannel sends AT+CCHO to select an eUICC AID and returns the
+// assigned logical channel number.
 func (m *Manager) OpenLogicalChannel(aid string) (int, error) {
 	return m.openLogicalChannel(aid, "esim_session_open", "esim", apduarbiter.APDUClassEUICCWrite)
 }
@@ -366,7 +382,8 @@ func (m *Manager) openLogicalChannel(aid, leaseOwner, sessionOwner string, class
 	return channel, nil
 }
 
-// TransmitAPDU 通过 AT+CGLA 在 logical channel 上透传 APDU
+// TransmitAPDU sends AT+CGLA on an open logical channel and returns the APDU
+// response payload.
 func (m *Manager) TransmitAPDU(channel int, apduHex string) (string, error) {
 	owner := "esim_apdu"
 	class := apduarbiter.APDUClassEUICCWrite

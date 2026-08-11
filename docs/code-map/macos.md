@@ -8,13 +8,13 @@ The main goroutine locks to the OS main thread. The native UI runs on that threa
 
 Do not start the native UI from a worker goroutine. Do not make a second notifier process.
 
-`internal/platform/darwin/adapter.go` owns macOS discovery and USB AT setup. It accepts `2ca3:4006` for the DJI module and `2c7c:0125` for the Quectel module. It uses USB location, USB identity, and IMEI to create the stable device identity.
+`internal/platform/darwin/adapter.go` owns macOS discovery and USB AT transport setup. It accepts `2ca3:4006` for the DJI module and `2c7c:0125` for the Quectel module. It uses USB location, USB identity, and IMEI to create the stable device identity. `internal/modem.Manager` and `internal/backend.ATBackend` own the shared AT command session and modem operations.
 
 ## Module Owners
 
 | Path | Owner | Main responsibility |
 | --- | --- | --- |
-| `internal/platform/darwin/` | macOS adapter | USB discovery, AT access, and network data |
+| `internal/platform/darwin/` | macOS adapter | USB discovery, libusb AT transport, and network data |
 | `internal/platform/native/` | Go bridge | C ABI calls, native UI lifecycle, and native commands |
 | `macos/DJOneHubNotifier/` | Swift library | AppKit UI, notification delivery, menu bar, and panels |
 | `internal/application/notification/` | Notification service | Event baseline, de-duplication, and sink calls |

@@ -559,7 +559,8 @@ func NewManager(opts ManagerOptions) (*Manager, error) {
 // CurrentICCID returns the live modem ICCID when the platform exposes it.
 // Some modems report stale or incomplete Profile State TLVs after a switch;
 // the active SIM ICCID is the authoritative tie-breaker for the UI and for
-// avoiding a duplicate EnableProfile command.
+// avoiding a duplicate EnableProfile command. On the AT path the injected
+// provider sends AT+QCCID.
 func (m *Manager) CurrentICCID(ctx context.Context) (string, error) {
 	if m == nil || m.iccidProvider == nil {
 		return "", fmt.Errorf("live ICCID provider is unavailable")
@@ -1383,8 +1384,10 @@ func (m *Manager) GetEID(ctx context.Context) (string, error) {
 	return eids[0].EID, nil
 }
 
-// GetEUICCChipInfo 获取 eUICC 芯片的硬件信息（优先返回缓存）
-// 包含：所有 EID（含各自可用空间）、产品名称、序列号、固件版本
+// GetEUICCChipInfo 获取 eUICC 芯片的硬件信息（优先返回缓存）。
+// 包含所有 EID、可用空间、产品名称、序列号和固件版本。AT 路径在冷
+// 缓存时先用 AT+CSIM 探测卡片，再对候选 AID 使用 AT+CCHO、AT+CGLA、
+// AT+CCHC 读取 eUICC 信息，并可用同一组命令读取 Product AID。
 func (m *Manager) GetEUICCChipInfo(ctx context.Context, forceRefresh bool) (*EUICCChipInfo, error) {
 	// 优先返回缓存（硬件信息不会变，只有可用空间会变）
 	if !forceRefresh {
@@ -1930,7 +1933,9 @@ func (m *Manager) cachedProfileSnapshot() *EsimOverview {
 }
 
 // GetProfileOverview returns the EID and basic Profile fields required by the
-// public API without running EUICCInfo or product-AID enrichment.
+// public API without running EUICCInfo or product-AID enrichment. On the AT
+// path it uses AT+CSIM for card probing and AT+CCHO/AT+CGLA/AT+CCHC for the
+// candidate AID, EID, and profile APDUs.
 func (m *Manager) GetProfileOverview(ctx context.Context) (*EsimOverview, error) {
 	if cached := m.cachedProfileSnapshot(); cached != nil {
 		return cached, nil
@@ -2066,6 +2071,8 @@ func (m *Manager) loadOverviewFresh(ctx context.Context) (*EsimOverview, error) 
 }
 
 // GetEsimOverview 获取 eSIM 总览信息（一次遍历同时获取芯片信息和 profiles）。
+// AT 路径使用 AT+CSIM 探测基本通道，再用 AT+CCHO/AT+CGLA/AT+CCHC
+// 完成 AID 选择、eUICC/profile APDU 读取和逻辑通道清理。
 // ctx 在逐-AID APDU 步骤之间被检查，取消的请求会迅速停止并释放 opMu/仲裁器。
 func (m *Manager) GetEsimOverview(ctx context.Context) (*EsimOverview, error) {
 	return m.loadOverview(ctx)
@@ -3324,6 +3331,10 @@ func (m *Manager) ListNotifications(aidHex string) ([]NotificationItem, error) {
 	return m.ListNotificationsContext(context.Background(), aidHex)
 }
 
+// ListNotificationsContext reads eSIM notifications. The AT path probes with
+// AT+CSIM, opens candidate AIDs with AT+CCHO, reads notification APDUs through
+// AT+CGLA, and closes channels with AT+CCHC. A stale discovered AID causes a
+// new static AID scan before the retry.
 func (m *Manager) ListNotificationsContext(ctx context.Context, aidHex string) (items []NotificationItem, err error) {
 	started := time.Now()
 	policy := string(m.getEffectiveAIDPlan().Policy)

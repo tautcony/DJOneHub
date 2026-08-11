@@ -167,6 +167,8 @@ func TestManagerClassifiesFatalSerialRuntimeErrors(t *testing.T) {
 		{name: "input output", err: errors.New("input/output error"), want: true},
 		{name: "no such device", err: errors.New("open /dev/ttyUSB2: no such device"), want: true},
 		{name: "bad file descriptor", err: errors.New("bad file descriptor"), want: true},
+		{name: "USB device removed", err: errors.New("USB bulk read: LIBUSB_ERROR_NO_DEVICE"), want: true},
+		{name: "USB timeout", err: errors.New("USB timeout"), want: false},
 		{name: "timeout", err: errors.New("timeout"), want: false},
 		{name: "command error", err: errors.New("设备返回错误: ERROR"), want: false},
 	}

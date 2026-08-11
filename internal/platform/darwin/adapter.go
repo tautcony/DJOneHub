@@ -12,10 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/iniwex5/vohive/internal/apduarbiter"
-	"github.com/iniwex5/vohive/internal/backend"
 	"github.com/iniwex5/vohive/internal/domain/device"
-	"github.com/iniwex5/vohive/internal/esim"
 	"github.com/iniwex5/vohive/internal/modem"
 	"github.com/iniwex5/vohive/internal/platform/unsupported"
 	"github.com/iniwex5/vohive/internal/transport"
@@ -190,26 +187,8 @@ func (a *Adapter) Discover(ctx context.Context) ([]device.Candidate, error) {
 	return nil, nil
 }
 
-func (a *Adapter) OpenAT(_ context.Context, candidate device.Candidate) (backend.ModemBackend, error) {
-	transport, err := openUSBAT(usbDeviceIdentityForCandidate(candidate))
-	if err != nil {
-		return nil, err
-	}
-	commandBackend := backend.NewCommandBackend(transport, candidate.Identity)
-	// 设备级 APDU 仲裁器: darwin 纯 AT eSIM 路径与 modem manager 路径共享的
-	// 同一实例, 使 SIM 切换 barrier 与 APDU idle 等待在 USB AT 传输上生效。
-	arbiter := apduarbiter.New(candidate.Identity.StableID, apduarbiter.Options{})
-	commandBackend.SetAPDUArbiter(arbiter)
-	if port, portErr := esim.NewATPort(candidate.Identity.StableID, arbiter, transport.Command, func(ctx context.Context) (string, error) {
-		identity, err := commandBackend.Identity(ctx)
-		return identity.IMEI, err
-	}, func(ctx context.Context) (string, error) {
-		sim, err := commandBackend.SIM(ctx)
-		return sim.ICCID, err
-	}); portErr == nil {
-		commandBackend.SetESIMPort(port)
-	}
-	return commandBackend, nil
+func (a *Adapter) OpenAT(_ context.Context, candidate device.Candidate) (modem.ATTransport, error) {
+	return openUSBAT(usbDeviceIdentityForCandidate(candidate))
 }
 
 func usbDeviceIdentityForCandidate(candidate device.Candidate) usbDeviceIdentity {

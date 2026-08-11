@@ -48,7 +48,7 @@ Read these tests for a runtime fault:
 | --- | --- |
 | A backend is not selected | `internal/backend/selector.go`, platform adapter |
 | A feature gives `capability_not_supported` | `internal/backend/contracts.go`, `internal/backend/business_adapter.go` |
-| An AT command or URC is wrong | `internal/modem/commands.go`, `internal/modem/serial_at.go`, `internal/modem/at_parse.go` |
+| An AT command or unsolicited result code is wrong | `internal/modem/manager.go`, `internal/modem/transport.go`, `internal/modem/commands.go`, `internal/modem/at_parse.go` |
 | A QMI or MBIM result is wrong | `internal/backend/qmi_backend.go` or `internal/backend/mbim_backend.go` |
 | An APDU action conflicts | `internal/apduarbiter/arbiter.go`, `internal/esim/apdu_coordinator.go` |
 
@@ -58,8 +58,8 @@ Read these tests for a runtime fault:
 | --- | --- | --- |
 | `internal/domain/` | Domain model | Device models, capabilities, and typed errors |
 | `internal/runtime/` | Runtime | One-device lifecycle, events, locks, and scans |
-| `internal/backend/` | Modem backend | AT, QMI, and MBIM contracts and adapters |
-| `internal/modem/` | Modem control | AT commands, URCs, and modem-specific behavior |
+| `internal/backend/` | Modem backend | Shared AT, QMI, and MBIM contracts and adapters |
+| `internal/modem/` | Modem control | Shared AT session, commands, URCs, and modem-specific behavior |
 | `internal/application/` | Use cases | Device, SMS, eSIM, network, AT, VoWiFi, device control, calls, and operations |
 | `internal/app/app.go` | Runtime wiring | Inject verified EDL observation ports by capability |
 | `internal/esim/` | eUICC access | APDU transport, channels, profile actions, and recovery |

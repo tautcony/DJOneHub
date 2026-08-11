@@ -88,32 +88,32 @@
 
 - 已归档变更 `2026-08-11-vowifi-lifecycle-manager`：`openspec/specs/vowifi-lifecycle/spec.md` 需求 1/4 正文更新为 Manager + 适配器实现载体；新增"期望态自动拉起（5s 启动 + 30s 对账 + 单飞退避）"需求；其余需求未动（独立变更，未与其他功能混用）
 
-## 9b. macOS USB 直连缺 SIM APDU 能力（CommandBackend SIMAuthProvider）— ✅ 已实施（2026-08-11）
+## 9b. macOS USB AT 接入共享 AT 后端 — ✅ 已实施（2026-08-11）
 
 **现象**（2026-08-11 真机前置验证时发现）：macOS + USB 直连模块点击 enable 失败：
 `operation failed type=vowifi.enable error=capability_not_supported details=map[capability:apdu operation:vowifi_prepare_start ...]`；
 前端提示"当前后端不支持 VoWiFi：缺少 SIM APDU / MBIM AKA 能力"（`vowifi.unavailableApdu`）。
 
-**根因**：`hostAdapter.PrepareStart` 第一行 `RequireCapability(CapabilityAPDU, "vowifi_prepare_start")`（`internal/application/vowifi/host_adapter.go:141`）。`CapabilityAPDU` 仅由实现 `SIMAuthProvider` 的后端声明（`BusinessAdapter.Adapt()` 检查 `legacy.(SIMAuthProvider)`，`internal/backend/business_adapter.go:47-50`）：
+**根因**：`hostAdapter.PrepareStart` 第一行 `RequireCapability(CapabilityAPDU, "vowifi_prepare_start")`（`internal/application/vowifi/host_adapter.go:141`）。旧 macOS USB 路径有独立的 command backend，导致它与串口 AT 路径的命令、能力和生命周期行为分叉。
 
 | 后端 | SIMAuthProvider | 场景 |
 | --- | --- | --- |
 | ATBackend（`at_backend.go:562`，AT+CCHO/CCHC/CGLA） | ✅ | linux/windows 串口路径（`at_factory.go:71`） |
 | QMIBackend（`qmi_backend.go:1052`，UIM 逻辑通道） | ✅ | QMI 模式 |
 | MBIMBackend（`mbim_backend_simauth.go`，MBIM Auth） | ✅ | MBIM 模式 |
-| **CommandBackend**（`command_backend.go`，darwin 唯一后端） | ✅ 已实现 | **macOS USB 直连**（`platform/darwin/adapter.go:198`） |
+| ATBackend + modem.Manager | ✅ | **macOS USB、Linux 串口、Windows 串口** |
 
-**可行性已确认**：darwin 的 eSIM 路径（`esim.NewATPort` → `transmitBasicCSIM`，`internal/esim/at_port.go:45/62`）已用**同一套逻辑通道命令**（AT+CCHO/CGLA）。实现后，eSIM 和 CommandBackend 共享 `darwin/adapter.go` 创建的 `apduarbiter`，避免 VoWiFi 与 eSIM APDU 冲突。
+**实现方式**：macOS adapter 只打开 libusb AT transport。`ATFactory` 将该 transport 注入 `modem.Manager`，再统一创建 `ATBackend`、eSIM port 和设备级 `apduarbiter`。Linux 和 Windows 继续由同一 factory 打开串口。三个平台共用 AT 命令队列、URC 分流、提示符、超时隔离和 SIM authentication。
 
 **实施结果**：
-1. `internal/backend/command_backend.go`：实现 `SIMAuthProvider` 三方法，校验通道号和 APDU hex，并在 AT transport 存在时声明 `CapabilityAPDU`。
-2. `internal/platform/darwin/adapter.go`：把已建 `apduarbiter` 注入 `CommandBackend`，与 eSIM 共享仲裁。
-3. 测试：覆盖 CCHO/CGLA/CCHC 命令构造、通道号解析、能力声明和仲裁租约；`go test ./...` 已通过。
-4. 真机回归修复：VoWiFi host 改用身份、网络、射频控制和 SIMAuth 窄接口。直连 CommandBackend 不再因旧 `DeviceBackend` 的 SMS 签名冲突而被解包为 nil。
+1. `internal/modem/transport.go`：定义共享的字节流 AT transport contract 和注入式 manager 构造器。
+2. `internal/backend/at_factory.go`：为 serial 和 injected transport 统一创建 `ATBackend`。
+3. `internal/platform/darwin/usb_at_darwin.go`：让 libusb transport 复用 Manager 的命令状态机。
+4. 测试：覆盖 CCHO/CGLA/CCHC 命令构造、通道号解析、能力声明、仲裁租约和 injected transport 生命周期。
 5. 启动失败可见性：失败状态保留 `last_error` 和 `reason`。前端 VoWiFi 面板和异步操作卡片显示具体错误。
 
 **验收**：代码和合成 transport 测试已验证能力、命令和仲裁路径。macOS 真机上的 `/api/v1/vowifi` available、enable 状态流转和前端按钮状态仍需按第 9 项清单执行硬件验证。
-**风险**：模块不支持 CCHO/CGLA 时需回退（QMI 模式或串口连接）；CommandBackend 是 darwin 专属后端，改动不影响 linux/windows
+**风险**：模块不支持 CCHO/CGLA 时需回退（QMI 模式或串口连接）；macOS libusb transport 仍需按 macOS 构建脚本和真实硬件验证。
 
 ## 9. 真机端到端验证清单
 

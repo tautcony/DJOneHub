@@ -7,15 +7,11 @@ import "context"
 // 运行期 eSIM 能力静默消失（capability_not_supported / 422）。
 var (
 	_ ESIMPort         = (*ATBackend)(nil)
-	_ ESIMPort         = (*CommandBackend)(nil)
 	_ ESIMPort         = (*BusinessAdapter)(nil)
 	_ ESIMStoragePort  = (*ATBackend)(nil)
-	_ ESIMStoragePort  = (*CommandBackend)(nil)
 	_ ESIMStoragePort  = (*BusinessAdapter)(nil)
 	_ ESIMSnapshotPort = (*ATBackend)(nil)
-	_ ESIMSnapshotPort = (*CommandBackend)(nil)
 	_ NetworkPort      = (*ATBackend)(nil)
-	_ NetworkPort      = (*CommandBackend)(nil)
 	_ NetworkPort      = (*BusinessAdapter)(nil)
 )
 

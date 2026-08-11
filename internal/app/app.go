@@ -40,11 +40,9 @@ import (
 	"github.com/iniwex5/vohive/pkg/logger"
 )
 
-// serialESIMPortBuilder 为串口 AT 路径（Linux/Windows）构建 eSIM 服务端口。
-// 模组暴露为操作系统串口，eUICC APDU 通道走 modem.Manager 的串口 AT 通道
-// （AT+CCHO/AT+CGLA/AT+CCHC），与 darwin 的 USB AT 路径共用 internal/esim.NewATPort。
-// arbiter 与 modem manager 共享同一设备级 APDU 仲裁器实例。
-func serialESIMPortBuilder() func(*modem.Manager, *apduarbiter.Arbiter, domain.Candidate) (backend.ESIMPort, error) {
+// atESIMPortBuilder builds the eSIM port over the shared AT session. The
+// session may use a serial port or the macOS USB bulk transport.
+func atESIMPortBuilder() func(*modem.Manager, *apduarbiter.Arbiter, domain.Candidate) (backend.ESIMPort, error) {
 	return func(m *modem.Manager, arbiter *apduarbiter.Arbiter, candidate domain.Candidate) (backend.ESIMPort, error) {
 		return djiesim.NewATPort(
 			candidate.Identity.StableID,
@@ -108,18 +106,20 @@ func New() (*App, error) {
 	switch goruntime.GOOS {
 	case "darwin":
 		adapter := darwin.New()
-		discovery, backends, networkAdapter = adapter, backend.NewATFactory(adapter.OpenAT), adapter
+		factory := backend.NewATFactory(adapter.OpenAT)
+		factory.ESIMPort = atESIMPortBuilder()
+		discovery, backends, networkAdapter = adapter, factory, adapter
 		platformCapabilities = adapter
 	case "linux":
 		adapter := linux.New()
 		factory := backend.NewATFactory(nil)
-		factory.ESIMPort = serialESIMPortBuilder()
+		factory.ESIMPort = atESIMPortBuilder()
 		discovery, backends, networkAdapter = adapter, factory, adapter
 		platformCapabilities = adapter
 	case "windows":
 		adapter := windows.New()
 		factory := backend.NewATFactory(nil)
-		factory.ESIMPort = serialESIMPortBuilder()
+		factory.ESIMPort = atESIMPortBuilder()
 		discovery, backends, networkAdapter = adapter, factory, adapter
 		platformCapabilities = adapter
 	default:

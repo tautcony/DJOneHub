@@ -6,14 +6,7 @@ import (
 	"time"
 
 	"github.com/iniwex5/vohive/internal/application/operation"
-	"github.com/iniwex5/vohive/internal/backend"
-	"github.com/iniwex5/vohive/internal/domain/device"
 )
-
-type directATTransport struct{}
-
-func (directATTransport) Command(string, time.Duration) (string, error) { return "OK\r\n", nil }
-func (directATTransport) Close() error                                  { return nil }
 
 func TestHostAdapterIsSwitching(t *testing.T) {
 	ops := operation.NewManager(nil)
@@ -69,19 +62,5 @@ func TestHostAdapterIsSwitchingNilOps(t *testing.T) {
 	adapter := &hostAdapter{}
 	if adapter.IsSwitching("main") {
 		t.Fatal("IsSwitching() with nil ops = true, want false")
-	}
-}
-
-func TestUnwrapLegacyBackendAcceptsDirectCommandBackend(t *testing.T) {
-	direct := backend.NewCommandBackend(directATTransport{}, device.Identity{StableID: "direct-usb-at"})
-	db, manager := unwrapLegacyBackend(direct)
-	if db == nil {
-		t.Fatal("unwrapLegacyBackend() backend = nil for CommandBackend")
-	}
-	if manager != nil {
-		t.Fatal("unwrapLegacyBackend() manager != nil for direct USB backend")
-	}
-	if _, err := newVoWiFiModemInterface(db, nil, "main"); err != nil {
-		t.Fatalf("newVoWiFiModemInterface(): %v", err)
 	}
 }

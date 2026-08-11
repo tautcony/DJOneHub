@@ -96,13 +96,6 @@ type RawATBackend interface {
 	RawAT(context.Context, string) (string, error)
 }
 
-// ATInteractiveTransport is implemented by transports that can handle an AT
-// prompt followed by a payload, such as SMS PDU submission.
-type ATInteractiveTransport interface {
-	ATCommandTransport
-	CommandWithPrompt(string, []byte, time.Duration) (string, error)
-}
-
 // ModemBackend is the business contract consumed by runtime and application code.
 // Existing protocol adapters can implement it without exposing protocol response types.
 type ModemBackend interface {
