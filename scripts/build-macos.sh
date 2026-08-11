@@ -211,7 +211,24 @@ cp "${STAGE_DIR}/THIRD_PARTY_NOTICES.md" "${DMG_STAGE}/DJOneHub-licenses/"
 cp "${STAGE_DIR}/licenses/libusb-COPYING" "${DMG_STAGE}/DJOneHub-licenses/licenses/"
 ln -s /Applications "${DMG_STAGE}/Applications"
 hdiutil create -volname "DJOneHub" -srcfolder "${DMG_STAGE}" -ov -format UDZO "${DMG}"
-hdiutil verify "${DMG}"
+
+# hdiutil can return before the newly created image is ready for a verify
+# operation on busy macOS runners. Retry transient resource errors, but keep
+# the verification failure fatal after a bounded wait.
+verify_dmg() {
+	verify_attempt=1
+	verify_max_attempts=5
+	while ! hdiutil verify "${DMG}"; do
+		if [ "${verify_attempt}" -ge "${verify_max_attempts}" ]; then
+			printf '%s\n' "DMG verification failed after ${verify_max_attempts} attempts." >&2
+			return 1
+		fi
+		printf '%s\n' "DMG is not ready for verification; retrying (${verify_attempt}/${verify_max_attempts})..." >&2
+		verify_attempt=$((verify_attempt + 1))
+		sleep 2
+	done
+}
+verify_dmg
 shasum -a 256 "${DMG}" > "${CHECKSUM}"
 
 printf '%s\n' "Application: ${APP_DIR}"
