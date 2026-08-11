@@ -760,6 +760,19 @@ const messages = {
       entryDirect: 'Direct DIAG',
       entryADB: 'ADB fallback',
       cached: 'cached',
+      liveEDLTitle: 'Live EDL observation',
+      saharaState: 'Sahara state',
+      protocolSource: 'Protocol / source',
+      saharaSerial: 'Sahara serial',
+      saharaHWID: 'Hardware ID',
+      saharaPKHash: 'Public key hash',
+      saharaSBL: 'SBL version',
+      observedAt: 'Observed at',
+      activeOperation: 'Active operation',
+      sessionOwnedByOther:
+        'Another browser controls this device session. Device changes are unavailable here.',
+      backupCompleteStillEDL:
+        'The NAND backup is complete. The device remains in EDL until you explicitly restore normal mode.',
       mode: {
         edlConfirm: 'The modem will reboot into EDL and the AT channel will disconnect. Continue?',
         adbEDLConfirm: 'The selected ADB device will reboot into EDL. Continue?',
@@ -846,7 +859,14 @@ const messages = {
       unableLoad: 'Unable to load device-control status',
       unableAction: 'Unable to update the device mode',
       unableBackup: 'Unable to start the NAND backup',
-      backupValidResetFailed: 'The NAND image is valid, but reset or reconnect failed. Keep the device connected and run recovery reset.',
+      backupValidResetFailed:
+        'The NAND image is valid, but reset or reconnect failed. Keep the device connected and run recovery reset.',
+      backupCleanupResetFailed:
+        'The NAND read failed and the cleanup reset did not complete. Keep the device connected and run an explicit recovery reset.',
+      resetFailedReconnect:
+        'The device did not return to normal mode after reset. Keep it connected and retry recovery reset.',
+      saharaObservationPending:
+        'The EDL device was detected. Sahara facts are not available until protocol observation succeeds.',
       unableSelectDirectory: 'Unable to choose the backup directory',
       unableSelectEDLDirectory: 'Unable to choose the EDL tool directory',
       unableSelectLoaderFile: 'Unable to choose the Firehose loader',
@@ -1859,6 +1879,17 @@ const messages = {
       entryDirect: '直接 DIAG',
       entryADB: 'ADB 回退',
       cached: '缓存',
+      liveEDLTitle: '实时 EDL 观测',
+      saharaState: 'Sahara 状态',
+      protocolSource: '协议 / 来源',
+      saharaSerial: 'Sahara 序列号',
+      saharaHWID: '硬件 ID',
+      saharaPKHash: '公钥哈希',
+      saharaSBL: 'SBL 版本',
+      observedAt: '观测时间',
+      activeOperation: '当前操作',
+      sessionOwnedByOther: '另一个浏览器正在控制此设备会话，当前页面不能执行设备变更。',
+      backupCompleteStillEDL: 'NAND 备份已完成。设备会保持在 EDL，直到你显式恢复正常模式。',
       mode: {
         edlConfirm: '模组将重启进入 EDL，AT 通道会断开。是否继续？',
         adbEDLConfirm: '所选 ADB 设备将重启进入 EDL。是否继续？',
@@ -1944,6 +1975,9 @@ const messages = {
       unableAction: '无法更新设备模式',
       unableBackup: '无法开始 NAND 备份',
       backupValidResetFailed: 'NAND 镜像有效，但 reset 或重连失败。请保持设备连接并执行恢复 reset。',
+      backupCleanupResetFailed: 'NAND 读取失败，且清理 reset 未完成。请保持设备连接并显式执行恢复 reset。',
+      resetFailedReconnect: '设备 reset 后未恢复正常模式。请保持设备连接并重试恢复 reset。',
+      saharaObservationPending: '已发现 EDL 设备。Sahara 协议观测成功后才会显示设备事实。',
       unableSelectDirectory: '无法选择备份目录',
       unableSelectEDLDirectory: '无法选择 EDL 工具目录',
       unableSelectLoaderFile: '无法选择 Firehose loader',

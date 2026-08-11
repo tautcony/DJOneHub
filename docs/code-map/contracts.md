@@ -26,6 +26,7 @@ Read `internal/api/http/boundary_test.go`, `server_test.go`, `sanitize_test.go`,
 | `/network` | Network service | `internal/application/network/` |
 | `/device/actions/raw-at` | Raw AT service | `internal/application/rawat/` |
 | `/device-control` | Device-control service | `internal/application/firmware/` |
+| `/device-control/session/lease` | EDL session manager | `internal/runtime/edl_session.go` |
 | `/vowifi` | VoWiFi service | `internal/application/vowifi/` |
 | `/calls` | Extras service | `internal/application/extras/` |
 | `/notifications`, `/settings/startup` | Notification and startup services | `internal/application/notification/`, `internal/platform/startup/` |
@@ -63,6 +64,7 @@ The frontend entry is `web/src/stores/device.ts`. A missing event ID causes a ne
 | `call.*` | Extras service | Calls view and notification service |
 | eSIM profile and confirmation events | eSIM service | eSIM store and view |
 | Notification events | Notification service and bridge | Native UI and notifications view |
+| `device_control.edl_session_changed` | EDL session manager | Device Control view and WebSocket observers |
 
 Read `internal/api/http/runtime_stream_test.go`, `internal/api/http/websocket_test.go`, and `internal/runtime/events_test.go` for an event problem.
 

@@ -31,6 +31,7 @@ type Runtime struct {
 	workerWG              sync.WaitGroup
 	bus                   *EventBus
 	locks                 *ResourceLocks
+	edlSessions           *EDLSessionManager
 	config                Config
 	retryAt               time.Time
 	backendEventConsumers int
@@ -100,6 +101,14 @@ func (r *Runtime) Snapshot() device.Snapshot {
 
 func (r *Runtime) Events() *EventBus     { return r.bus }
 func (r *Runtime) Locks() *ResourceLocks { return r.locks }
+func (r *Runtime) EDLSessions() *EDLSessionManager {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.edlSessions == nil {
+		r.edlSessions = NewEDLSessionManager(r.bus, 0)
+	}
+	return r.edlSessions
+}
 
 func (r *Runtime) Rescan(ctx context.Context) error {
 	return r.scan(ctx)

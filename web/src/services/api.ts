@@ -30,6 +30,29 @@ import type {
 import type { RawATSMSDiagnostic } from './at'
 
 const base = '/api/v1'
+const deviceControlLeaseKey = 'djonehub.device-control.lease'
+
+function deviceControlLeaseToken() {
+  try {
+    return window.sessionStorage.getItem(deviceControlLeaseKey) || ''
+  } catch {
+    return ''
+  }
+}
+
+function setDeviceControlLeaseToken(token: string) {
+  try {
+    if (token) window.sessionStorage.setItem(deviceControlLeaseKey, token)
+    else window.sessionStorage.removeItem(deviceControlLeaseKey)
+  } catch {
+    // The server still enforces ownership when session storage is unavailable.
+  }
+}
+
+function deviceControlLeaseHeaders(): HeadersInit {
+  const token = deviceControlLeaseToken()
+  return token ? { 'X-DJOneHub-Device-Lease': token } : {}
+}
 
 export class APIError extends Error {
   readonly code: string
@@ -45,8 +68,8 @@ export class APIError extends Error {
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${base}${path}`, {
-    headers: { 'Content-Type': 'application/json', ...(init?.headers || {}) },
     ...init,
+    headers: { 'Content-Type': 'application/json', ...(init?.headers || {}) },
   })
   const body = await response.json().catch(() => ({}))
   if (!response.ok) {
@@ -57,6 +80,30 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     )
   }
   return body as T
+}
+
+export async function ensureDeviceControlLease() {
+  const current = deviceControlLeaseToken()
+  if (current) {
+    try {
+      await request('/device-control/session/lease', {
+        method: 'PUT',
+        headers: deviceControlLeaseHeaders(),
+      })
+      return current
+    } catch (error) {
+      if (!(error instanceof APIError) || error.code !== 'device_session_conflict') throw error
+      setDeviceControlLeaseToken('')
+    }
+  }
+  const result = await request<{ lease_token: string }>('/device-control/session/lease', { method: 'POST' })
+  setDeviceControlLeaseToken(result.lease_token)
+  return result.lease_token
+}
+
+export function deviceControlLeaseWebSocketProtocol() {
+  const token = deviceControlLeaseToken()
+  return token ? `djonehub-device-lease.${token}` : ''
 }
 
 export const api = {
@@ -147,34 +194,51 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ command }),
     }),
-  deviceControl: () => request<DeviceControlStatus>('/device-control'),
+  deviceControl: () =>
+    request<DeviceControlStatus>('/device-control', { headers: deviceControlLeaseHeaders() }),
   deviceControlADBUnlock: () =>
-    request<{ operation_id: string }>('/device-control/actions/adb-unlock', { method: 'POST' }),
+    request<{ operation_id: string }>('/device-control/actions/adb-unlock', {
+      method: 'POST',
+      headers: deviceControlLeaseHeaders(),
+    }),
   deviceControlADBMode: (enabled: boolean) =>
     request<{ operation_id: string }>('/device-control/actions/adb-mode', {
       method: 'POST',
+      headers: deviceControlLeaseHeaders(),
       body: JSON.stringify({ enabled }),
     }),
   deviceControlADBReboot: (serial: string) =>
     request<{ operation_id: string }>('/device-control/actions/adb/reboot', {
       method: 'POST',
+      headers: deviceControlLeaseHeaders(),
       body: JSON.stringify({ serial }),
     }),
   deviceControlUSBID: (vid: string, pid: string) =>
     request<{ operation_id: string }>('/device-control/actions/usb-id', {
       method: 'POST',
+      headers: deviceControlLeaseHeaders(),
       body: JSON.stringify({ vid, pid }),
     }),
   deviceControlEDL: (serial: string, method: 'direct' | 'adb' = 'direct') =>
     request<{ operation_id: string }>('/device-control/actions/edl', {
       method: 'POST',
+      headers: deviceControlLeaseHeaders(),
       body: JSON.stringify({ serial, method }),
     }),
   deviceControlReset: () =>
-    request<{ operation_id: string }>('/device-control/actions/reset', { method: 'POST' }),
-  deviceControlBackup: (output_path: string, loader_path: string, edl_path: string, edl_runner: 'python' | 'uv') =>
+    request<{ operation_id: string }>('/device-control/actions/reset', {
+      method: 'POST',
+      headers: deviceControlLeaseHeaders(),
+    }),
+  deviceControlBackup: (
+    output_path: string,
+    loader_path: string,
+    edl_path: string,
+    edl_runner: 'python' | 'uv',
+  ) =>
     request<{ operation_id: string }>('/device-control/actions/nand-backup', {
       method: 'POST',
+      headers: deviceControlLeaseHeaders(),
       body: JSON.stringify({ output_path, loader_path, edl_path, edl_runner }),
     }),
   selectDeviceControlBackupDirectory: () =>

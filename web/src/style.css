@@ -3040,6 +3040,12 @@ button:disabled {
   font-size: 13px;
   font-weight: 600;
 }
+.firmware-edl-observation {
+  display: grid;
+  gap: 12px;
+  padding-top: 16px;
+  border-top: 1px solid var(--ui-border-subtle);
+}
 .firmware-usb-config-strip {
   display: flex;
   flex-wrap: wrap;

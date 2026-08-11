@@ -26,16 +26,17 @@ func openAPIDocument() map[string]any {
 			"/api/v1/device/actions/raw-at":             commandPath("raw AT response", false),
 			"/api/v1/device-control":                    readPath("device control status"),
 			"/api/v1/device-control/settings":           commandPath("device control settings", false),
-			"/api/v1/device-control/actions/adb-unlock": commandPath("ADB unlock operation", true),
-			"/api/v1/device-control/actions/adb-mode":   commandPath("ADB mode operation", true),
-			"/api/v1/device-control/actions/adb/reboot": commandPath("ADB reboot operation", true),
+			"/api/v1/device-control/session/lease":      deviceControlLeasePath(),
+			"/api/v1/device-control/actions/adb-unlock": deviceControlCommandPath("ADB unlock operation"),
+			"/api/v1/device-control/actions/adb-mode":   deviceControlCommandPath("ADB mode operation"),
+			"/api/v1/device-control/actions/adb/reboot": deviceControlCommandPath("ADB reboot operation"),
 			"/api/v1/device-control/actions/adb/shell/ws": map[string]any{
-				"get": map[string]any{"responses": map[string]any{"101": map[string]any{"description": "interactive ADB shell"}}},
+				"get": map[string]any{"description": "interactive ADB shell; the WebSocket subprotocol carries the device-control lease", "responses": map[string]any{"101": map[string]any{"description": "interactive ADB shell"}, "409": map[string]any{"$ref": "#/components/responses/Error"}}},
 			},
-			"/api/v1/device-control/actions/usb-id":                    commandPath("USB ID operation", true),
-			"/api/v1/device-control/actions/edl":                       commandPath("EDL entry operation", true),
-			"/api/v1/device-control/actions/reset":                     commandPath("restore normal USB mode operation", true),
-			"/api/v1/device-control/actions/nand-backup":               commandPath("NAND backup operation", true),
+			"/api/v1/device-control/actions/usb-id":                    deviceControlCommandPath("USB ID operation"),
+			"/api/v1/device-control/actions/edl":                       deviceControlCommandPath("EDL entry operation"),
+			"/api/v1/device-control/actions/reset":                     deviceControlCommandPath("restore normal USB mode operation"),
+			"/api/v1/device-control/actions/nand-backup":               deviceControlCommandPath("NAND backup operation"),
 			"/api/v1/device-control/actions/select-backup-directory":   commandPath("backup directory selection", false),
 			"/api/v1/device-control/actions/select-edl-directory":      commandPath("EDL tool directory selection", false),
 			"/api/v1/device-control/actions/select-adb-file":           commandPath("adb executable selection", false),
@@ -151,6 +152,29 @@ func commandPath(description string, async bool) map[string]any {
 		"422":  map[string]any{"$ref": "#/components/responses/Error"},
 		"503":  map[string]any{"$ref": "#/components/responses/Error"},
 	}}}
+}
+
+func deviceControlLeasePath() map[string]any {
+	responses := map[string]any{
+		"200": map[string]any{"description": "lease renewed or released"},
+		"201": map[string]any{"description": "lease acquired"},
+		"409": map[string]any{"$ref": "#/components/responses/Error"},
+		"422": map[string]any{"$ref": "#/components/responses/Error"},
+	}
+	header := []any{map[string]any{"name": deviceControlLeaseHeader, "in": "header", "required": true, "schema": map[string]any{"type": "string"}}}
+	return map[string]any{
+		"post":   map[string]any{"responses": responses},
+		"put":    map[string]any{"parameters": header, "responses": responses},
+		"delete": map[string]any{"parameters": header, "responses": responses},
+	}
+}
+
+func deviceControlCommandPath(description string) map[string]any {
+	path := commandPath(description, true)
+	operation := path["post"].(map[string]any)
+	operation["parameters"] = []any{map[string]any{"name": deviceControlLeaseHeader, "in": "header", "required": true, "schema": map[string]any{"type": "string"}}}
+	operation["responses"].(map[string]any)["409"] = map[string]any{"$ref": "#/components/responses/Error"}
+	return path
 }
 
 func responses(description string) map[string]any {

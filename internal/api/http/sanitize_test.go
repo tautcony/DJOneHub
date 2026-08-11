@@ -135,6 +135,15 @@ func TestSanitizeEventMatrix(t *testing.T) {
 			want: domain.Snapshot{State: domain.StateReady, Identity: domain.Identity{IMEI: "990000860099326"},
 				BackendReason: "backend selection failed", LastError: "device error"},
 		},
+		{
+			name: "EDL session event masks protocol identifiers and location",
+			event: runtime.Event{Type: "device_control.edl_session_changed", Data: domain.EDLSessionSnapshot{
+				SessionID: "session-1", PhysicalLocation: "usb/1-2", LeaseHeld: true,
+				Observation: domain.EDLObservation{State: domain.EDLStateSaharaIdentified, SerialNumber: "12345678", HardwareID: "0102030405060708", PKHash: "aabbccdd"},
+			}},
+			want: domain.EDLSessionSnapshot{SessionID: "session-1", LeaseHeld: true,
+				Observation: domain.EDLObservation{State: domain.EDLStateSaharaIdentified, SerialNumber: "****5678", HardwareID: "****0708", PKHash: "****ccdd"}},
+		},
 	}
 
 	for _, tt := range tests {

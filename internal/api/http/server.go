@@ -28,6 +28,7 @@ import (
 	"github.com/iniwex5/vohive/internal/application/sms"
 	"github.com/iniwex5/vohive/internal/application/vowifi"
 	"github.com/iniwex5/vohive/internal/backend"
+	domain "github.com/iniwex5/vohive/internal/domain/device"
 	derrors "github.com/iniwex5/vohive/internal/domain/errors"
 	"github.com/iniwex5/vohive/internal/notify"
 	"github.com/iniwex5/vohive/internal/platform/native"
@@ -140,6 +141,7 @@ func (s *Server) Handler() nethttp.Handler {
 	// Device Control is the only public namespace for ADB and EDL controls.
 	mux.HandleFunc("/api/v1/device-control", s.deviceControlStatus)
 	mux.HandleFunc("/api/v1/device-control/settings", s.deviceControlSettings)
+	mux.HandleFunc("/api/v1/device-control/session/lease", s.deviceControlLease)
 	mux.HandleFunc("/api/v1/device-control/actions/adb-unlock", s.deviceControlADBUnlock)
 	mux.HandleFunc("/api/v1/device-control/actions/adb-mode", s.deviceControlADBMode)
 	mux.HandleFunc("/api/v1/device-control/actions/adb/reboot", s.deviceControlADBReboot)
@@ -783,7 +785,7 @@ func (s *Server) deviceControlStatus(w nethttp.ResponseWriter, r *nethttp.Reques
 		writeError(w, derrors.New(derrors.CapabilityNotSupported, "device control is unavailable", false, nil))
 		return
 	}
-	value, err := s.config.DeviceControl.Status(r.Context())
+	value, err := s.config.DeviceControl.StatusForLease(r.Context(), r.Header.Get(deviceControlLeaseHeader))
 	if err != nil {
 		writeError(w, err)
 		return
@@ -810,19 +812,105 @@ func (s *Server) deviceControlSettings(w nethttp.ResponseWriter, r *nethttp.Requ
 	writeJSON(w, nethttp.StatusOK, s.config.DeviceControl.DeviceControlSettings())
 }
 
+const deviceControlLeaseHeader = "X-DJOneHub-Device-Lease"
+
+func publicEDLSession(snapshot domain.EDLSessionSnapshot) domain.EDLSessionSnapshot {
+	snapshot.PhysicalLocation = ""
+	snapshot.Observation = domain.PublicEDLObservation(snapshot.Observation)
+	return snapshot
+}
+
+func (s *Server) deviceControlLease(w nethttp.ResponseWriter, r *nethttp.Request) {
+	if !s.protected(w, r) || s.config.DeviceControl == nil {
+		if s.config.DeviceControl == nil {
+			writeError(w, derrors.New(derrors.CapabilityNotSupported, "device control is unavailable", false, nil))
+		}
+		return
+	}
+	switch r.Method {
+	case nethttp.MethodPost:
+		token, snapshot, err := s.config.DeviceControl.AcquireControlLease()
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		snapshot.LeaseOwned = true
+		writeJSON(w, nethttp.StatusCreated, map[string]any{"lease_token": token, "session": publicEDLSession(snapshot)})
+	case nethttp.MethodPut:
+		snapshot, err := s.config.DeviceControl.RenewControlLease(r.Header.Get(deviceControlLeaseHeader))
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		snapshot.LeaseOwned = true
+		writeJSON(w, nethttp.StatusOK, map[string]any{"session": publicEDLSession(snapshot)})
+	case nethttp.MethodDelete:
+		if err := s.config.DeviceControl.ReleaseControlLease(r.Header.Get(deviceControlLeaseHeader)); err != nil {
+			writeError(w, err)
+			return
+		}
+		writeJSON(w, nethttp.StatusOK, map[string]string{"state": "released"})
+	default:
+		s.requireMethod(w, r, nethttp.MethodPost)
+	}
+}
+
+func (s *Server) beginDeviceControlOperation(w nethttp.ResponseWriter, r *nethttp.Request, operation string) (func(), bool) {
+	if s.config.DeviceControl == nil {
+		writeError(w, derrors.New(derrors.CapabilityNotSupported, "device control is unavailable", false, nil))
+		return nil, false
+	}
+	finish, err := s.config.DeviceControl.BeginControlOperation(r.Header.Get(deviceControlLeaseHeader), operation)
+	if err != nil {
+		writeError(w, err)
+		return nil, false
+	}
+	return finish, true
+}
+
+func (s *Server) trackDeviceControlOperation(operationID string, finish func()) {
+	if finish == nil {
+		return
+	}
+	if s.config.Operations == nil || operationID == "" {
+		finish()
+		return
+	}
+	go func() {
+		defer finish()
+		ticker := time.NewTicker(250 * time.Millisecond)
+		defer ticker.Stop()
+		deadline := time.NewTimer(24 * time.Hour)
+		defer deadline.Stop()
+		for {
+			status, ok := s.config.Operations.Get(operationID)
+			if !ok || status.State == operation.Succeeded || status.State == operation.Failed || status.State == operation.Cancelled {
+				return
+			}
+			select {
+			case <-ticker.C:
+			case <-deadline.C:
+				return
+			}
+		}
+	}()
+}
+
 func (s *Server) deviceControlADBUnlock(w nethttp.ResponseWriter, r *nethttp.Request) {
 	if !s.commandOnly(w, r) {
 		return
 	}
-	if s.config.DeviceControl == nil {
-		writeError(w, derrors.New(derrors.CapabilityNotSupported, "device control is unavailable", false, nil))
+	finish, ok := s.beginDeviceControlOperation(w, r, "device_control.adb_unlock")
+	if !ok {
 		return
 	}
 	id, err := s.config.DeviceControl.StartUnlock(r.Context())
 	if err != nil {
+		finish()
 		writeError(w, err)
 		return
 	}
+	s.trackDeviceControlOperation(id, finish)
 	writeJSON(w, nethttp.StatusAccepted, map[string]string{"operation_id": id})
 }
 
@@ -835,15 +923,17 @@ func (s *Server) deviceControlADBMode(w nethttp.ResponseWriter, r *nethttp.Reque
 	if !s.commandJSON(w, r, &value) {
 		return
 	}
-	if s.config.DeviceControl == nil {
-		writeError(w, derrors.New(derrors.CapabilityNotSupported, "device control is unavailable", false, nil))
+	finish, ok := s.beginDeviceControlOperation(w, r, "device_control.adb_mode")
+	if !ok {
 		return
 	}
 	id, err := s.config.DeviceControl.StartADBMode(r.Context(), value.Enabled)
 	if err != nil {
+		finish()
 		writeError(w, err)
 		return
 	}
+	s.trackDeviceControlOperation(id, finish)
 	writeJSON(w, nethttp.StatusAccepted, map[string]string{"operation_id": id})
 }
 
@@ -856,15 +946,17 @@ func (s *Server) deviceControlADBReboot(w nethttp.ResponseWriter, r *nethttp.Req
 	if !s.commandJSON(w, r, &value) {
 		return
 	}
-	if s.config.DeviceControl == nil {
-		writeError(w, derrors.New(derrors.CapabilityNotSupported, "device control is unavailable", false, nil))
+	finish, ok := s.beginDeviceControlOperation(w, r, "device_control.adb_reboot")
+	if !ok {
 		return
 	}
 	id, err := s.config.DeviceControl.StartADBReboot(r.Context(), value.Serial)
 	if err != nil {
+		finish()
 		writeError(w, err)
 		return
 	}
+	s.trackDeviceControlOperation(id, finish)
 	writeJSON(w, nethttp.StatusAccepted, map[string]string{"operation_id": id})
 }
 
@@ -873,15 +965,17 @@ func (s *Server) deviceControlUSBID(w nethttp.ResponseWriter, r *nethttp.Request
 	if !s.commandJSON(w, r, &value) {
 		return
 	}
-	if s.config.DeviceControl == nil {
-		writeError(w, derrors.New(derrors.CapabilityNotSupported, "device control is unavailable", false, nil))
+	finish, ok := s.beginDeviceControlOperation(w, r, "device_control.usb_id")
+	if !ok {
 		return
 	}
 	id, err := s.config.DeviceControl.StartUSBID(r.Context(), value)
 	if err != nil {
+		finish()
 		writeError(w, err)
 		return
 	}
+	s.trackDeviceControlOperation(id, finish)
 	writeJSON(w, nethttp.StatusAccepted, map[string]string{"operation_id": id})
 }
 
@@ -895,15 +989,17 @@ func (s *Server) deviceControlEDL(w nethttp.ResponseWriter, r *nethttp.Request) 
 	if !s.commandJSON(w, r, &value) {
 		return
 	}
-	if s.config.DeviceControl == nil {
-		writeError(w, derrors.New(derrors.CapabilityNotSupported, "device control is unavailable", false, nil))
+	finish, ok := s.beginDeviceControlOperation(w, r, "device_control.enter_edl")
+	if !ok {
 		return
 	}
 	id, err := s.config.DeviceControl.StartEnterEDLWithMethod(r.Context(), value.Method, value.Serial)
 	if err != nil {
+		finish()
 		writeError(w, err)
 		return
 	}
+	s.trackDeviceControlOperation(id, finish)
 	writeJSON(w, nethttp.StatusAccepted, map[string]string{"operation_id": id})
 }
 
@@ -911,15 +1007,17 @@ func (s *Server) deviceControlReset(w nethttp.ResponseWriter, r *nethttp.Request
 	if !s.commandOnly(w, r) {
 		return
 	}
-	if s.config.DeviceControl == nil {
-		writeError(w, derrors.New(derrors.CapabilityNotSupported, "device control is unavailable", false, nil))
+	finish, ok := s.beginDeviceControlOperation(w, r, "device_control.reset")
+	if !ok {
 		return
 	}
 	id, err := s.config.DeviceControl.StartReset(r.Context())
 	if err != nil {
+		finish()
 		writeError(w, err)
 		return
 	}
+	s.trackDeviceControlOperation(id, finish)
 	writeJSON(w, nethttp.StatusAccepted, map[string]string{"operation_id": id})
 }
 
@@ -941,6 +1039,13 @@ func (s *Server) deviceControlADBShellWS(w nethttp.ResponseWriter, r *nethttp.Re
 		writeError(w, derrors.New(derrors.InvalidRequest, "websocket upgrade required", false, nil))
 		return
 	}
+	leaseToken, leaseProtocol := deviceControlWebSocketLease(r)
+	finish, err := s.config.DeviceControl.BeginControlOperation(leaseToken, "device_control.adb_shell")
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	defer finish()
 	serial := strings.TrimSpace(r.URL.Query().Get("serial"))
 	shell, err := s.config.DeviceControl.OpenADBShell(serial)
 	if err != nil {
@@ -949,6 +1054,7 @@ func (s *Server) deviceControlADBShellWS(w nethttp.ResponseWriter, r *nethttp.Re
 	}
 	defer shell.Close()
 	upgrader := s.adbShellUpgrader()
+	upgrader.Subprotocols = []string{leaseProtocol}
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
@@ -994,20 +1100,32 @@ func (s *Server) deviceControlADBShellWS(w nethttp.ResponseWriter, r *nethttp.Re
 	}
 }
 
+func deviceControlWebSocketLease(r *nethttp.Request) (string, string) {
+	const prefix = "djonehub-device-lease."
+	for _, protocol := range websocket.Subprotocols(r) {
+		if strings.HasPrefix(protocol, prefix) {
+			return strings.TrimPrefix(protocol, prefix), protocol
+		}
+	}
+	return "", ""
+}
+
 func (s *Server) deviceControlBackup(w nethttp.ResponseWriter, r *nethttp.Request) {
 	var value firmware.BackupRequest
 	if !s.commandJSON(w, r, &value) {
 		return
 	}
-	if s.config.DeviceControl == nil {
-		writeError(w, derrors.New(derrors.CapabilityNotSupported, "device control is unavailable", false, nil))
+	finish, ok := s.beginDeviceControlOperation(w, r, "device_control.nand_backup")
+	if !ok {
 		return
 	}
 	id, err := s.config.DeviceControl.StartBackup(r.Context(), value)
 	if err != nil {
+		finish()
 		writeError(w, err)
 		return
 	}
+	s.trackDeviceControlOperation(id, finish)
 	writeJSON(w, nethttp.StatusAccepted, map[string]string{"operation_id": id})
 }
 
@@ -1534,8 +1652,8 @@ func (s *Server) websocket(w nethttp.ResponseWriter, r *nethttp.Request) {
 	// Subscribe with a watermark before building the snapshot: events
 	// published during snapshot construction are queued and delivered after
 	// it with ID > watermark, so the client never sees a gap under
-	// client-side deduplication. The snapshot covers device status only;
-	// operation, SMS, and call events are never discarded as covered.
+	// client-side deduplication. The snapshot covers device status and the
+	// current EDL session. Operation, SMS, and call events are not covered.
 	// Operation stdout can arrive as many small log events during NAND reads.
 	// Keep a bounded burst buffer large enough for a complete tool stream before
 	// declaring a slow browser disconnected.
@@ -1555,7 +1673,13 @@ func (s *Server) websocket(w nethttp.ResponseWriter, r *nethttp.Request) {
 	// 初始快照查询失败(模组暂不可用)时不得中断事件流:连接已升级,
 	// 后续 device.status.changed 事件仍会推送,前端也会定期通过 HTTP 刷新状态。
 	if status, err := s.config.Device.Status(r.Context()); err == nil {
-		snapshot := runtime.Event{ID: sub.Watermark, Type: "snapshot", Version: 1, OccurredAt: time.Now().UTC(), Data: sanitizeDeviceStatus(status)}
+		data := initialSnapshotData{Status: sanitizeDeviceStatus(status)}
+		if s.config.DeviceControl != nil {
+			if controlStatus, controlErr := s.config.DeviceControl.StatusForLease(r.Context(), ""); controlErr == nil {
+				data.EDLSession = controlStatus.EDLSession
+			}
+		}
+		snapshot := runtime.Event{ID: sub.Watermark, Type: "snapshot", Version: 1, OccurredAt: time.Now().UTC(), Data: data}
 		if err := write(snapshot); err != nil {
 			return
 		}
@@ -1594,6 +1718,11 @@ func (s *Server) websocket(w nethttp.ResponseWriter, r *nethttp.Request) {
 			}
 		}
 	}
+}
+
+type initialSnapshotData struct {
+	device.Status
+	EDLSession *domain.EDLSessionSnapshot `json:"edl_session,omitempty"`
 }
 
 func isWebSocketRequest(r *nethttp.Request) bool {
@@ -1761,7 +1890,7 @@ func errorStatus(code derrors.Code) int {
 		return nethttp.StatusUnauthorized
 	case derrors.NotFound:
 		return nethttp.StatusNotFound
-	case derrors.OperationConflict:
+	case derrors.OperationConflict, derrors.DeviceSessionConflict:
 		return nethttp.StatusConflict
 	case derrors.CapabilityNotSupported, derrors.PacketTunnelNotSupported:
 		return nethttp.StatusUnprocessableEntity

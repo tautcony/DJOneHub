@@ -10,6 +10,7 @@ const (
 	NotFound                 Code = "not_found"
 	DeviceOffline            Code = "device_offline"
 	OperationConflict        Code = "operation_conflict"
+	DeviceSessionConflict    Code = "device_session_conflict"
 	OperationCancelled       Code = "operation_cancelled"
 	OperationTimeout         Code = "operation_timeout"
 	BackendUnavailable       Code = "backend_unavailable"
@@ -71,6 +72,8 @@ func PublicMessage(code Code) string {
 		return "the device is offline"
 	case OperationConflict:
 		return "the device is busy with another operation"
+	case DeviceSessionConflict:
+		return "another client controls the device session"
 	case OperationCancelled:
 		return "the operation was cancelled"
 	case OperationTimeout:

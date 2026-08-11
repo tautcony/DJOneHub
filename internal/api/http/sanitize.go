@@ -57,6 +57,12 @@ func sanitizeEvent(value runtime.Event) runtime.Event {
 		} else {
 			value.Data = sanitizePublicValue(value.Data)
 		}
+	case "device_control.edl_session_changed":
+		if data, ok := value.Data.(domain.EDLSessionSnapshot); ok {
+			value.Data = publicEDLSession(data)
+		} else {
+			value.Data = sanitizePublicValue(value.Data)
+		}
 	case "network.updated":
 		if data, ok := value.Data.(map[string]any); ok {
 			value.Data = sanitizeNetworkMap(data)

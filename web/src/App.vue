@@ -6,7 +6,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { notification, theme as antTheme } from 'ant-design-vue'
 import type { ThemeConfig } from 'ant-design-vue/es/config-provider/context'
 import { EditOutlined, ReloadOutlined } from '@ant-design/icons-vue'
-import { api } from './services/api'
+import { api, ensureDeviceControlLease } from './services/api'
 import { APIError } from './services/api'
 import { persistLocale } from './i18n'
 import { AT_PRESETS, parseATResponse, type RawATSMSDiagnostic } from './services/at'
@@ -635,6 +635,8 @@ function eventViews(eventType: string): ViewID[] {
       return ['network', 'overview']
     case 'vowifi.updated':
       return ['vowifi']
+    case 'device_control.edl_session_changed':
+      return ['device-control']
     case 'sim.updated':
     case 'device.offline':
       return ['overview']
@@ -857,18 +859,19 @@ async function runFirmwareAction(
   method: 'direct' | 'adb' = 'direct',
 ) {
   try {
+    await ensureDeviceControlLease()
     const result =
       action === 'unlock'
         ? await api.deviceControlADBUnlock()
         : action === 'enable'
           ? await api.deviceControlADBMode(true)
-        : action === 'disable'
-          ? await api.deviceControlADBMode(false)
-          : action === 'adb-reboot'
-            ? await api.deviceControlADBReboot(serial)
-          : action === 'edl'
-            ? await api.deviceControlEDL(serial, method)
-            : await api.deviceControlReset()
+          : action === 'disable'
+            ? await api.deviceControlADBMode(false)
+            : action === 'adb-reboot'
+              ? await api.deviceControlADBReboot(serial)
+              : action === 'edl'
+                ? await api.deviceControlEDL(serial, method)
+                : await api.deviceControlReset()
     firmwareOperationID.value = result.operation_id
     notifySuccess(t('firmware.operationAccepted', { id: result.operation_id }))
   } catch (error) {
@@ -878,6 +881,7 @@ async function runFirmwareAction(
 
 async function updateFirmwareUSBID(vid: string, pid: string) {
   try {
+    await ensureDeviceControlLease()
     const result = await api.deviceControlUSBID(vid, pid)
     firmwareOperationID.value = result.operation_id
     notifySuccess(t('firmware.operationAccepted', { id: result.operation_id }))
@@ -893,6 +897,7 @@ async function backupFirmware(
   edlRunner: 'python' | 'uv',
 ) {
   try {
+    await ensureDeviceControlLease()
     await api.saveDeviceControlSettings({
       ...(firmware.value?.settings || {}),
       adb_command: firmware.value?.settings?.adb_command || firmware.value?.adb.command || '',

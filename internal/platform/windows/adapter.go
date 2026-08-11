@@ -64,6 +64,9 @@ func (a *Adapter) FindEDL(context.Context, device.Candidate) (device.Candidate, 
 func (a *Adapter) FindOriginal(context.Context, device.Candidate) (device.Candidate, error) {
 	return device.Candidate{}, unsupported.Unsupported(string(device.CapabilityFirmwareEDLSwitch), "find_original")
 }
+func (a *Adapter) ObserveEDL(context.Context, device.Candidate) (device.EDLObservation, error) {
+	return device.EDLObservation{}, unsupported.Unsupported(string(device.CapabilityEDLObservation), "observe_edl")
+}
 func (a *Adapter) ReadNAND(context.Context, device.Candidate, transport.FirehoseReadRequest) (transport.FirehoseReadResult, error) {
 	return transport.FirehoseReadResult{}, unsupported.Unsupported(string(device.CapabilityFirmwareNANDBackup), "read_nand")
 }

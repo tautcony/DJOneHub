@@ -5,7 +5,18 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/iniwex5/vohive/internal/domain/device"
+	derrors "github.com/iniwex5/vohive/internal/domain/errors"
 )
+
+func TestObserveEDLReturnsStructuredUnsupported(t *testing.T) {
+	_, err := New().ObserveEDL(context.Background(), device.Candidate{})
+	var structured *derrors.Error
+	if !errors.As(err, &structured) || structured.Code != derrors.CapabilityNotSupported {
+		t.Fatalf("ObserveEDL() error=%v", err)
+	}
+}
 
 func TestWindowsPortScorePrefersLowerCOMNumber(t *testing.T) {
 	if windowsPortScore("COM12") >= windowsPortScore("COM3") {

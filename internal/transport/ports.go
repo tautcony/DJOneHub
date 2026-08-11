@@ -21,6 +21,7 @@ type EDLPort interface {
 	EnterEDL(context.Context, device.Candidate) error
 	FindEDL(context.Context, device.Candidate) (device.Candidate, error)
 	FindOriginal(context.Context, device.Candidate) (device.Candidate, error)
+	ObserveEDL(context.Context, device.Candidate) (device.EDLObservation, error)
 }
 
 // FirehosePort runs read-only NAND and recovery reset commands for one EDL

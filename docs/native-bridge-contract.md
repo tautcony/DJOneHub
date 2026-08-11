@@ -181,9 +181,9 @@ Go 侧桥接 `internal/platform/darwin/native`：
 
 ## 设备控制边界
 
-原生桥接不执行设备控制操作。设备控制页面只调用 `/api/v1/device-control`。Go 设备控制服务持有设备资源锁，并负责 EDL 进入、NAND 读取、Firehose reset 和同位置重连。
+原生桥接不执行设备控制操作。设备控制页面只调用 `/api/v1/device-control`。Go 设备控制服务持有设备资源锁。NAND 读取成功后设备保持在 EDL。显式 Firehose reset 操作负责 reset 和同位置重连。
 
-EDL 进入和 Firehose reset 会改变设备状态。未经用户明确授权，不得使用真实设备验证这些操作。NAND 读取本身只读，但完整备份流程仍包含状态改变操作。
+EDL 进入和 Firehose reset 会改变设备状态。未经用户明确授权，不得使用真实设备验证这些操作。NAND 读取本身只读，成功后不会自动 reset。
 
 - `bridge.go`：平台无关的 `Bridge`（实现 `notification.Sink` 转发策略批准的事件、命令路由、`Send` 结果事件）。
 - `bridge_darwin.go`（darwin + cgo）：cgo 胶水与 `//export` 回调。

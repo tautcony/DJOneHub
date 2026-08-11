@@ -224,6 +224,26 @@ export interface DeviceControlStatus {
   }
   entry_methods?: string[]
   entry_method_reasons?: Record<string, string>
+  edl?: {
+    state: string
+    protocol?: string
+    source?: string
+    serial_number?: string
+    hardware_id?: string
+    pk_hash?: string
+    sbl_version?: string
+    observed_at?: string
+    reason?: string
+    recovery_required?: boolean
+  }
+  edl_session?: {
+    session_id?: string
+    observation: DeviceControlStatus['edl']
+    lease_held: boolean
+    lease_owned: boolean
+    lease_expires_at?: string
+    active_operation?: string
+  }
   settings: DeviceControlSettings
 }
 

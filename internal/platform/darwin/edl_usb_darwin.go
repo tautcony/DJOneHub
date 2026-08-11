@@ -9,7 +9,9 @@ package darwin
 import "C"
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"strings"
@@ -60,6 +62,9 @@ func (p *directEDLPort) FindEDL(ctx context.Context, original device.Candidate) 
 		return device.Candidate{}, err
 	}
 	observed := discoverEDLIdentities(ctx)
+	if strings.TrimSpace(original.Identity.PhysicalLocation) == "" {
+		return transport.MatchUniqueUSBDevice(observed, "05c6", "9008")
+	}
 	return transport.MatchPhysicalDevice(original, observed, "05c6", "9008")
 }
 
@@ -76,13 +81,85 @@ func (p *directEDLPort) FindOriginal(ctx context.Context, original device.Candid
 			Manufacturer: item.vendor, Product: item.product,
 		}})
 	}
+	if strings.EqualFold(original.Identity.VendorID, "05c6") && strings.EqualFold(original.Identity.ProductID, "9008") {
+		return transport.MatchPhysicalDeviceIdentities(original, candidates, "2ca3:4006", "2c7c:0125")
+	}
 	return transport.MatchPhysicalDevice(original, candidates, original.Identity.VendorID, original.Identity.ProductID)
+}
+
+func (p *directEDLPort) ObserveEDL(ctx context.Context, candidate device.Candidate) (device.EDLObservation, error) {
+	if !strings.EqualFold(candidate.Identity.VendorID, "05c6") || !strings.EqualFold(candidate.Identity.ProductID, "9008") {
+		return device.EDLObservation{}, derrors.New(derrors.InvalidRequest, "candidate is not a Qualcomm EDL device", false, nil)
+	}
+	identity := usbDeviceIdentity{VendorID: 0x05c6, ProductID: 0x9008, LocationID: candidate.Identity.PhysicalLocation}
+	var usbCtx *C.libusb_context
+	if rc := C.libusb_init(&usbCtx); rc != 0 {
+		return device.EDLObservation{}, fmt.Errorf("libusb init: %s", C.GoString(C.libusb_error_name(rc)))
+	}
+	defer C.libusb_exit(usbCtx)
+	handle, _, err := openUSBDevice(usbCtx, identity)
+	if err != nil {
+		return device.EDLObservation{}, err
+	}
+	defer C.libusb_close(handle)
+	endpointInfo, err := findUSBSaharaCandidate(handle)
+	if err != nil {
+		return device.EDLObservation{}, err
+	}
+	if rc := C.libusb_claim_interface(handle, C.int(endpointInfo.iface)); rc != 0 {
+		return device.EDLObservation{}, fmt.Errorf("claim Sahara interface %d: %s", endpointInfo.iface, C.GoString(C.libusb_error_name(rc)))
+	}
+	defer C.libusb_release_interface(handle, C.int(endpointInfo.iface))
+	endpoint := &usbDiagEndpoint{handle: handle, endpointIn: endpointInfo.endpointIn, endpointOut: endpointInfo.endpointOut}
+	return observeSahara(&usbSaharaEndpoint{ctx: ctx, endpoint: endpoint})
 }
 
 type usbDIAGCandidate struct {
 	iface       int
 	endpointIn  byte
 	endpointOut byte
+}
+
+type usbSaharaCandidate struct {
+	iface       int
+	endpointIn  byte
+	endpointOut byte
+}
+
+func findUSBSaharaCandidate(handle *C.libusb_device_handle) (usbSaharaCandidate, error) {
+	deviceHandle := C.libusb_get_device(handle)
+	if deviceHandle == nil {
+		return usbSaharaCandidate{}, errors.New("USB handle has no device")
+	}
+	var config *C.struct_libusb_config_descriptor
+	if rc := C.libusb_get_active_config_descriptor(deviceHandle, &config); rc != 0 {
+		return usbSaharaCandidate{}, fmt.Errorf("get USB config: %s", C.GoString(C.libusb_error_name(rc)))
+	}
+	defer C.libusb_free_config_descriptor(config)
+	interfaces := unsafe.Slice(config._interface, int(config.bNumInterfaces))
+	for _, intf := range interfaces {
+		for _, alt := range unsafe.Slice(intf.altsetting, int(intf.num_altsetting)) {
+			if int(alt.bInterfaceNumber) != 0 {
+				continue
+			}
+			var in, out byte
+			for _, endpoint := range unsafe.Slice(alt.endpoint, int(alt.bNumEndpoints)) {
+				if byte(endpoint.bmAttributes)&byte(C.LIBUSB_TRANSFER_TYPE_MASK) != byte(C.LIBUSB_TRANSFER_TYPE_BULK) {
+					continue
+				}
+				address := byte(endpoint.bEndpointAddress)
+				if address&byte(C.LIBUSB_ENDPOINT_IN) != 0 {
+					in = address
+				} else {
+					out = address
+				}
+			}
+			if in != 0 && out != 0 {
+				return usbSaharaCandidate{iface: int(alt.bInterfaceNumber), endpointIn: in, endpointOut: out}, nil
+			}
+		}
+	}
+	return usbSaharaCandidate{}, errors.New("Qualcomm EDL interface 0 has no bulk Sahara endpoints")
 }
 
 func findUSBDIAGCandidate(handle *C.libusb_device_handle, key string) (usbDIAGCandidate, error) {
@@ -132,6 +209,53 @@ type usbDiagEndpoint struct {
 	handle      *C.libusb_device_handle
 	endpointIn  byte
 	endpointOut byte
+}
+
+type usbSaharaEndpoint struct {
+	ctx      context.Context
+	endpoint *usbDiagEndpoint
+}
+
+func (u *usbSaharaEndpoint) WritePacket(packet []byte) error {
+	return u.endpoint.Write(u.ctx, packet, 2*time.Second)
+}
+
+func (u *usbSaharaEndpoint) ReadPacket() ([]byte, error) {
+	buffer := make([]byte, saharaMaxPacketSize)
+	count, err := u.endpoint.Read(u.ctx, buffer, 2*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	if count < 8 || count > len(buffer) {
+		return nil, fmt.Errorf("Sahara packet length %d is outside bounds", count)
+	}
+	if bytes.HasPrefix(bytes.TrimSpace(buffer[:count]), []byte("<?xml")) {
+		return append([]byte(nil), buffer[:count]...), nil
+	}
+	declared := binary.LittleEndian.Uint32(buffer[4:8])
+	if declared < 8 || declared > uint32(count) || declared > saharaMaxPacketSize {
+		return nil, fmt.Errorf("Sahara packet declared length %d is invalid", declared)
+	}
+	return append([]byte(nil), buffer[:declared]...), nil
+}
+
+func (u *usbSaharaEndpoint) ReadData(length int) ([]byte, error) {
+	if length <= 0 || length > saharaMaxValueSize {
+		return nil, fmt.Errorf("Sahara data length %d is outside bounds", length)
+	}
+	result := make([]byte, 0, length)
+	for len(result) < length {
+		buffer := make([]byte, length-len(result))
+		count, err := u.endpoint.Read(u.ctx, buffer, 2*time.Second)
+		if err != nil {
+			return nil, err
+		}
+		if count <= 0 || count > len(buffer) {
+			return nil, fmt.Errorf("Sahara data read length %d is invalid", count)
+		}
+		result = append(result, buffer[:count]...)
+	}
+	return result, nil
 }
 
 func (u *usbDiagEndpoint) Write(_ context.Context, payload []byte, timeout time.Duration) error {

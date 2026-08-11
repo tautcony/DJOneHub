@@ -37,6 +37,7 @@ func (a *Adapter) PlatformCapabilities(context.Context) device.CapabilitySet {
 	caps := device.CapabilitySet{device.CapabilityDeviceStatus: "DJI/Quectel USB and AT serial discovery"}
 	if _, ok := newEDLPort(); ok {
 		caps[device.CapabilityFirmwareEDLSwitch] = "verified macOS libusb DIAG frame exchange"
+		caps[device.CapabilityEDLObservation] = "bounded macOS libusb Sahara command-mode observation"
 	}
 	return caps
 }
@@ -63,6 +64,14 @@ func (a *Adapter) FindOriginal(ctx context.Context, candidate device.Candidate) 
 		return device.Candidate{}, unsupported.Unsupported(string(device.CapabilityFirmwareEDLSwitch), "find_original")
 	}
 	return port.FindOriginal(ctx, candidate)
+}
+
+func (a *Adapter) ObserveEDL(ctx context.Context, candidate device.Candidate) (device.EDLObservation, error) {
+	port, ok := newEDLPort()
+	if !ok {
+		return device.EDLObservation{}, unsupported.Unsupported(string(device.CapabilityEDLObservation), "observe_edl")
+	}
+	return port.ObserveEDL(ctx, candidate)
 }
 
 func (a *Adapter) ReadNAND(context.Context, device.Candidate, transport.FirehoseReadRequest) (transport.FirehoseReadResult, error) {

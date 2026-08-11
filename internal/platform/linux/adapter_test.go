@@ -11,7 +11,16 @@ import (
 	"testing"
 
 	"github.com/iniwex5/vohive/internal/domain/device"
+	derrors "github.com/iniwex5/vohive/internal/domain/errors"
 )
+
+func TestObserveEDLReturnsStructuredUnsupported(t *testing.T) {
+	_, err := New().ObserveEDL(context.Background(), device.Candidate{})
+	var structured *derrors.Error
+	if !errors.As(err, &structured) || structured.Code != derrors.CapabilityNotSupported {
+		t.Fatalf("ObserveEDL() error=%v", err)
+	}
+}
 
 func TestDiscoverSysfsCorrelatesATQMIAndNetworkPorts(t *testing.T) {
 	requireLinuxSysfsPathHost(t)

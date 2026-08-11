@@ -37,6 +37,56 @@ func MatchPhysicalDevice(original device.Candidate, candidates []device.Candidat
 	return matches[0], nil
 }
 
+// MatchUniqueUSBDevice selects one USB identity when no prior physical
+// location exists. It rejects ambiguity instead of guessing which device the
+// single-device runtime manages.
+func MatchUniqueUSBDevice(candidates []device.Candidate, vendorID, productID string) (device.Candidate, error) {
+	vendorID = normalizeUSBID(vendorID)
+	productID = normalizeUSBID(productID)
+	matches := make([]device.Candidate, 0, 1)
+	for _, candidate := range candidates {
+		if normalizeUSBID(candidate.Identity.VendorID) == vendorID && normalizeUSBID(candidate.Identity.ProductID) == productID {
+			matches = append(matches, candidate)
+		}
+	}
+	if len(matches) == 0 {
+		return device.Candidate{}, identityError("matching USB device was not found", true, 0)
+	}
+	if len(matches) != 1 {
+		return device.Candidate{}, identityError("multiple matching USB devices were found", false, len(matches))
+	}
+	return matches[0], nil
+}
+
+// MatchPhysicalDeviceIdentities matches one of the allow-listed USB
+// identities at the original physical location.
+func MatchPhysicalDeviceIdentities(original device.Candidate, candidates []device.Candidate, identities ...string) (device.Candidate, error) {
+	location := strings.TrimSpace(original.Identity.PhysicalLocation)
+	if location == "" {
+		return device.Candidate{}, identityError("original device has no stable physical location", false, 0)
+	}
+	allowed := make(map[string]struct{}, len(identities))
+	for _, identity := range identities {
+		allowed[strings.ToLower(strings.TrimSpace(identity))] = struct{}{}
+	}
+	matches := make([]device.Candidate, 0, 1)
+	for _, candidate := range candidates {
+		if strings.TrimSpace(candidate.Identity.PhysicalLocation) != location {
+			continue
+		}
+		if _, ok := allowed[CandidateUSBIdentity(candidate)]; ok {
+			matches = append(matches, candidate)
+		}
+	}
+	if len(matches) == 0 {
+		return device.Candidate{}, identityError("matching device was not found at the original physical location", true, 0)
+	}
+	if len(matches) != 1 {
+		return device.Candidate{}, identityError("multiple matching devices were found at the original physical location", false, len(matches))
+	}
+	return matches[0], nil
+}
+
 func normalizeUSBID(value string) string {
 	return strings.ToLower(strings.TrimPrefix(strings.TrimPrefix(strings.TrimSpace(value), "0x"), "0X"))
 }

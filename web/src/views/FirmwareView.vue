@@ -15,6 +15,7 @@ import EmptyState from '../components/EmptyState.vue'
 import Panel from '../components/Panel.vue'
 import StatusLight from '../components/StatusLight.vue'
 import type { OperationStatus } from '../types'
+import { deviceControlLeaseWebSocketProtocol, ensureDeviceControlLease } from '../services/api'
 import { confirmDanger } from '../utils/confirm'
 import { useViewContext } from './context'
 
@@ -68,10 +69,21 @@ const busy = computed(() => {
   const state = firmwareOperation.value?.state
   return state === 'pending' || state === 'running'
 })
+const controlBlocked = computed(
+  () => firmware.value?.edl_session?.lease_held === true && firmware.value?.edl_session?.lease_owned !== true,
+)
+const controlDisabled = computed(() => busy.value || controlBlocked.value)
+const edlObservation = computed(() => firmware.value?.edl)
+const edlFactsAvailable = computed(() => edlObservation.value?.state === 'sahara_identified')
 const recoveryDetail = computed(() => {
   const details = firmwareOperationSnapshot.value?.error?.details
-  if (details?.backup_valid === true && details?.reconnect_required === true)
-    return t('firmware.backupValidResetFailed')
+  if (details?.reconnect_required !== true) return ''
+  if (firmwareOperationSnapshot.value?.type === 'device_control.nand_backup') {
+    return t('firmware.backupCleanupResetFailed')
+  }
+  if (firmwareOperationSnapshot.value?.type === 'device_control.reset') {
+    return t('firmware.resetFailedReconnect')
+  }
   return ''
 })
 const modeLabel = computed(() => {
@@ -96,18 +108,18 @@ const selectedADBOnline = computed(() => selectedADBDevice.value?.online === tru
 const directEDLAvailable = computed(() => firmware.value?.entry_methods?.includes('direct') === true)
 const adbEDLAvailable = computed(() => firmware.value?.entry_methods?.includes('adb') === true)
 const directEDLReason = computed(() => firmware.value?.entry_method_reasons?.direct || '')
-const canEnterEDL = computed(() => !busy.value && directEDLAvailable.value)
+const canEnterEDL = computed(() => !controlDisabled.value && directEDLAvailable.value)
 const adbModeAction = computed<'enable' | 'disable' | undefined>(() => {
   if (!firmware.value?.adb.enabled_known) return undefined
   return firmware.value.adb.enabled ? 'disable' : 'enable'
 })
-const canToggleADB = computed(() => !busy.value && device.has('raw_at') && adbModeAction.value !== undefined)
+const canToggleADB = computed(
+  () => !controlDisabled.value && device.has('raw_at') && adbModeAction.value !== undefined,
+)
 const canShowEnterEDL = computed(
-  () => !busy.value && ['normal', 'adb'].includes(firmware.value?.mode || '') && directEDLAvailable.value,
+  () => ['normal', 'adb'].includes(firmware.value?.mode || '') && directEDLAvailable.value,
 )
-const canShowResetEDL = computed(
-  () => !busy.value && firmware.value?.mode === 'edl' && resetAvailable.value,
-)
+const canShowResetEDL = computed(() => firmware.value?.mode === 'edl' && resetAvailable.value)
 const adbConfigLabel = computed(() => {
   if (firmware.value?.adb.enabled_known) {
     return firmware.value.adb.enabled ? t('firmware.adb.enabled') : t('firmware.adb.disabled')
@@ -139,7 +151,8 @@ watch(
   (settings) => {
     if (!settings) return
     if (!edlPath.value && settings.edl_path) edlPath.value = settings.edl_path
-    if (settings.edl_runner === 'python' || settings.edl_runner === 'uv') edlRunner.value = settings.edl_runner
+    if (settings.edl_runner === 'python' || settings.edl_runner === 'uv')
+      edlRunner.value = settings.edl_runner
     if (!loaderPath.value && settings.loader_path) loaderPath.value = settings.loader_path
     if (!backupDirectory.value && settings.backup_directory) backupDirectory.value = settings.backup_directory
   },
@@ -333,16 +346,17 @@ watch(pid, (value) => {
 function makeBackupFileName(version = firmware.value?.firmware) {
   const now = new Date()
   const part = (value: number) => String(value).padStart(2, '0')
-  const safeVersion = (version || 'unknown')
-    .trim()
-    .replace(/[^A-Za-z0-9._-]+/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '') || 'unknown'
+  const safeVersion =
+    (version || 'unknown')
+      .trim()
+      .replace(/[^A-Za-z0-9._-]+/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '') || 'unknown'
   return `full-nand-${safeVersion}-${now.getFullYear()}${part(now.getMonth() + 1)}${part(now.getDate())}-${part(now.getHours())}${part(now.getMinutes())}${part(now.getSeconds())}.bin`
 }
 
 function startBackup() {
-  if (!outputPath.value || !edlAvailable.value || busy.value) return
+  if (!outputPath.value || !edlAvailable.value || controlDisabled.value) return
   void backupFirmware(outputPath.value, loaderPath.value.trim(), edlPath.value.trim(), edlRunner.value)
   backupFileName.value = makeBackupFileName()
   lastGeneratedBackupFileName = backupFileName.value
@@ -399,7 +413,7 @@ async function enterEDL() {
 }
 
 async function enterEDLFromADB() {
-  if (!adbEDLAvailable.value || !selectedADBOnline.value || busy.value) return
+  if (!adbEDLAvailable.value || !selectedADBOnline.value || controlDisabled.value) return
   const confirmed = await confirmDanger({
     title: t('firmware.mode.adbEDLConfirm'),
     confirmLabel: t('common.confirm'),
@@ -409,7 +423,7 @@ async function enterEDLFromADB() {
 }
 
 async function resetEDL() {
-  if (!resetAvailable.value || busy.value) return
+  if (!resetAvailable.value || controlDisabled.value) return
   const confirmed = await confirmDanger({
     title: t('firmware.mode.resetConfirm'),
     confirmLabel: t('common.confirm'),
@@ -429,7 +443,7 @@ async function toggleADBMode(action: 'enable' | 'disable') {
 }
 
 async function rebootADBDevice() {
-  if (busy.value || !selectedADBOnline.value) return
+  if (controlDisabled.value || !selectedADBOnline.value) return
   const confirmed = await confirmDanger({
     title: t('firmware.mode.adbRebootConfirm'),
     confirmLabel: t('common.confirm'),
@@ -448,7 +462,13 @@ async function runADBCommandAction(action?: string) {
 }
 
 async function openShell() {
-  if (!selectedADBOnline.value || busy.value) return
+  if (!selectedADBOnline.value || controlDisabled.value) return
+  try {
+    await ensureDeviceControlLease()
+  } catch {
+    await refreshFirmware()
+    return
+  }
   shellOpen.value = true
   shellConnecting.value = true
   shellConnected.value = false
@@ -469,8 +489,10 @@ async function openShell() {
     shellTerminal.focus()
   }
   const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
+  const leaseProtocol = deviceControlLeaseWebSocketProtocol()
   const socket = new WebSocket(
     `${protocol}://${window.location.host}/api/v1/device-control/actions/adb/shell/ws?serial=${encodeURIComponent(selectedADBSerial.value)}`,
+    leaseProtocol ? [leaseProtocol] : undefined,
   )
   shellSocket = socket
   socket.binaryType = 'arraybuffer'
@@ -535,7 +557,7 @@ function chooseUSBID(nextVID: string, nextPID: string) {
 }
 
 async function updateUSBID() {
-  if (!vid.value.trim() || !pid.value.trim() || busy.value) return
+  if (!vid.value.trim() || !pid.value.trim() || controlDisabled.value) return
   const nextVID = vid.value.trim().toUpperCase()
   const nextPID = pid.value.trim().toUpperCase()
   const confirmed = await confirmDanger({
@@ -587,7 +609,8 @@ onBeforeUnmount(() => {
             <dd>
               {{ firmware.firmware || t('common.empty') }}
               <small v-if="firmware.firmware_version_source" class="firmware-version-source">
-                {{ firmware.firmware_version_source }}{{ firmware.firmware_version_live === false ? ` (${t('firmware.cached')})` : '' }}
+                {{ firmware.firmware_version_source
+                }}{{ firmware.firmware_version_live === false ? ` (${t('firmware.cached')})` : '' }}
               </small>
               <small v-else-if="firmware.firmware_version_reason" class="firmware-version-source">
                 {{ firmware.firmware_version_reason }}
@@ -624,6 +647,65 @@ onBeforeUnmount(() => {
               </span>
             </a-tooltip>
           </div>
+        </div>
+        <a-alert
+          v-if="controlBlocked"
+          type="warning"
+          show-icon
+          :message="t('firmware.sessionOwnedByOther')"
+        />
+        <div v-if="firmware.mode === 'edl'" class="firmware-edl-observation">
+          <div class="firmware-subheading">{{ t('firmware.liveEDLTitle') }}</div>
+          <dl class="firmware-fields">
+            <div>
+              <dt>{{ t('firmware.saharaState') }}</dt>
+              <dd>{{ edlObservation?.state || t('common.unknown') }}</dd>
+            </div>
+            <div>
+              <dt>{{ t('firmware.protocolSource') }}</dt>
+              <dd>
+                {{ edlObservation?.protocol || t('common.unknown') }} ·
+                {{ edlObservation?.source || t('common.unknown') }}
+              </dd>
+            </div>
+            <div v-if="edlFactsAvailable">
+              <dt>{{ t('firmware.saharaSerial') }}</dt>
+              <dd class="mono">{{ edlObservation?.serial_number || t('common.empty') }}</dd>
+            </div>
+            <div v-if="edlFactsAvailable">
+              <dt>{{ t('firmware.saharaHWID') }}</dt>
+              <dd class="mono">{{ edlObservation?.hardware_id || t('common.empty') }}</dd>
+            </div>
+            <div v-if="edlFactsAvailable">
+              <dt>{{ t('firmware.saharaPKHash') }}</dt>
+              <dd class="mono">{{ edlObservation?.pk_hash || t('common.empty') }}</dd>
+            </div>
+            <div v-if="edlFactsAvailable">
+              <dt>{{ t('firmware.saharaSBL') }}</dt>
+              <dd class="mono">{{ edlObservation?.sbl_version || t('common.empty') }}</dd>
+            </div>
+            <div>
+              <dt>{{ t('firmware.observedAt') }}</dt>
+              <dd>{{ edlObservation?.observed_at || t('common.empty') }}</dd>
+            </div>
+            <div>
+              <dt>{{ t('firmware.activeOperation') }}</dt>
+              <dd>{{ firmware.edl_session?.active_operation || t('common.empty') }}</dd>
+            </div>
+          </dl>
+          <a-alert v-if="edlObservation?.reason" type="warning" show-icon :message="edlObservation.reason" />
+          <a-alert
+            v-else-if="!edlFactsAvailable && edlObservation?.state === 'detected'"
+            type="info"
+            show-icon
+            :message="t('firmware.saharaObservationPending')"
+          />
+          <a-alert
+            v-if="edlObservation?.state === 'backup_succeeded'"
+            type="success"
+            show-icon
+            :message="t('firmware.backupCompleteStillEDL')"
+          />
         </div>
       </div>
     </Panel>
@@ -686,13 +768,13 @@ onBeforeUnmount(() => {
           <div class="firmware-control-group">
             <div class="firmware-control-label">{{ t('firmware.adb.commands') }}</div>
             <div class="firmware-command-buttons">
-              <a-button :disabled="!selectedADBOnline || busy" @click="openShell">
+              <a-button :disabled="!selectedADBOnline || controlDisabled" @click="openShell">
                 <CodeOutlined />{{ t('firmware.adb.shell') }}
               </a-button>
               <a-select
                 v-model:value="selectedADBAction"
                 class="firmware-adb-command-select"
-                :disabled="!selectedADBOnline || busy"
+                :disabled="!selectedADBOnline || controlDisabled"
                 :placeholder="t('firmware.adb.selectAction')"
                 @change="runADBCommandAction"
               >
@@ -737,7 +819,9 @@ onBeforeUnmount(() => {
             <StatusLight :tone="directEDLAvailable ? 'success' : 'neutral'" />
             <div>
               <strong>{{ t('firmware.entryDirect') }}</strong>
-              <span>{{ directEDLAvailable ? t('firmware.edlAvailable') : directEDLReason || t('common.unavailable') }}</span>
+              <span>{{
+                directEDLAvailable ? t('firmware.edlAvailable') : directEDLReason || t('common.unavailable')
+              }}</span>
             </div>
           </div>
         </div>
@@ -783,6 +867,7 @@ onBeforeUnmount(() => {
             v-if="canShowEnterEDL"
             type="primary"
             class="firmware-mode-action"
+            :disabled="controlDisabled"
             @click="enterEDL"
           >
             <ThunderboltOutlined />{{ t('firmware.enterEDL') }}
@@ -791,6 +876,7 @@ onBeforeUnmount(() => {
             v-else-if="canShowResetEDL"
             type="primary"
             class="firmware-mode-action"
+            :disabled="controlDisabled"
             @click="resetEDL"
           >
             <ReloadOutlined />{{ t('firmware.resetEDL') }}
@@ -859,7 +945,7 @@ onBeforeUnmount(() => {
             type="primary"
             html-type="submit"
             :loading="busy"
-            :disabled="!edlAvailable || !backupDirectory.trim()"
+            :disabled="controlDisabled || !edlAvailable || !backupDirectory.trim()"
           >
             <CloudDownloadOutlined />{{ t('firmware.startBackup') }}
           </a-button>
@@ -896,7 +982,12 @@ onBeforeUnmount(() => {
             <a-form-item label="VID"><a-input v-model:value="vid" :disabled="busy" /></a-form-item>
             <a-form-item label="PID"><a-input v-model:value="pid" :disabled="busy" /></a-form-item>
           </div>
-          <a-button type="primary" html-type="submit" :loading="busy" :disabled="!vid.trim() || !pid.trim()">
+          <a-button
+            type="primary"
+            html-type="submit"
+            :loading="busy"
+            :disabled="controlDisabled || !vid.trim() || !pid.trim()"
+          >
             <ReloadOutlined />{{ t('firmware.updateUSBID') }}
           </a-button>
         </a-form>

@@ -2,6 +2,7 @@ package firmware
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -16,6 +17,7 @@ import (
 	"github.com/electricbubble/gadb"
 	"github.com/iniwex5/vohive/internal/application/operation"
 	"github.com/iniwex5/vohive/internal/domain/device"
+	derrors "github.com/iniwex5/vohive/internal/domain/errors"
 	"github.com/iniwex5/vohive/internal/transport"
 )
 
@@ -123,6 +125,89 @@ type resetOnlyFirehose struct {
 	read  chan struct{}
 }
 
+type successfulBackupFirehose struct {
+	reset chan struct{}
+}
+
+type failingBackupFirehose struct {
+	readErr  error
+	resetErr error
+	resets   int
+}
+
+func (f *failingBackupFirehose) ReadNAND(context.Context, device.Candidate, transport.FirehoseReadRequest) (transport.FirehoseReadResult, error) {
+	return transport.FirehoseReadResult{}, f.readErr
+}
+func (f *failingBackupFirehose) Reset(context.Context, device.Candidate) error {
+	f.resets++
+	return f.resetErr
+}
+
+type reconnectingEDLPort struct {
+	locationSeen string
+}
+
+func (p *reconnectingEDLPort) EnterEDL(context.Context, device.Candidate) error { return nil }
+func (p *reconnectingEDLPort) FindEDL(context.Context, device.Candidate) (device.Candidate, error) {
+	return device.Candidate{Identity: device.Identity{PhysicalLocation: "usb/1-2", VendorID: "05c6", ProductID: "9008"}}, nil
+}
+func (p *reconnectingEDLPort) FindOriginal(_ context.Context, original device.Candidate) (device.Candidate, error) {
+	p.locationSeen = original.Identity.PhysicalLocation
+	return device.Candidate{Identity: device.Identity{PhysicalLocation: p.locationSeen, VendorID: "2c7c", ProductID: "0125"}}, nil
+}
+func (p *reconnectingEDLPort) ObserveEDL(context.Context, device.Candidate) (device.EDLObservation, error) {
+	return device.EDLObservation{}, nil
+}
+
+type coldStartEDLPort struct{}
+
+func (coldStartEDLPort) EnterEDL(context.Context, device.Candidate) error { return nil }
+func (coldStartEDLPort) FindEDL(context.Context, device.Candidate) (device.Candidate, error) {
+	return device.Candidate{Identity: device.Identity{StableID: "edl/test", PhysicalLocation: "usb/1-2", VendorID: "05c6", ProductID: "9008"}}, nil
+}
+func (coldStartEDLPort) FindOriginal(context.Context, device.Candidate) (device.Candidate, error) {
+	return device.Candidate{}, nil
+}
+func (coldStartEDLPort) ObserveEDL(context.Context, device.Candidate) (device.EDLObservation, error) {
+	return device.EDLObservation{State: device.EDLStateSaharaIdentified, Protocol: "sahara", Source: "usb", SerialNumber: "12345678", HardwareID: "0102030405060708", PKHash: "aabbccdd", SBLVersion: "00000001"}, nil
+}
+
+func (f *successfulBackupFirehose) ReadNAND(context.Context, device.Candidate, transport.FirehoseReadRequest) (transport.FirehoseReadResult, error) {
+	return transport.FirehoseReadResult{OutputPath: "/tmp/backup.bin", Bytes: 4096, Valid: true}, nil
+}
+
+func (f *successfulBackupFirehose) Reset(context.Context, device.Candidate) error {
+	close(f.reset)
+	return nil
+}
+
+func TestSuccessfulBackupDoesNotReset(t *testing.T) {
+	firehose := &successfulBackupFirehose{reset: make(chan struct{})}
+	service := NewService(nil, nil, nil, Config{})
+	err := service.backupWithFirehose(context.Background(), firehose, "/tmp/backup.bin", "", edlInvocation{}, func(int, string) {}, nil)
+	if err != nil {
+		t.Fatalf("backupWithFirehose() error = %v", err)
+	}
+	select {
+	case <-firehose.reset:
+		t.Fatal("successful backup called Reset")
+	default:
+	}
+}
+
+func TestFailedBackupAttemptsOneCleanupReset(t *testing.T) {
+	firehose := &failingBackupFirehose{readErr: context.Canceled, resetErr: errors.New("reset failed")}
+	service := NewService(nil, nil, nil, Config{})
+	err := service.backupWithFirehose(context.Background(), firehose, "/tmp/backup.bin", "", edlInvocation{}, func(int, string) {}, nil)
+	if firehose.resets != 1 {
+		t.Fatalf("cleanup resets=%d, want 1", firehose.resets)
+	}
+	var structured *derrors.Error
+	if !errors.As(err, &structured) || structured.Code != derrors.OperationCancelled || structured.Details["reconnect_required"] != true {
+		t.Fatalf("backup error=%+v", err)
+	}
+}
+
 func (f *resetOnlyFirehose) ReadNAND(context.Context, device.Candidate, transport.FirehoseReadRequest) (transport.FirehoseReadResult, error) {
 	close(f.read)
 	return transport.FirehoseReadResult{}, nil
@@ -165,6 +250,29 @@ func TestStartResetDoesNotReadNAND(t *testing.T) {
 	t.Fatal("reset operation did not succeed")
 }
 
+func TestStartResetVerifiesSameLocationReconnectFromColdEDL(t *testing.T) {
+	port := &reconnectingEDLPort{}
+	firehose := &resetOnlyFirehose{reset: make(chan struct{}), read: make(chan struct{})}
+	ops := operation.NewManager(nil)
+	service := NewService(nil, ops, nil, Config{Firehose: firehose, EDLPort: port})
+	id, err := service.StartReset(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		status, ok := ops.Get(id)
+		if ok && status.State == operation.Succeeded {
+			if port.locationSeen != "usb/1-2" {
+				t.Fatalf("reconnect location=%q", port.locationSeen)
+			}
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("reset operation did not verify reconnect")
+}
+
 func TestStartUSBIDDoesNotRequireADBUnlockSerial(t *testing.T) {
 	service := NewService(nil, operation.NewManager(nil), nil, Config{})
 	id, err := service.StartUSBID(context.Background(), USBIDRequest{VID: "2CA3", PID: "4006"})
@@ -177,12 +285,71 @@ func TestStatusDetectsEDLWithoutATChannel(t *testing.T) {
 	service := NewService(nil, nil, nil, Config{DetectEDL: func(context.Context) (bool, error) {
 		return true, nil
 	}})
+	service.lastFirmware.Value = "cached-normal-mode-revision"
+	service.lastFirmware.Source = "AT+QGMR"
 	status, err := service.Status(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if status.Mode != "edl" || !status.Available || status.USBID != "05C6:9008" {
 		t.Fatalf("Status() = %+v, want detected EDL device", status)
+	}
+	if status.Firmware != "" || status.FirmwareVersionSource != "" {
+		t.Fatalf("EDL status exposed cached firmware: %+v", status)
+	}
+}
+
+func TestStatusObservesColdStartEDLWithoutNormalModeCache(t *testing.T) {
+	service := NewService(nil, nil, nil, Config{
+		DetectEDL: func(context.Context) (bool, error) { return true, nil },
+		EDLPort:   coldStartEDLPort{},
+	})
+	status, err := service.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.EDL == nil || status.EDL.State != device.EDLStateSaharaIdentified || status.EDL.SBLVersion != "00000001" {
+		t.Fatalf("EDL observation=%+v", status.EDL)
+	}
+	if status.EDL.ObservedAt.IsZero() {
+		t.Fatal("cold-start EDL observation has no timestamp")
+	}
+	if status.EDL.SerialNumber != "****5678" || status.EDL.HardwareID != "****0708" || status.EDL.PKHash != "****ccdd" {
+		t.Fatalf("public identifiers are not masked: %+v", status.EDL)
+	}
+	if status.Firmware != "" {
+		t.Fatalf("cold-start EDL invented firmware=%q", status.Firmware)
+	}
+}
+
+func TestDetectedEDLPlaceholderDoesNotSuppressLiveObservation(t *testing.T) {
+	service := NewService(nil, nil, nil, Config{
+		DetectEDL: func(context.Context) (bool, error) { return true, nil },
+		EDLPort:   coldStartEDLPort{},
+	})
+	service.lastNormalCandidate = device.Candidate{Identity: device.Identity{PhysicalLocation: "usb/1-2"}}
+	status, err := service.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.EDL == nil || status.EDL.State != device.EDLStateSaharaIdentified || status.EDL.SBLVersion == "" {
+		t.Fatalf("live observation was suppressed: %+v", status.EDL)
+	}
+}
+
+func TestReusableEDLObservationRequiresFreshProtocolFacts(t *testing.T) {
+	now := time.Now()
+	if reusableEDLObservation(device.EDLObservation{State: device.EDLStateDetected, ObservedAt: now}, now) {
+		t.Fatal("detected placeholder was reusable")
+	}
+	if reusableEDLObservation(device.EDLObservation{State: device.EDLStateRecoveryRequired, ObservedAt: now}, now) {
+		t.Fatal("recovery observation was reusable")
+	}
+	if reusableEDLObservation(device.EDLObservation{State: device.EDLStateSaharaIdentified, ObservedAt: now.Add(-time.Minute)}, now) {
+		t.Fatal("stale Sahara observation was reusable")
+	}
+	if !reusableEDLObservation(device.EDLObservation{State: device.EDLStateSaharaIdentified, ObservedAt: now}, now) {
+		t.Fatal("fresh Sahara observation was not reusable")
 	}
 }
 

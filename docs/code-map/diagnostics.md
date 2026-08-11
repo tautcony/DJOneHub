@@ -50,7 +50,9 @@ Use `/api/v1/runtime/diagnostics` and `/api/v1/runtime/traces` before you add ne
 | Network state is wrong | Network service and platform adapter | Network and platform tests |
 | VoWiFi is not available | VoWiFi service, backend capability, packet tunnel | `internal/vowifihost/*_test.go` |
 | A device-control action fails | Device-control service, raw AT service, platform adapter | Firmware service and ADB tests |
+| EDL facts are absent or stale | `application/firmware/service.go`, platform `ObserveEDL` | Sahara parser, correlation, and service tests |
+| A second browser gets HTTP 409 | `runtime/edl_session.go`, device-control lease handler | Session manager and device-control contract tests |
 
-Device-control EDL entry, Firehose reset, USB mode, eSIM, and raw AT actions can change device state. Use read-only API checks first. Get user authorization before you run a device-changing action. A NAND read is read-only, but EDL entry and reset still change the device state.
+Device-control EDL entry, Firehose reset, USB mode, eSIM, and raw AT actions can change device state. Use read-only API checks first. Get user authorization before you run a device-changing action. A successful NAND read leaves the device in EDL. Reset is a separate explicit action.
 
 Use `tools/analyze-nand-diff.py` for offline partition-level comparison. It reports MIBIB partitions, NAND page and erase-block differences, and UBI logical differences. EFS2 and UBI-backed `usr_data` can change because of runtime metadata and physical page movement. These changes do not prove firmware corruption.

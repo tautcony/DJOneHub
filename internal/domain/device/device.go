@@ -96,6 +96,7 @@ const (
 	CapabilityPacketTunnel       Capability = "packet_tunnel"
 	CapabilityFirmwareEDLSwitch  Capability = "firmware_edl_switch"
 	CapabilityFirmwareNANDBackup Capability = "firmware_nand_backup"
+	CapabilityEDLObservation     Capability = "edl_observation"
 )
 
 type CapabilitySet map[Capability]string

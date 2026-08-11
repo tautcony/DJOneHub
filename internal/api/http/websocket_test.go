@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/iniwex5/vohive/internal/application/firmware"
+	domain "github.com/iniwex5/vohive/internal/domain/device"
 )
 
 func dialEvents(t *testing.T, ts *httptest.Server) *websocket.Conn {
@@ -19,6 +21,43 @@ func dialEvents(t *testing.T, ts *httptest.Server) *websocket.Conn {
 	}
 	t.Cleanup(func() { _ = conn.Close() })
 	return conn
+}
+
+func TestWebSocketInitialSnapshotIncludesPublicEDLSession(t *testing.T) {
+	discovery := &fakeReadyDiscovery{candidate: domain.Candidate{Identity: domain.Identity{StableID: "ws-edl", PhysicalLocation: "usb/1-2"}}}
+	server, ops := newReadyServerWithBackend(t, discovery, &contractBackend{caps: allContractCapabilities()})
+	server.config.DeviceControl = firmware.NewService(nil, ops, server.config.Runtime, firmware.Config{})
+	_, err := server.config.Runtime.EDLSessions().Observe("usb/1-2", domain.EDLObservation{
+		State: domain.EDLStateSaharaIdentified, SerialNumber: "12345678", HardwareID: "0102030405060708",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+	server.SetLoopbackPort(ts.Listener.Addr().(*net.TCPAddr).Port)
+	conn := dialEvents(t, ts)
+	_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+	_, payload, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope struct {
+		Type string `json:"type"`
+		Data struct {
+			EDLSession *domain.EDLSessionSnapshot `json:"edl_session"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(payload, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Type != "snapshot" || envelope.Data.EDLSession == nil {
+		t.Fatalf("initial frame=%s", payload)
+	}
+	observation := envelope.Data.EDLSession.Observation
+	if envelope.Data.EDLSession.PhysicalLocation != "" || observation.SerialNumber != "****5678" || observation.HardwareID != "****0708" {
+		t.Fatalf("public EDL session=%+v", envelope.Data.EDLSession)
+	}
 }
 
 func readFrame(t *testing.T, conn *websocket.Conn, timeout time.Duration) (id uint64, eventType string) {

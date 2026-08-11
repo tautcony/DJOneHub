@@ -169,7 +169,7 @@ func newApp(r *runtime.Runtime, err error, platformAdapter transport.NetworkCont
 		firmwareConfig.DetectEDL = detector.DetectEDL
 	}
 	if edlPort, ok := platformAdapter.(transport.EDLPort); ok {
-		if capabilities, ok := platformAdapter.(transport.PlatformCapabilities); ok && capabilities.PlatformCapabilities(context.Background()).Has(domain.CapabilityFirmwareEDLSwitch) {
+		if capabilities, ok := platformAdapter.(transport.PlatformCapabilities); ok && capabilities.PlatformCapabilities(context.Background()).Has(domain.CapabilityEDLObservation) {
 			firmwareConfig.EDLPort = edlPort
 		}
 	}

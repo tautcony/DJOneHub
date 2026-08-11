@@ -82,14 +82,82 @@ type Service struct {
 	mu       sync.Mutex
 	// statusCache 是固件状态短 TTL 缓存 (design D17): 读取不重复运行
 	// AT + ADB 探测序列。
-	statusCacheMu      sync.Mutex
-	cachedStatus       *Status
-	cachedAt           time.Time
-	lastFirmware       modem.FirmwareRevision
-	lastFirmwareReason string
+	statusCacheMu       sync.Mutex
+	cachedStatus        *Status
+	cachedAt            time.Time
+	lastFirmware        modem.FirmwareRevision
+	lastFirmwareReason  string
+	lastNormalCandidate device.Candidate
+	lastEDLCandidate    device.Candidate
+}
+
+func (s *Service) sessionLocation() (string, error) {
+	if s.runtime != nil {
+		if candidate, err := s.runtime.Candidate(); err == nil && strings.TrimSpace(candidate.Identity.PhysicalLocation) != "" {
+			return candidate.Identity.PhysicalLocation, nil
+		}
+	}
+	s.statusCacheMu.Lock()
+	location := strings.TrimSpace(s.lastNormalCandidate.Identity.PhysicalLocation)
+	if location == "" {
+		location = strings.TrimSpace(s.lastEDLCandidate.Identity.PhysicalLocation)
+	}
+	s.statusCacheMu.Unlock()
+	if location == "" {
+		return "", derrors.New(derrors.DeviceOffline, "the managed device has no stable physical location", true, nil)
+	}
+	return location, nil
+}
+
+func (s *Service) AcquireControlLease() (string, device.EDLSessionSnapshot, error) {
+	if s.runtime == nil {
+		return "", device.EDLSessionSnapshot{}, derrors.New(derrors.CapabilityNotSupported, "device session control is unavailable", false, nil)
+	}
+	location, err := s.sessionLocation()
+	if err != nil {
+		return "", device.EDLSessionSnapshot{}, err
+	}
+	return s.runtime.EDLSessions().Acquire(location)
+}
+
+func (s *Service) RenewControlLease(token string) (device.EDLSessionSnapshot, error) {
+	if s.runtime == nil {
+		return device.EDLSessionSnapshot{}, derrors.New(derrors.CapabilityNotSupported, "device session control is unavailable", false, nil)
+	}
+	location, err := s.sessionLocation()
+	if err != nil {
+		return device.EDLSessionSnapshot{}, err
+	}
+	return s.runtime.EDLSessions().Renew(location, strings.TrimSpace(token))
+}
+
+func (s *Service) ReleaseControlLease(token string) error {
+	if s.runtime == nil {
+		return derrors.New(derrors.CapabilityNotSupported, "device session control is unavailable", false, nil)
+	}
+	location, err := s.sessionLocation()
+	if err != nil {
+		return err
+	}
+	return s.runtime.EDLSessions().Release(location, strings.TrimSpace(token))
+}
+
+func (s *Service) BeginControlOperation(token, operation string) (func(), error) {
+	if s.runtime == nil {
+		return nil, derrors.New(derrors.CapabilityNotSupported, "device session control is unavailable", false, nil)
+	}
+	location, err := s.sessionLocation()
+	if err != nil {
+		return nil, err
+	}
+	if err := s.runtime.EDLSessions().BeginOperation(location, strings.TrimSpace(token), operation); err != nil {
+		return nil, err
+	}
+	return func() { s.runtime.EDLSessions().EndOperation(location, strings.TrimSpace(token)) }, nil
 }
 
 const deviceControlStatusCacheTTL = 1500 * time.Millisecond
+const edlObservationReuseTTL = 5 * time.Second
 
 func NewService(at ATExecutor, ops *operation.Manager, rt *runtime.Runtime, config Config) *Service {
 	service := &Service{at: at, ops: ops, runtime: rt, config: config}
@@ -209,26 +277,28 @@ func (s *Service) SetADBCommand(ctx context.Context, command string) error {
 }
 
 type Status struct {
-	Available             bool              `json:"available"`
-	Manufacturer          string            `json:"manufacturer,omitempty"`
-	Model                 string            `json:"model,omitempty"`
-	Firmware              string            `json:"firmware,omitempty"`
-	FirmwareVersionSource string            `json:"firmware_version_source,omitempty"`
-	FirmwareVersionLive   bool              `json:"firmware_version_live,omitempty"`
-	FirmwareVersionReason string            `json:"firmware_version_reason,omitempty"`
-	ADBKeySerial          string            `json:"adb_key_serial,omitempty"`
-	USBConfig             string            `json:"usb_config,omitempty"`
-	USBConfigFields       []USBConfigField  `json:"usb_config_fields,omitempty"`
-	USBID                 string            `json:"usb_id,omitempty"`
-	USBVID                string            `json:"usb_vid,omitempty"`
-	USBPID                string            `json:"usb_pid,omitempty"`
-	Mode                  string            `json:"mode"`
-	ModeReason            string            `json:"mode_reason,omitempty"`
-	ADB                   ADBStatus         `json:"adb"`
-	Backup                BackupStatus      `json:"backup"`
-	EntryMethods          []string          `json:"entry_methods,omitempty"`
-	EntryMethodReasons    map[string]string `json:"entry_method_reasons,omitempty"`
-	Settings              Settings          `json:"settings"`
+	Available             bool                       `json:"available"`
+	Manufacturer          string                     `json:"manufacturer,omitempty"`
+	Model                 string                     `json:"model,omitempty"`
+	Firmware              string                     `json:"firmware,omitempty"`
+	FirmwareVersionSource string                     `json:"firmware_version_source,omitempty"`
+	FirmwareVersionLive   bool                       `json:"firmware_version_live,omitempty"`
+	FirmwareVersionReason string                     `json:"firmware_version_reason,omitempty"`
+	ADBKeySerial          string                     `json:"adb_key_serial,omitempty"`
+	USBConfig             string                     `json:"usb_config,omitempty"`
+	USBConfigFields       []USBConfigField           `json:"usb_config_fields,omitempty"`
+	USBID                 string                     `json:"usb_id,omitempty"`
+	USBVID                string                     `json:"usb_vid,omitempty"`
+	USBPID                string                     `json:"usb_pid,omitempty"`
+	Mode                  string                     `json:"mode"`
+	ModeReason            string                     `json:"mode_reason,omitempty"`
+	ADB                   ADBStatus                  `json:"adb"`
+	Backup                BackupStatus               `json:"backup"`
+	EntryMethods          []string                   `json:"entry_methods,omitempty"`
+	EntryMethodReasons    map[string]string          `json:"entry_method_reasons,omitempty"`
+	Settings              Settings                   `json:"settings"`
+	EDL                   *device.EDLObservation     `json:"edl,omitempty"`
+	EDLSession            *device.EDLSessionSnapshot `json:"edl_session,omitempty"`
 }
 
 type USBConfigField struct {
@@ -285,6 +355,25 @@ func (s *Service) Status(ctx context.Context) (Status, error) {
 	return status, err
 }
 
+func (s *Service) StatusForLease(ctx context.Context, token string) (Status, error) {
+	status, err := s.Status(ctx)
+	if err != nil || s.runtime == nil {
+		return status, err
+	}
+	location, locationErr := s.sessionLocation()
+	if locationErr != nil {
+		return status, nil
+	}
+	if snapshot, ok := s.runtime.EDLSessions().Snapshot(location); ok {
+		public := snapshot
+		public.PhysicalLocation = ""
+		public.Observation = device.PublicEDLObservation(public.Observation)
+		public.LeaseOwned = s.runtime.EDLSessions().Owns(location, strings.TrimSpace(token))
+		status.EDLSession = &public
+	}
+	return status, nil
+}
+
 func (s *Service) invalidateStatusCache() {
 	s.statusCacheMu.Lock()
 	s.cachedStatus = nil
@@ -316,16 +405,8 @@ func (s *Service) statusFresh(ctx context.Context) (Status, error) {
 			status.USBVID = "0x05C6"
 			status.USBPID = "0x9008"
 			status.USBID = "05C6:9008"
-			s.statusCacheMu.Lock()
-			if s.lastFirmware.Value != "" {
-				status.Firmware = s.lastFirmware.Value
-				status.FirmwareVersionSource = s.lastFirmware.Source
-				status.FirmwareVersionLive = false
-				status.FirmwareVersionReason = "cached from the last normal-mode AT probe; EDL has no live AT channel"
-			} else {
-				status.FirmwareVersionReason = "firmware revision is unavailable while the device is in EDL"
-			}
-			s.statusCacheMu.Unlock()
+			status.FirmwareVersionReason = "AT firmware revision is not available in EDL"
+			s.observeEDLStatus(ctx, &status)
 			return status, nil
 		}
 	}
@@ -362,6 +443,13 @@ func (s *Service) statusFresh(ctx context.Context) (Status, error) {
 			s.statusCacheMu.Unlock()
 		} else {
 			status.FirmwareVersionReason = "the modem returned no unambiguous QGMR or CGMR revision"
+		}
+		if s.runtime != nil {
+			if candidate, candidateErr := s.runtime.Candidate(); candidateErr == nil {
+				s.statusCacheMu.Lock()
+				s.lastNormalCandidate = candidate
+				s.statusCacheMu.Unlock()
+			}
 		}
 		status.ADBKeySerial = parseADBKeySerial(responses["adb_key"])
 		status.USBConfig = firstValue(responses["usb_config"])
@@ -414,6 +502,84 @@ func (s *Service) statusFresh(ctx context.Context) (Status, error) {
 		status.ModeReason = "ADB server is available but no online device is connected"
 	}
 	return status, nil
+}
+
+func (s *Service) observeEDLStatus(ctx context.Context, status *Status) {
+	observation := device.EDLObservation{State: device.EDLStateDetected, Protocol: "sahara", Source: "usb", ObservedAt: time.Now().UTC()}
+	s.statusCacheMu.Lock()
+	original := s.lastNormalCandidate
+	s.statusCacheMu.Unlock()
+	if s.runtime != nil {
+		if candidate, err := s.runtime.Candidate(); err == nil && original.Identity.PhysicalLocation == "" {
+			original = candidate
+		}
+		if original.Identity.PhysicalLocation != "" {
+			if snapshot, ok := s.runtime.EDLSessions().Snapshot(original.Identity.PhysicalLocation); ok && reusableEDLObservation(snapshot.Observation, time.Now()) {
+				public := device.PublicEDLObservation(snapshot.Observation)
+				status.EDL = &public
+				publicSnapshot := snapshot
+				publicSnapshot.PhysicalLocation = ""
+				publicSnapshot.Observation = public
+				status.EDLSession = &publicSnapshot
+				return
+			}
+		}
+	}
+	if s.config.EDLPort != nil {
+		probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		defer cancel()
+		if edlCandidate, err := s.config.EDLPort.FindEDL(probeCtx, original); err == nil {
+			if original.Identity.PhysicalLocation == "" {
+				original = edlCandidate
+			}
+			s.statusCacheMu.Lock()
+			s.lastEDLCandidate = edlCandidate
+			s.statusCacheMu.Unlock()
+			if s.runtime != nil {
+				_, _ = s.runtime.EDLSessions().Correlate(original, edlCandidate)
+			}
+			observed, observeErr := s.config.EDLPort.ObserveEDL(probeCtx, edlCandidate)
+			if observed.State != "" {
+				observation = observed
+			}
+			if observeErr != nil {
+				observation.State = device.EDLStateRecoveryRequired
+				observation.RecoveryNeeded = true
+				if observation.Reason == "" {
+					observation.Reason = "Sahara observation failed"
+				}
+			}
+		} else {
+			observation.Reason = "matching EDL device could not be correlated"
+			observation.State = device.EDLStateRecoveryRequired
+			observation.RecoveryNeeded = true
+		}
+	}
+	if observation.ObservedAt.IsZero() {
+		observation.ObservedAt = time.Now().UTC()
+	}
+	if s.runtime != nil && original.Identity.PhysicalLocation != "" {
+		if snapshot, err := s.runtime.EDLSessions().Observe(original.Identity.PhysicalLocation, observation); err == nil {
+			publicSnapshot := snapshot
+			publicSnapshot.PhysicalLocation = ""
+			publicSnapshot.Observation = device.PublicEDLObservation(snapshot.Observation)
+			status.EDLSession = &publicSnapshot
+		}
+	}
+	public := device.PublicEDLObservation(observation)
+	status.EDL = &public
+}
+
+func reusableEDLObservation(observation device.EDLObservation, now time.Time) bool {
+	if observation.ObservedAt.IsZero() || now.Sub(observation.ObservedAt) < 0 || now.Sub(observation.ObservedAt) > edlObservationReuseTTL {
+		return false
+	}
+	switch observation.State {
+	case device.EDLStateSaharaIdentified, device.EDLStateFirehoseReady:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Service) StartUnlock(ctx context.Context) (string, error) {
@@ -536,6 +702,9 @@ func (s *Service) StartEnterEDLWithMethod(ctx context.Context, method, serial st
 				return err
 			}
 		}
+		if s.runtime != nil && original.Identity.PhysicalLocation != "" {
+			s.runtime.EDLSessions().ClearObservation(original.Identity.PhysicalLocation)
+		}
 		if method == "adb" {
 			adbDevice, selectErr := s.selectOnlineADBDevice(strings.TrimSpace(serial))
 			if selectErr != nil {
@@ -558,7 +727,11 @@ func (s *Service) StartEnterEDLWithMethod(ctx context.Context, method, serial st
 				if ctx.Err() != nil {
 					return ctx.Err()
 				}
-				if _, findErr := s.config.EDLPort.FindEDL(ctx, original); findErr == nil {
+				if edlCandidate, findErr := s.config.EDLPort.FindEDL(ctx, original); findErr == nil {
+					if s.runtime != nil {
+						_, _ = s.runtime.EDLSessions().Correlate(original, edlCandidate)
+						_, _ = s.runtime.EDLSessions().Observe(original.Identity.PhysicalLocation, device.EDLObservation{State: device.EDLStateDetected, Protocol: "sahara", Source: "usb"})
+					}
 					report(100, "complete: EDL device matched at the original location")
 					return nil
 				}
@@ -567,6 +740,9 @@ func (s *Service) StartEnterEDLWithMethod(ctx context.Context, method, serial st
 					return ctx.Err()
 				case <-time.After(250 * time.Millisecond):
 				}
+			}
+			if s.runtime != nil {
+				s.runtime.EDLSessions().MarkRecoveryRequired(original.Identity.PhysicalLocation, "matching EDL device did not re-enumerate")
 			}
 			return derrors.New(derrors.DeviceOffline, "matching EDL device did not re-enumerate", true, map[string]any{"phase": "await_edl"})
 		}
@@ -712,6 +888,9 @@ func (s *Service) StartReset(ctx context.Context) (string, error) {
 			if err != nil {
 				return derrors.New(derrors.DeviceOffline, "matching EDL device was not found", true, map[string]any{"phase": "await_edl"})
 			}
+			if original.Identity.PhysicalLocation == "" {
+				original = edlCandidate
+			}
 		}
 
 		firehose := s.config.Firehose
@@ -724,7 +903,9 @@ func (s *Service) StartReset(ctx context.Context) (string, error) {
 			}
 		}
 		report(45, "reset: requesting normal USB mode through Firehose")
+		s.recordEDLState(original, device.EDLStateResetRequested, "reset requested", false)
 		if resetErr := firehose.Reset(ctx, edlCandidate); resetErr != nil {
+			s.recordEDLState(original, device.EDLStateRecoveryRequired, "Firehose reset failed", true)
 			return derrors.New(derrors.TransportUnavailable, "Firehose reset failed", true, map[string]any{"phase": "reset", "reconnect_required": true, "cause": resetErr.Error()})
 		}
 		if s.config.EDLPort == nil || original.Identity.PhysicalLocation == "" {
@@ -732,9 +913,13 @@ func (s *Service) StartReset(ctx context.Context) (string, error) {
 			return nil
 		}
 		report(70, "await_boot: waiting for the original device to reconnect")
+		s.recordEDLState(original, device.EDLStateReconnecting, "waiting for normal USB mode", false)
 		deadline := time.Now().Add(20 * time.Second)
 		for time.Now().Before(deadline) {
 			if _, findErr := s.config.EDLPort.FindOriginal(ctx, original); findErr == nil {
+				if s.runtime != nil {
+					s.runtime.EDLSessions().ClearObservation(original.Identity.PhysicalLocation)
+				}
 				report(100, "complete: normal USB mode restored")
 				return nil
 			}
@@ -744,6 +929,7 @@ func (s *Service) StartReset(ctx context.Context) (string, error) {
 			case <-time.After(250 * time.Millisecond):
 			}
 		}
+		s.recordEDLState(original, device.EDLStateRecoveryRequired, "normal USB reconnect timed out", true)
 		return derrors.New(derrors.DeviceOffline, "the original device did not reconnect after reset", true, map[string]any{"phase": "await_boot", "reconnect_required": true})
 	})
 }
@@ -757,9 +943,10 @@ func (s *Service) backupWithFirehose(ctx context.Context, firehose transport.Fir
 	original := device.Candidate{}
 	if s.runtime != nil {
 		original, err = s.runtime.Candidate()
-		if err != nil {
+		if err != nil && s.config.EDLPort == nil {
 			return err
 		}
+		err = nil
 	}
 	edlCandidate := original
 	if s.config.EDLPort != nil {
@@ -780,8 +967,16 @@ func (s *Service) backupWithFirehose(ctx context.Context, firehose transport.Fir
 			}
 		}
 		if err != nil {
+			s.recordEDLState(original, device.EDLStateRecoveryRequired, "matching EDL device was not found", true)
 			return derrors.New(derrors.DeviceOffline, "matching EDL device was not found", true, map[string]any{"phase": "await_edl"})
 		}
+		if original.Identity.PhysicalLocation == "" {
+			original = edlCandidate
+			s.statusCacheMu.Lock()
+			s.lastEDLCandidate = edlCandidate
+			s.statusCacheMu.Unlock()
+		}
+		s.recordEDLState(original, device.EDLStateNANDReading, "NAND read in progress", false)
 	}
 	if commandFirehose, ok := firehose.(*CommandFirehose); ok {
 		configured := *commandFirehose
@@ -794,36 +989,35 @@ func (s *Service) backupWithFirehose(ctx context.Context, firehose transport.Fir
 	if readErr != nil {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		_ = firehose.Reset(cleanupCtx, edlCandidate)
-		return derrors.New(derrors.TransportUnavailable, "NAND read failed", true, map[string]any{"phase": "read_nand", "backup_valid": false, "reconnect_required": true})
+		cleanupErr := firehose.Reset(cleanupCtx, edlCandidate)
+		recoveryRequired := cleanupErr != nil
+		state := device.EDLStateResetRequested
+		reason := "cleanup reset requested after NAND read failure"
+		if recoveryRequired {
+			state = device.EDLStateRecoveryRequired
+			reason = "NAND read and cleanup reset failed"
+		}
+		s.recordEDLState(original, state, reason, recoveryRequired)
+		code := derrors.TransportUnavailable
+		message := "NAND read failed"
+		if errors.Is(readErr, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
+			code = derrors.OperationCancelled
+			message = "NAND read was cancelled"
+		} else if errors.Is(readErr, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			code = derrors.OperationTimeout
+			message = "NAND read timed out"
+		}
+		return derrors.New(code, message, true, map[string]any{"phase": "read_nand", "backup_valid": false, "reconnect_required": recoveryRequired})
 	}
 	if !result.Valid || result.Bytes == 0 {
+		s.recordEDLState(original, device.EDLStateRecoveryRequired, "NAND image validation failed", true)
 		return derrors.New(derrors.InvalidRequest, "NAND read did not produce a valid image", false, map[string]any{"phase": "read_nand", "backup_valid": false})
 	}
-	report(100, "reset: resetting the module through Firehose")
-	if resetErr := firehose.Reset(ctx, edlCandidate); resetErr != nil {
-		return derrors.New(derrors.TransportUnavailable, "Firehose reset failed after a valid NAND read", true, map[string]any{"phase": "reset", "backup_valid": true, "reconnect_required": true, "cause": resetErr.Error()})
-	}
-	if s.config.EDLPort != nil {
-		report(100, "await_boot: waiting for the original device to reconnect")
-		deadline := time.Now().Add(20 * time.Second)
-		for time.Now().Before(deadline) {
-			if _, findErr := s.config.EDLPort.FindOriginal(ctx, original); findErr == nil {
-				report(100, "complete: NAND backup and reconnect completed")
-				return nil
-			}
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(250 * time.Millisecond):
-			}
-		}
-		return derrors.New(derrors.DeviceOffline, "the original device did not reconnect after reset", true, map[string]any{"phase": "await_boot", "backup_valid": true, "reconnect_required": true})
-	}
+	s.recordEDLState(original, device.EDLStateBackupSucceeded, "valid NAND backup completed; device remains in EDL", false)
 	if logOutput != nil {
-		logOutput("NAND backup and Firehose reset completed\n")
+		logOutput("NAND backup completed; the device remains in EDL\n")
 	}
-	report(100, "complete: NAND backup and reset completed")
+	report(100, "complete: NAND backup completed; device remains in EDL")
 	return nil
 }
 
@@ -840,7 +1034,6 @@ func firehoseOutputReporter(report func(int, string), logOutput func(string)) fu
 		if logOutput != nil {
 			logOutput(raw)
 		}
-
 		// Process writes may split a percentage or an ANSI sequence. Keep only a
 		// short diagnostic tail for parsing; the raw chunks above remain unchanged.
 		progressBuffer += raw
@@ -875,6 +1068,15 @@ func firehoseOutputReporter(report func(int, string), logOutput func(string)) fu
 			report(progress, message)
 		}
 	}
+}
+
+func (s *Service) recordEDLState(candidate device.Candidate, state device.EDLState, reason string, recovery bool) {
+	if s.runtime == nil || strings.TrimSpace(candidate.Identity.PhysicalLocation) == "" {
+		return
+	}
+	_, _ = s.runtime.EDLSessions().Observe(candidate.Identity.PhysicalLocation, device.EDLObservation{
+		State: state, Protocol: "sahara", Source: "device_control", Reason: reason, RecoveryNeeded: recovery,
+	})
 }
 
 // SelectBackupDirectory opens the platform directory picker when available.
