@@ -68,6 +68,7 @@ export const useEsimStore = defineStore('esim', () => {
   const confirmationBusy = ref(false)
   let overviewLoadedAt = 0
   let notificationsLoadedAt = 0
+  let notificationsInFlight: Promise<void> | undefined
 
   const operation = computed<OperationStatus | undefined>(() => {
     if (!operationID.value) return undefined
@@ -182,7 +183,8 @@ export const useEsimStore = defineStore('esim', () => {
   }
 
   async function refreshSnapshots(): Promise<void> {
-    await Promise.allSettled([load(true), loadNotifications(true)])
+    await load(true)
+    if (activeWorkspace.value === 'notifications') await loadNotifications(true)
   }
 
   function openDownload() {
@@ -252,35 +254,43 @@ export const useEsimStore = defineStore('esim', () => {
   }
 
   async function loadNotifications(force = false): Promise<void> {
+    if (notificationsInFlight) return notificationsInFlight
     if (!force && notificationsLoadedAt > 0 && Date.now() - notificationsLoadedAt < snapshotCacheTTL) return
-    notificationsLoading.value = true
-    notificationsError.value = ''
+    notificationsInFlight = (async () => {
+      notificationsLoading.value = true
+      notificationsError.value = ''
+      try {
+        const [pendingResult, historyResult] = await Promise.allSettled([
+          api.esimNotifications(),
+          api.esimNotificationHistory(),
+        ])
+        const errors: string[] = []
+        if (pendingResult.status === 'fulfilled') {
+          notifications.value = Array.isArray(pendingResult.value.notifications)
+            ? pendingResult.value.notifications
+            : []
+        } else {
+          errors.push('pending')
+        }
+        if (historyResult.status === 'fulfilled') {
+          notificationHistory.value = Array.isArray(historyResult.value.history)
+            ? historyResult.value.history
+            : []
+        } else {
+          errors.push('history')
+        }
+        if (errors.length) notificationsError.value = 'esim.notificationsPartialError'
+        notificationsLoadedAt = Date.now()
+      } catch {
+        notificationsError.value = 'esim.unableNotifications'
+      } finally {
+        notificationsLoading.value = false
+      }
+    })()
     try {
-      const [pendingResult, historyResult] = await Promise.allSettled([
-        api.esimNotifications(),
-        api.esimNotificationHistory(),
-      ])
-      const errors: string[] = []
-      if (pendingResult.status === 'fulfilled') {
-        notifications.value = Array.isArray(pendingResult.value.notifications)
-          ? pendingResult.value.notifications
-          : []
-      } else {
-        errors.push('pending')
-      }
-      if (historyResult.status === 'fulfilled') {
-        notificationHistory.value = Array.isArray(historyResult.value.history)
-          ? historyResult.value.history
-          : []
-      } else {
-        errors.push('history')
-      }
-      if (errors.length) notificationsError.value = 'esim.notificationsPartialError'
-      notificationsLoadedAt = Date.now()
-    } catch {
-      notificationsError.value = 'esim.unableNotifications'
+      await notificationsInFlight
     } finally {
-      notificationsLoading.value = false
+      notificationsInFlight = undefined
     }
   }
 
@@ -384,6 +394,10 @@ export const useEsimStore = defineStore('esim', () => {
   watch(operation, (next) => {
     if (!next || !['succeeded', 'failed', 'cancelled'].includes(next.state)) return
     downloadPhase.value = next.type === 'esim.download' ? 'terminal' : downloadPhase.value
+  })
+
+  watch(activeWorkspace, (workspace) => {
+    if (workspace === 'notifications') void loadNotifications()
   })
 
   return {

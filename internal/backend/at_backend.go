@@ -306,10 +306,10 @@ func (a *ATBackend) GetServingSystem(ctx context.Context) (*ServingSystem, error
 	return ss, nil
 }
 
-// Status implements NetworkPort for serial and injected AT transports. It sends
-// AT+QCFG="usbnet"? and then calls GetServingSystem and GetSignalInfo, which
-// add registration/operator/radio commands plus AT+CSQ and
-// AT+QENG="servingcell".
+// Status implements the AT-specific NetworkPort projection. It sends only
+// AT+QCFG="usbnet"? to read the USB network mode. The application network
+// service merges registration and signal fields from the cached device Radio
+// snapshot, so this method does not repeat the radio AT command set.
 func (a *ATBackend) Status(ctx context.Context) (map[string]any, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -318,19 +318,7 @@ func (a *ATBackend) Status(ctx context.Context) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	result := map[string]any{"mode": strconv.Itoa(mode)}
-	if radio, radioErr := a.GetServingSystem(ctx); radioErr == nil {
-		result["network_mode"] = radio.NetworkMode
-		result["radio_band"] = radio.RadioBand
-		result["registered"] = radio.RegStatus == 1 || radio.RegStatus == 5
-	}
-	if signal, signalErr := a.GetSignalInfo(ctx); signalErr == nil {
-		result["signal_dbm"] = signal.RSSI
-		result["signal_rsrp"] = signal.RSRP
-		result["signal_rsrq"] = signal.RSRQ
-		result["signal_sinr"] = signal.SINR
-	}
-	return result, nil
+	return map[string]any{"mode": strconv.Itoa(mode)}, nil
 }
 
 func (a *ATBackend) SetMode(ctx context.Context, mode string) error {

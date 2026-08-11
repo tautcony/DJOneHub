@@ -72,3 +72,41 @@ func TestEsimOverviewReadCancellationStopsMidScan(t *testing.T) {
 		t.Fatal("cancelled overview scan did not stop promptly")
 	}
 }
+
+func TestCancelledDiscoveredAIDReadKeepsValidatedTarget(t *testing.T) {
+	mgr := newManagerWithChannelFactory("dev-cancel-discovered", func([]byte) (*lpa.Client, error) {
+		t.Fatal("cancelled scan must stop before opening a channel")
+		return nil, nil
+	}, nil, nil, nil)
+	mgr.SeedDiscoveredEUICCs([]EUICCInfo{buildDiscoveredEUICCInfo(AIDs[2], fixtureEID)})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := mgr.forEachEUICC(ctx, func(*lpa.Client, []byte, string) error { return nil })
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("forEachEUICC() error=%v want context.Canceled", err)
+	}
+	plan := mgr.getEffectiveAIDPlan()
+	if plan.Policy != aidScanPolicyDiscovered || len(plan.AIDs) != 1 {
+		t.Fatalf("plan after cancellation=%q AIDs=%v", plan.Policy, aidHexList(plan.AIDs))
+	}
+}
+
+func TestCancelledNotificationReadKeepsValidatedTarget(t *testing.T) {
+	mgr := newManagerWithChannelFactory("dev-cancel-notification", func([]byte) (*lpa.Client, error) {
+		t.Fatal("cancelled notification read must stop before opening a channel")
+		return nil, nil
+	}, nil, nil, nil)
+	mgr.SeedDiscoveredEUICCs([]EUICCInfo{buildDiscoveredEUICCInfo(AIDs[2], fixtureEID)})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := mgr.listNotificationsForCurrentCard(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("listNotificationsForCurrentCard() error=%v want context.Canceled", err)
+	}
+	plan := mgr.getEffectiveAIDPlan()
+	if plan.Policy != aidScanPolicyDiscovered || len(plan.AIDs) != 1 {
+		t.Fatalf("plan after cancellation=%q AIDs=%v", plan.Policy, aidHexList(plan.AIDs))
+	}
+}

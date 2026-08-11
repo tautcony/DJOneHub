@@ -193,10 +193,10 @@ func (s *Service) publishTraffic(ctx context.Context) {
 	s.ops.Publish(EventTrafficUpdated, event)
 }
 
-// currentICCID resolves the SIM used as the traffic-record key. On the AT
-// path it calls BusinessAdapter.SIM, so a cold SIM/eSIM state may send
-// AT+QSIMSTAT?/AT+CPIN?, AT+CIMI, AT+QCCID, and the eSIM AT+CSIM plus
-// AT+CCHO/AT+CGLA/AT+CCHC scan. It falls back to Identity when ICCID is empty.
+// currentICCID resolves the SIM used as the traffic-record key from the device
+// snapshots. A cold AT SIM snapshot can send AT+QSIMSTAT?/AT+CPIN?, AT+CIMI,
+// and AT+QCCID. The identity fallback can send AT+CGSN, AT+CIMI, AT+QCCID,
+// AT+CNUM, and AT+QGMR/AT+CGMR. It never performs eSIM EID discovery.
 func (s *Service) currentICCID(ctx context.Context) (string, error) {
 	s.mu.Lock()
 	if s.iccid != "" && time.Since(s.iccidChecked) < 15*time.Second {
@@ -206,21 +206,13 @@ func (s *Service) currentICCID(ctx context.Context) (string, error) {
 	}
 	s.mu.Unlock()
 
-	b, err := s.devices.RequireCapability(domain.CapabilityNetworkStatus, "network_traffic_iccid")
-	if err != nil {
-		return "", err
-	}
-	sim, err := b.SIM(ctx)
-	if err != nil {
-		return "", err
-	}
-	iccid := strings.TrimSpace(sim.ICCID)
+	iccid := strings.TrimSpace(s.devices.CurrentICCID(ctx))
 	if iccid == "" {
-		identity, identityErr := b.Identity(ctx)
-		if identityErr != nil {
-			return "", identityErr
+		status, err := s.devices.Status(ctx)
+		if err != nil {
+			return "", err
 		}
-		iccid = strings.TrimSpace(identity.ICCID)
+		iccid = strings.TrimSpace(status.Identity.ICCID)
 	}
 	s.mu.Lock()
 	s.iccid, s.iccidChecked = iccid, time.Now()
@@ -358,11 +350,10 @@ func (s *Service) publishRadioState(ctx context.Context) {
 	}
 }
 
-// Status reads modem network state and then merges host interface state. For
-// an AT backend the modem portion sends AT+QCFG="usbnet"?, the registration
-// and operator commands, AT+QNWINFO, AT+CSQ, and
-// AT+QENG="servingcell". Missing mode or band fields can cause a second Radio
-// query before the host network controller is consulted.
+// Status reads backend network mode and merges the cached device radio and
+// host interface states. The AT network port sends AT+QCFG="usbnet"?. A cold
+// device radio snapshot can additionally send AT+CEREG?/AT+CGREG?/AT+CREG?,
+// AT+COPS?, AT+QNWINFO, AT+CSQ, and AT+QENG="servingcell".
 func (s *Service) Status(ctx context.Context) (transport.NetworkStatus, error) {
 	b, err := s.devices.RequireCapability(domain.CapabilityNetworkStatus, "network_status")
 	if err != nil {
@@ -379,7 +370,8 @@ func (s *Service) Status(ctx context.Context) (transport.NetworkStatus, error) {
 		hasBackendStatus = true
 	}
 	if status.NetworkMode == "" || status.RadioBand == "" {
-		if radio, radioErr := b.Radio(ctx); radioErr == nil {
+		if deviceStatus, statusErr := s.devices.Status(ctx); statusErr == nil {
+			radio := deviceStatus.Radio
 			if status.NetworkMode == "" {
 				status.NetworkMode = radio.NetworkMode
 			}

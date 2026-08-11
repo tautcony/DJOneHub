@@ -97,10 +97,11 @@ func sanitizeEvent(value runtime.Event) runtime.Event {
 	return value
 }
 
-// sanitizeDeviceStatus 投影 REST device.Status: 嵌套 snapshot 走同一净化,
-// identity/radio/sim 保持公开 (身份字段由 web Overview 客户端侧掩码渲染)。
+// sanitizeDeviceStatus projects the general device status surface. EID is
+// intentionally omitted here; the eSIM overview is the only EID surface.
 func sanitizeDeviceStatus(value device.Status) device.Status {
 	value.Snapshot = sanitizeSnapshot(value.Snapshot)
+	value.SIM.EID = ""
 	return value
 }
 

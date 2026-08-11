@@ -34,6 +34,7 @@ type rxMsg struct {
 // commandRequest AT 命令请求结构
 type commandRequest struct {
 	cmd             string
+	enqueuedAt      time.Time
 	respChan        chan string
 	errChan         chan error
 	timeout         time.Duration
@@ -45,6 +46,78 @@ type commandRequest struct {
 	interactive bool   // 是否为交互式命令 (如发送短信)
 	waitPrompt  bool   // 是否等待 "> " 提示符
 	followUp    string // 后续指令 (当 waitPrompt=true 且收到提示符时发送)
+}
+
+type atCommandDiagnostic struct {
+	CommandClass   string `json:"command_class"`
+	QueueWaitMS    int64  `json:"queue_wait_ms"`
+	ExecMS         int64  `json:"exec_ms"`
+	TerminalResult string `json:"terminal_result"`
+	TimeoutClass   string `json:"timeout_class"`
+}
+
+func safeATCommandClass(command string) string {
+	command = strings.ToUpper(strings.TrimSpace(command))
+	switch {
+	case command == "ATA", command == "ATH", strings.HasPrefix(command, "ATD"):
+		return "call"
+	case command == "AT":
+		return "basic"
+	case !strings.HasPrefix(command, "AT+"):
+		return "other"
+	}
+	name := strings.TrimPrefix(command, "AT+")
+	if index := strings.IndexFunc(name, func(r rune) bool {
+		return (r < 'A' || r > 'Z') && (r < '0' || r > '9')
+	}); index >= 0 {
+		name = name[:index]
+	}
+	switch name {
+	case "CSIM", "CCHO", "CGLA", "CCHC":
+		return "apdu"
+	case "CGSN", "CIMI", "QCCID", "CNUM", "QGMR", "CGMR":
+		return "identity"
+	case "CEREG", "CGREG", "CREG", "COPS", "QNWINFO", "CSQ", "QENG":
+		return "radio"
+	case "QSIMSTAT", "CPIN":
+		return "sim"
+	case "CMGS", "CMGF", "CMGL", "CMGR", "CMGD", "CPMS":
+		return "sms"
+	case "QCFG":
+		return "configuration"
+	default:
+		return "other"
+	}
+}
+
+func commandDiagnostic(req commandRequest, started time.Time, terminalResult, timeoutClass string) atCommandDiagnostic {
+	queueWait := time.Duration(0)
+	if !req.enqueuedAt.IsZero() && started.After(req.enqueuedAt) {
+		queueWait = started.Sub(req.enqueuedAt)
+	}
+	execTime := time.Since(started)
+	if execTime < 0 {
+		execTime = 0
+	}
+	return atCommandDiagnostic{
+		CommandClass: safeATCommandClass(req.cmd), QueueWaitMS: queueWait.Milliseconds(),
+		ExecMS: execTime.Milliseconds(), TerminalResult: terminalResult, TimeoutClass: timeoutClass,
+	}
+}
+
+func (m *Manager) logATCommandDiagnostic(value atCommandDiagnostic) {
+	fields := []any{
+		"command_class", value.CommandClass,
+		"queue_wait_ms", value.QueueWaitMS,
+		"exec_ms", value.ExecMS,
+		"terminal_result", value.TerminalResult,
+		"timeout_class", value.TimeoutClass,
+	}
+	if value.TerminalResult == "ok" || value.TerminalResult == "prompt" {
+		logger.Info(fmt.Sprintf("[%s] AT 命令完成", m.cfg.ID), fields...)
+		return
+	}
+	logger.Warn(fmt.Sprintf("[%s] AT 命令完成", m.cfg.ID), fields...)
 }
 
 // Manager 管理单个 EC20 模块的 AT 指令通信
@@ -413,12 +486,12 @@ func (m *Manager) recordATTimeout(req commandRequest) (int, bool) {
 	return m.atTimeoutStreak, m.atTimeoutStreak >= m.atTimeoutWatchdogThreshold
 }
 
-func (m *Manager) tripATTimeoutWatchdog(cmd string, failures int) {
+func (m *Manager) tripATTimeoutWatchdog(commandClass string, failures int) {
 	if !m.isRunning() {
 		return
 	}
 	logger.Warn(fmt.Sprintf("[%s] AT 连续超时达到阈值，触发控制面恢复", m.cfg.ID),
-		"cmd", cmd,
+		"command_class", commandClass,
 		"port", m.atPort,
 		"failures", failures,
 		"threshold", m.atTimeoutWatchdogThreshold)
@@ -529,7 +602,7 @@ func isFatalSerialRuntimeErr(err error) bool {
 		strings.Contains(msg, "libusb_error_pipe")
 }
 
-func (m *Manager) handleFatalSerialRuntimeErr(err error, phase string, cmd string) {
+func (m *Manager) handleFatalSerialRuntimeErr(err error, phase string, commandClass string) {
 	if !isFatalSerialRuntimeErr(err) {
 		return
 	}
@@ -537,7 +610,7 @@ func (m *Manager) handleFatalSerialRuntimeErr(err error, phase string, cmd strin
 		return
 	}
 	logger.Warn(fmt.Sprintf("[%s] AT 串口运行期失效，触发恢复", m.cfg.ID),
-		"phase", phase, "cmd", cmd, "port", m.atPort, "err", err)
+		"phase", phase, "command_class", commandClass, "port", m.atPort, "err", err)
 	m.healthy = false
 	m.Stop()
 	m.notifyDisconnect("serial_runtime_error")
@@ -625,11 +698,17 @@ func (m *Manager) runLoop() {
 // handleCommand 处理单个 AT 命令
 func (m *Manager) handleCommand(req commandRequest) {
 	startTime := time.Now()
+	terminalResult := "unknown"
+	timeoutClass := "none"
+	defer func() {
+		m.logATCommandDiagnostic(commandDiagnostic(req, startTime, terminalResult, timeoutClass))
+	}()
 
 	// 发送命令
 	if _, err := m.port.Write([]byte(req.cmd + "\r\n")); err != nil {
+		terminalResult = "write_error"
 		req.errChan <- err
-		m.handleFatalSerialRuntimeErr(err, "write", req.cmd)
+		m.handleFatalSerialRuntimeErr(err, "write", safeATCommandClass(req.cmd))
 		return
 	}
 
@@ -642,54 +721,47 @@ RespLoop:
 	for {
 		select {
 		case <-m.stop:
+			terminalResult = "stopped"
 			req.errChan <- errors.New("manager stopped")
 			return
 		case <-timeoutTimer.C:
+			terminalResult = "timeout"
+			timeoutClass = "execution"
 			// 超时：先尽力排空已排队的数据（URC 照常分发），随后将命令流隔离，
 			// 直到本命令的终结响应（OK/ERROR）被观测到，或传输恢复期限触发
 			// 关闭/重连。迟到的 OK 或残余数据因此永远不会被下一个命令消费。
 			m.drainResidualLines()
 			// 超时时尝试发送 ESC (0x1B) 以取消可能的挂起操作（如短信输入）
 			m.port.Write([]byte{0x1B})
-			logger.Warn(fmt.Sprintf("[%s] 命令执行超时，已发送 ESC 尝试恢复", m.cfg.ID), "port", m.atPort, "cmd", req.cmd, "cost", time.Since(startTime).String())
 			req.errChan <- errors.New("命令执行超时")
 			if failures, tripped := m.recordATTimeout(req); tripped {
-				m.tripATTimeoutWatchdog(req.cmd, failures)
+				m.tripATTimeoutWatchdog(safeATCommandClass(req.cmd), failures)
 			}
 			m.enterQuarantine()
 			return
 
 		case msg := <-m.rxChan:
 			if msg.Err != nil {
+				terminalResult = "read_error"
 				req.errChan <- msg.Err
-				m.handleFatalSerialRuntimeErr(msg.Err, "read", req.cmd)
+				m.handleFatalSerialRuntimeErr(msg.Err, "read", safeATCommandClass(req.cmd))
 				return
 			}
 
 			line := msg.Data
 
 			if line == "OK" {
+				terminalResult = "ok"
 				m.resetATTimeoutWatchdog()
 				if req.includeTerminal {
 					fullResponse = append(fullResponse, line)
 				}
-				if !req.silent {
-					logger.Debug(fmt.Sprintf("[%s] AT 执行成功", m.cfg.ID),
-						"cmd", req.cmd,
-						"resp", strings.Join(fullResponse, " | "),
-						"cost", time.Since(startTime).Truncate(time.Millisecond).String())
-				}
 				req.respChan <- strings.Join(fullResponse, "\n")
 				break RespLoop
 			} else if strings.Contains(line, "ERROR") {
+				terminalResult = "device_error"
 				m.resetATTimeoutWatchdog()
 				fullResponse = append(fullResponse, line)
-				if !req.silent {
-					logger.Warn(fmt.Sprintf("[%s] AT 执行失败", m.cfg.ID),
-						"cmd", req.cmd,
-						"resp", strings.Join(fullResponse, " | "),
-						"cost", time.Since(startTime).Truncate(time.Millisecond).String())
-				}
 				req.errChan <- fmt.Errorf("设备返回错误: %s", strings.Join(fullResponse, "\n"))
 				break RespLoop
 			} else if isResponseLineForCommand(req.cmd, line) {
@@ -716,13 +788,6 @@ RespLoop:
 			} else if req.interactive && req.waitPrompt && isBarePrompt(line) {
 				// 提示符仅在交互命令正在等待时识别，且必须是裸 "> "/">" 行。
 				m.resetATTimeoutWatchdog()
-				if !req.silent {
-					logger.Debug(fmt.Sprintf("[%s] AT 收到提示", m.cfg.ID),
-						"cmd", req.cmd,
-						"resp", ">",
-						"cost", time.Since(startTime).Truncate(time.Millisecond).String())
-				}
-
 				if req.followUp != "" {
 					// 收到提示符，立即发送后续指令
 					m.port.Write([]byte(req.followUp))
@@ -732,6 +797,7 @@ RespLoop:
 					continue
 				}
 
+				terminalResult = "prompt"
 				req.respChan <- "> "
 				break RespLoop
 			} else {
@@ -825,13 +891,13 @@ func (m *Manager) waitForQuarantineRecovery() {
 			return
 		case msg := <-m.rxChan:
 			if msg.Err != nil {
-				m.handleFatalSerialRuntimeErr(msg.Err, "quarantine", "")
+				m.handleFatalSerialRuntimeErr(msg.Err, "quarantine", "other")
 				return
 			}
 			line := msg.Data
 			if line == "OK" || strings.Contains(line, "ERROR") {
 				m.clearQuarantine()
-				logger.Debug(fmt.Sprintf("[%s] 隔离解除：观测到超时命令的终结响应", m.cfg.ID), "resp", line)
+				logger.Debug(fmt.Sprintf("[%s] 隔离解除：观测到超时命令的终结响应", m.cfg.ID), "terminal_result", "observed")
 				return
 			}
 			if m.isURC(line) {
@@ -1927,6 +1993,7 @@ func (m *Manager) executeAT(cmd string, timeout time.Duration, silent, highPrior
 	req := m.reqPool.Get().(*commandRequest)
 	// 重置字段
 	req.cmd = cmd
+	req.enqueuedAt = time.Now()
 	req.timeout = timeout
 	req.silent = silent
 	req.highPriority = highPriority
@@ -1973,6 +2040,10 @@ func (m *Manager) executeAT(cmd string, timeout time.Duration, silent, highPrior
 			return "", errors.New("manager stopped")
 		}
 	case <-time.After(5 * time.Second): // 通道写入超时 (队列满)
+		m.logATCommandDiagnostic(atCommandDiagnostic{
+			CommandClass: safeATCommandClass(cmd), QueueWaitMS: time.Since(req.enqueuedAt).Milliseconds(),
+			TerminalResult: "queue_timeout", TimeoutClass: "queue",
+		})
 		return "", errors.New("command queue full")
 	case <-m.stop:
 		return "", errors.New("manager stopped")
@@ -2234,6 +2305,7 @@ func (m *Manager) SendSMSWithOptions(phone, message string, opts smscodec.Submit
 
 		req := commandRequest{
 			cmd:          fmt.Sprintf("AT+CMGS=%d", tpduLen), // PDU 长度 (不含 SMSC)
+			enqueuedAt:   time.Now(),
 			respChan:     make(chan string, 1),
 			errChan:      make(chan error, 1),
 			timeout:      20 * time.Second, // 增加超时时间，因为包含两步

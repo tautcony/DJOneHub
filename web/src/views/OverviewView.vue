@@ -13,7 +13,6 @@ const { t } = useI18n()
 const {
   device,
   deviceCapabilities,
-  esim,
   loadView,
   loadTrafficRange,
   maskSensitive,
@@ -282,10 +281,6 @@ onBeforeUnmount(() => {
           /><FieldRow
             :label="t('overview.simState')"
             :value="device.status?.sim.inserted ? t('status.inserted') : t('common.unavailable')"
-          /><FieldRow
-            :label="t('overview.eid')"
-            :value="maskSensitive(esim?.eid || device.status?.sim.eid)"
-            monospace
           /><FieldRow :label="t('overview.firmware')" :value="device.status?.identity.firmware" monospace />
         </div>
       </article>

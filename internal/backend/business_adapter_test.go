@@ -2,11 +2,42 @@ package backend
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/iniwex5/vohive/internal/domain/device"
 )
+
+const fixtureAdapterEID = "89010000000000000000000000000001"
+
+type esimContractLegacy struct {
+	*contractLegacy
+	eidCalls      atomic.Int32
+	snapshotCalls atomic.Int32
+}
+
+func (f *esimContractLegacy) EID(context.Context) (string, error) {
+	f.eidCalls.Add(1)
+	return fixtureAdapterEID, nil
+}
+func (f *esimContractLegacy) Profiles(context.Context) ([]Profile, error) { return nil, nil }
+func (f *esimContractLegacy) Download(context.Context, string, string, string, *ESIMDownloadOptions) error {
+	return nil
+}
+func (f *esimContractLegacy) Enable(context.Context, string) error         { return nil }
+func (f *esimContractLegacy) Disable(context.Context, string) error        { return nil }
+func (f *esimContractLegacy) Rename(context.Context, string, string) error { return nil }
+func (f *esimContractLegacy) Delete(context.Context, string) error         { return nil }
+func (f *esimContractLegacy) ListNotifications(context.Context) ([]NotificationItem, error) {
+	return nil, nil
+}
+func (f *esimContractLegacy) ProcessNotification(context.Context, int64) error { return nil }
+func (f *esimContractLegacy) RemoveNotification(context.Context, int64) error  { return nil }
+func (f *esimContractLegacy) ESIMSnapshot(context.Context) (ESIMSnapshot, error) {
+	f.snapshotCalls.Add(1)
+	return ESIMSnapshot{EID: fixtureAdapterEID, Profiles: []Profile{{ICCID: fixtureICCID19}}}, nil
+}
 
 type contractLegacy struct {
 	events chan BackendEvent
@@ -98,5 +129,31 @@ func TestProtocolBackendsCanBeAdaptedWithoutRawAT(t *testing.T) {
 	}
 	if _, err := qmi.RawAT(context.Background(), "AT"); err == nil {
 		t.Fatal("QMI raw AT unexpectedly succeeded")
+	}
+}
+
+func TestBusinessAdapterForwardsESIMSnapshot(t *testing.T) {
+	legacy := &esimContractLegacy{contractLegacy: &contractLegacy{events: make(chan BackendEvent)}}
+	adapter := Adapt(legacy)
+	snapshot, err := adapter.ESIMSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.EID != fixtureAdapterEID || len(snapshot.Profiles) != 1 || legacy.snapshotCalls.Load() != 1 {
+		t.Fatalf("snapshot=%+v calls=%d", snapshot, legacy.snapshotCalls.Load())
+	}
+}
+
+func TestBusinessAdapterSIMDoesNotReadEID(t *testing.T) {
+	legacy := &esimContractLegacy{contractLegacy: &contractLegacy{events: make(chan BackendEvent)}}
+	sim, err := Adapt(legacy).SIM(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sim.EID != "" {
+		t.Fatalf("SIM EID=%q, want empty", sim.EID)
+	}
+	if legacy.eidCalls.Load() != 0 {
+		t.Fatalf("EID calls=%d, want 0", legacy.eidCalls.Load())
 	}
 }

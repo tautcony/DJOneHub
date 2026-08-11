@@ -120,10 +120,10 @@ func (a *BusinessAdapter) Radio(ctx context.Context) (RadioState, error) {
 	return out, nil
 }
 
-// SIM reads SIM presence and identifiers. The AT path sends AT+QSIMSTAT? and
-// falls back to AT+CPIN?, then sends AT+CIMI and AT+QCCID. When the eSIM EID
-// is not cached, the eSIM port additionally probes with AT+CSIM and scans
-// logical channels with AT+CCHO, AT+CGLA, and AT+CCHC.
+// SIM reads ordinary SIM presence and identifiers. The AT path sends
+// AT+QSIMSTAT? and falls back to AT+CPIN? to detect the card, then sends
+// AT+CIMI for IMSI and AT+QCCID for ICCID. This method does not discover an
+// eUICC or send AT+CSIM, AT+CCHO, AT+CGLA, or AT+CCHC for EID.
 func (a *BusinessAdapter) SIM(ctx context.Context) (SIMState, error) {
 	provider, ok := a.legacy.(DeviceInfoProvider)
 	if !ok {
@@ -136,9 +136,6 @@ func (a *BusinessAdapter) SIM(ctx context.Context) (SIMState, error) {
 	out := SIMState{Inserted: inserted}
 	out.IMSI, _ = provider.GetIMSI(ctx)
 	out.ICCID, _ = provider.GetICCID(ctx)
-	if esim, ok := a.legacy.(ESIMPort); ok {
-		out.EID, _ = esim.EID(ctx)
-	}
 	return out, nil
 }
 
@@ -360,6 +357,18 @@ func (a *BusinessAdapter) ESIMStorage(ctx context.Context) (ESIMStorageInfo, err
 		return ESIMStorageInfo{}, unsupported("esim", "esim_storage")
 	}
 	return port.ESIMStorage(ctx)
+}
+
+// ESIMSnapshot reads one complete eSIM snapshot through the wrapped backend.
+// The AT path sends AT+CSIM to probe EF_DIR, AT+CCHO to open a discovered
+// eUICC AID, AT+CGLA for EID, Profile, storage, and device-information APDUs,
+// and AT+CCHC to close each logical channel.
+func (a *BusinessAdapter) ESIMSnapshot(ctx context.Context) (ESIMSnapshot, error) {
+	port, ok := a.legacy.(ESIMSnapshotPort)
+	if !ok {
+		return ESIMSnapshot{}, unsupported("esim", "esim_snapshot")
+	}
+	return port.ESIMSnapshot(ctx)
 }
 
 func (a *BusinessAdapter) Download(ctx context.Context, activationCode, confirmationCode, matchingID string, opts *ESIMDownloadOptions) error {

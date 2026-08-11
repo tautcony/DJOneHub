@@ -588,7 +588,20 @@ func (m *Manager) probeCard(ctx context.Context) error {
 		m.probeMu.Unlock()
 		return nil
 	}
+	previousICCID := m.probeICCID
+	cardChanged := previousICCID != "" && iccid != "" && previousICCID != iccid
+	if cardChanged {
+		m.probeICCID = iccid
+		m.probeEUICC = nil
+	}
 	m.probeMu.Unlock()
+	if cardChanged {
+		m.cacheMu.Lock()
+		m.clearHardwareDiscoveryCachesLocked()
+		m.cacheMu.Unlock()
+		m.clearAIDScanFailure()
+		logger.Info("eSIM 卡片身份变化，清理已发现 AID", "device", m.deviceID)
+	}
 	isEUICC, err := m.cardProbe(ctx)
 	if err != nil {
 		logger.Debug("卡片类型预探针不可用，回退 ISD-R AID 扫描", "device", m.deviceID, "err", err)
@@ -1007,6 +1020,11 @@ func (m *Manager) forEachEUICC(ctx context.Context, fn func(client *lpa.Client, 
 		return outcome.lastErr
 	}
 	if plan.Policy == aidScanPolicyDiscovered {
+		if err := ctx.Err(); err != nil {
+			// Cancellation is a request lifecycle event, not evidence that the
+			// validated target is stale. Keep the discovered AID for the next read.
+			return err
+		}
 		fallbackUsed = true
 		logger.Info("已发现 eUICC AID 失效，回退全量扫描",
 			"device", m.deviceID,
@@ -2151,7 +2169,6 @@ func (m *Manager) RefreshOverview(ctx context.Context) error {
 	m.overviewCache = nil
 	m.profileSnapshotCache = nil
 	m.overviewLastErr = nil
-	m.discoveredEUICCs = nil
 	if !hasReusableChipProductInfo(m.chipInfoCache) {
 		m.chipInfoCache = nil
 	}
@@ -3308,6 +3325,11 @@ func (m *Manager) listNotificationsForCurrentCard(ctx context.Context) ([]Notifi
 	items, successCount, listErr := m.listNotificationsForAIDs(ctx, aids)
 	if successCount > 0 {
 		return items, listErr
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		// A cancelled or timed-out request did not validate the target. Keep the
+		// discovered AID and let the next caller retry it.
+		return nil, ctxErr
 	}
 
 	m.cacheMu.Lock()

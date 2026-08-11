@@ -11,6 +11,7 @@ var (
 	_ ESIMStoragePort  = (*ATBackend)(nil)
 	_ ESIMStoragePort  = (*BusinessAdapter)(nil)
 	_ ESIMSnapshotPort = (*ATBackend)(nil)
+	_ ESIMSnapshotPort = (*BusinessAdapter)(nil)
 	_ NetworkPort      = (*ATBackend)(nil)
 	_ NetworkPort      = (*BusinessAdapter)(nil)
 )

@@ -2,6 +2,7 @@ package esim
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"strings"
 	"sync"
@@ -15,6 +16,7 @@ import (
 	derrors "github.com/iniwex5/vohive/internal/domain/errors"
 	"github.com/iniwex5/vohive/internal/runtime"
 	"github.com/iniwex5/vohive/internal/storage"
+	"golang.org/x/sync/singleflight"
 )
 
 // confirmationCodeTimeout 是确认码请求的等待窗口；超时按用户取消处理。
@@ -48,6 +50,13 @@ type Service struct {
 	confirmationMu sync.Mutex
 	// operationID -> 确认码回复 channel；下载结束（成功/失败/取消）时删除。
 	confirmationRequests map[string]chan confirmationReply
+
+	overviewMu         sync.RWMutex
+	overviewCache      map[string]any
+	overviewGeneration uint64
+	overviewEpoch      uint64
+	overviewLoadedAt   time.Time
+	overviewFlight     singleflight.Group
 }
 
 func (s *Service) SetProfileRegistry(profiles *simprofiles.Service) {
@@ -98,6 +107,40 @@ func NewService(devices *device.Service, ops *operation.Manager, runtime *runtim
 	}
 }
 
+const overviewSnapshotTTL = 10 * time.Second
+
+func cloneOverviewResult(value map[string]any) map[string]any {
+	if value == nil {
+		return nil
+	}
+	out := make(map[string]any, len(value))
+	for key, item := range value {
+		if profiles, ok := item.([]backend.Profile); ok {
+			out[key] = append([]backend.Profile(nil), profiles...)
+			continue
+		}
+		out[key] = item
+	}
+	return out
+}
+
+func (s *Service) cachedOverview(generation uint64) map[string]any {
+	s.overviewMu.RLock()
+	defer s.overviewMu.RUnlock()
+	if s.overviewCache == nil || s.overviewGeneration != generation || time.Since(s.overviewLoadedAt) >= overviewSnapshotTTL {
+		return nil
+	}
+	return cloneOverviewResult(s.overviewCache)
+}
+
+func (s *Service) invalidateOverviewCache() {
+	s.overviewMu.Lock()
+	s.overviewEpoch++
+	s.overviewCache = nil
+	s.overviewLoadedAt = time.Time{}
+	s.overviewMu.Unlock()
+}
+
 func (s *Service) port(operationName string) (backend.ESIMPort, error) {
 	b, err := s.devices.RequireCapability(domain.CapabilityESIM, operationName)
 	if err != nil {
@@ -120,7 +163,24 @@ func (s *Service) Overview(ctx context.Context) (map[string]any, error) {
 		return nil, err
 	}
 	if snapshotPort, ok := port.(backend.ESIMSnapshotPort); ok {
-		if snapshot, snapshotErr := snapshotPort.ESIMSnapshot(ctx); snapshotErr == nil {
+		generation := uint64(0)
+		if s.runtime != nil {
+			generation = s.runtime.Snapshot().Generation
+		}
+		if cached := s.cachedOverview(generation); cached != nil {
+			return cached, nil
+		}
+		s.overviewMu.RLock()
+		epoch := s.overviewEpoch
+		s.overviewMu.RUnlock()
+		value, snapshotErr, _ := s.overviewFlight.Do(fmt.Sprintf("%d:%d", generation, epoch), func() (any, error) {
+			if cached := s.cachedOverview(generation); cached != nil {
+				return cached, nil
+			}
+			snapshot, err := snapshotPort.ESIMSnapshot(ctx)
+			if err != nil {
+				return nil, err
+			}
 			result := map[string]any{"card_type": "euicc", "eid": snapshot.EID, "profiles": snapshot.Profiles,
 				"free_nvram_bytes": snapshot.Storage.FreeNvramBytes, "free_nvram": snapshot.Storage.FreeNvram,
 				"device_info": snapshot.DeviceInfo}
@@ -129,7 +189,18 @@ func (s *Service) Overview(ctx context.Context) (map[string]any, error) {
 					log.Printf("observe eSIM profiles: %v", observeErr)
 				}
 			}
+			s.overviewMu.Lock()
+			generationCurrent := s.runtime == nil || s.runtime.Snapshot().Generation == generation
+			if s.overviewEpoch == epoch && generationCurrent {
+				s.overviewCache = cloneOverviewResult(result)
+				s.overviewGeneration = generation
+				s.overviewLoadedAt = time.Now()
+			}
+			s.overviewMu.Unlock()
 			return result, nil
+		})
+		if snapshotErr == nil && value != nil {
+			return cloneOverviewResult(value.(map[string]any)), nil
 		}
 	}
 	eid, err := port.EID(ctx)
@@ -245,6 +316,7 @@ func (s *Service) Download(ctx context.Context, activationCode, confirmationCode
 			return err
 		}
 		progress(100, "downloaded")
+		s.invalidateOverviewCache()
 		s.ops.Publish("esim.updated", map[string]any{"operation": "download"})
 		return nil
 	})
@@ -287,6 +359,7 @@ func (s *Service) Enable(ctx context.Context, iccid string) (string, error) {
 		}
 		s.switchEnd(taskCtx, iccid)
 		progress(100, "profile enabled")
+		s.invalidateOverviewCache()
 		s.ops.Publish("esim.updated", map[string]any{"operation": "enable", "iccid": iccid})
 		return nil
 	})
@@ -311,6 +384,7 @@ func (s *Service) Disable(ctx context.Context, iccid string) (string, error) {
 		}
 		s.switchEnd(taskCtx, iccid)
 		progress(100, "profile disabled")
+		s.invalidateOverviewCache()
 		s.ops.Publish("esim.updated", map[string]any{"operation": "disable", "iccid": iccid})
 		return nil
 	})
@@ -324,6 +398,7 @@ func (s *Service) Rename(ctx context.Context, iccid, label string) error {
 	if err := port.Rename(ctx, iccid, label); err != nil {
 		return err
 	}
+	s.invalidateOverviewCache()
 	s.ops.Publish("esim.updated", map[string]any{"operation": "rename", "iccid": iccid})
 	return nil
 }
@@ -355,6 +430,7 @@ func (s *Service) Delete(ctx context.Context, iccid string) (string, error) {
 			return err
 		}
 		progress(100, "profile deleted")
+		s.invalidateOverviewCache()
 		s.ops.Publish("esim.updated", map[string]any{"operation": "delete", "iccid": iccid})
 		return nil
 	})

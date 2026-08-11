@@ -712,6 +712,11 @@ func (s *Server) callReject(w nethttp.ResponseWriter, r *nethttp.Request) {
 	}
 	writeJSON(w, nethttp.StatusOK, map[string]bool{"rejected": true})
 }
+
+// esimHealth composes existing device and eSIM snapshots. A cold device
+// snapshot can send the identity, radio, and SIM AT commands documented by
+// device.Service.Status. A cold eSIM snapshot can send AT+CSIM, AT+CCHO,
+// AT+CGLA, and AT+CCHC. Warm health requests send no additional AT commands.
 func (s *Server) esimHealth(w nethttp.ResponseWriter, r *nethttp.Request) {
 	if !s.requireMethod(w, r, nethttp.MethodGet) || !s.protected(w, r) {
 		return

@@ -1968,8 +1968,8 @@ func TestRefreshOverviewReplacesChipInfoAndProfiles(t *testing.T) {
 	if mgr.chipInfoCache == nil || mgr.chipInfoCache.SkuName != "after" || mgr.chipInfoCache.Firmware != "2.0.0" {
 		t.Fatalf("chipInfoCache = %#v, want refreshed chipInfoCache", mgr.chipInfoCache)
 	}
-	if len(mgr.discoveredEUICCs) != 0 {
-		t.Fatalf("discoveredEUICCs = %v, want cleared by manual refresh", mgr.discoveredEUICCs)
+	if len(mgr.discoveredEUICCs) != 1 || mgr.discoveredEUICCs[0].AIDHex != "0102" {
+		t.Fatalf("discoveredEUICCs = %v, want preserved validated target", mgr.discoveredEUICCs)
 	}
 }
 

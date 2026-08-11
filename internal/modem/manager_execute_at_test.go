@@ -1,6 +1,7 @@
 package modem
 
 import (
+	"encoding/json"
 	"errors"
 	"io"
 	"strings"
@@ -11,6 +12,52 @@ import (
 	"github.com/iniwex5/vohive/internal/config"
 	"go.bug.st/serial"
 )
+
+func TestATCommandDiagnosticSeparatesQueueAndExecutionWithoutPayloads(t *testing.T) {
+	now := time.Now()
+	req := commandRequest{
+		cmd:        `AT+CGLA=1,42,"DEADBEEF0123456789"`,
+		enqueuedAt: now.Add(-25 * time.Millisecond),
+	}
+	diagnostic := commandDiagnostic(req, now.Add(-10*time.Millisecond), "device_error", "none")
+	if diagnostic.CommandClass != "apdu" {
+		t.Fatalf("command class=%q want apdu", diagnostic.CommandClass)
+	}
+	if diagnostic.QueueWaitMS < 14 || diagnostic.ExecMS < 9 {
+		t.Fatalf("timing=%+v", diagnostic)
+	}
+	encoded, err := json.Marshal(diagnostic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(encoded)
+	for _, sensitive := range []string{"CGLA", "DEADBEEF", "0123456789", "response"} {
+		if strings.Contains(text, sensitive) {
+			t.Fatalf("diagnostic leaked %q: %s", sensitive, text)
+		}
+	}
+	for _, field := range []string{"command_class", "queue_wait_ms", "exec_ms", "terminal_result", "timeout_class"} {
+		if !strings.Contains(text, `"`+field+`"`) {
+			t.Fatalf("diagnostic field %q missing: %s", field, text)
+		}
+	}
+}
+
+func TestSafeATCommandClassDoesNotExposeArguments(t *testing.T) {
+	tests := map[string]string{
+		`AT+CCHO="A0000005591010FFFFFFFF8900000100"`: "apdu",
+		`ATD+8613800000000;`:                         "call",
+		`AT+QCCID`:                                   "identity",
+		`AT+QENG="servingcell"`:                      "radio",
+		`AT+CPIN="1234"`:                             "sim",
+		`AT+UNKNOWN="credential"`:                    "other",
+	}
+	for command, want := range tests {
+		if got := safeATCommandClass(command); got != want {
+			t.Fatalf("safeATCommandClass(%q)=%q want %q", command, got, want)
+		}
+	}
+}
 
 func TestManagerExecuteATFailsFastWithoutATPort(t *testing.T) {
 	m, err := New(config.DeviceConfig{

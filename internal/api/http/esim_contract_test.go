@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,9 +18,10 @@ import (
 
 type overviewContractBackend struct {
 	*contractBackend
-	eidErr   error
-	profiles []backend.Profile
-	radioErr error
+	eidErr        error
+	profiles      []backend.Profile
+	radioErr      error
+	snapshotCalls atomic.Int32
 }
 
 type renameContractBackend struct {
@@ -119,6 +121,20 @@ func (b *overviewContractBackend) ESIMDeviceInfo(context.Context) (backend.ESIMD
 	}, nil
 }
 
+func (b *overviewContractBackend) ESIMSnapshot(context.Context) (backend.ESIMSnapshot, error) {
+	b.snapshotCalls.Add(1)
+	if b.eidErr != nil {
+		return backend.ESIMSnapshot{}, b.eidErr
+	}
+	return backend.ESIMSnapshot{
+		EID: b.eidValue(), Profiles: b.profiles,
+		Storage:    backend.ESIMStorageInfo{FreeNvramBytes: 220160, FreeNvram: "215.00 KB"},
+		DeviceInfo: backend.ESIMDeviceInfo{SKU: "ESTKme Light", SerialNumber: "3107110a-05534132", Firmware: "T3VASS0-5.8.11.1"},
+	}, nil
+}
+
+func (b *overviewContractBackend) eidValue() string { return "89049032000000000000000000000000" }
+
 func (b *overviewContractBackend) Radio(context.Context) (backend.RadioState, error) {
 	if b.radioErr != nil {
 		return backend.RadioState{}, b.radioErr
@@ -205,6 +221,11 @@ func TestEsimHealthContractHasStableFields(t *testing.T) {
 		profiles:        []backend.Profile{{ICCID: "8901000000000000000", State: "enabled"}},
 	}
 	server, _ := newReadyServerWithBackend(t, &fakeReadyDiscovery{candidate: domain.Candidate{Identity: domain.Identity{StableID: "health"}}}, backend)
+	first := httptest.NewRecorder()
+	server.Handler().ServeHTTP(first, httptest.NewRequest(http.MethodGet, "/api/v1/esim", nil))
+	if first.Code != http.StatusOK {
+		t.Fatalf("overview status = %d, body = %s", first.Code, first.Body.String())
+	}
 	recorder := httptest.NewRecorder()
 	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/esim/health", nil))
 	if recorder.Code != http.StatusOK {
@@ -218,6 +239,9 @@ func TestEsimHealthContractHasStableFields(t *testing.T) {
 		if _, ok := body[field]; !ok {
 			t.Fatalf("health field %q missing from %s", field, recorder.Body.String())
 		}
+	}
+	if backend.snapshotCalls.Load() != 1 {
+		t.Fatalf("eSIM snapshot calls=%d, want one shared overview/health snapshot", backend.snapshotCalls.Load())
 	}
 }
 

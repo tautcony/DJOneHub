@@ -47,7 +47,7 @@ func TestSanitizeSnapshotKeepsIdentity(t *testing.T) {
 		Snapshot: domain.Snapshot{State: domain.StateReady, Identity: identity, LastError: "modem error"},
 		Identity: backend.Identity{IMEI: "990000860099326", ICCID: "89860012345678901234", IMSI: "460009300011111"},
 		Radio:    backend.RadioState{Registered: true, NetworkMode: "LTE", SignalDBM: -87},
-		SIM:      backend.SIMState{Inserted: true, ICCID: "89860012345678901234", IMSI: "460009300011111"},
+		SIM:      backend.SIMState{Inserted: true, ICCID: "89860012345678901234", IMSI: "460009300011111", EID: "89010000000000000000000000000001"},
 	}
 	out := sanitizeDeviceStatus(status)
 	if out.Snapshot.Identity.IMEI != identity.IMEI || out.Snapshot.Identity.VendorID != identity.VendorID {
@@ -58,6 +58,9 @@ func TestSanitizeSnapshotKeepsIdentity(t *testing.T) {
 	}
 	if !out.Radio.Registered || out.Radio.NetworkMode != "LTE" || !out.SIM.Inserted {
 		t.Fatalf("radio/sim fields were redacted: %+v", out)
+	}
+	if out.SIM.EID != "" {
+		t.Fatalf("device status leaked EID: %q", out.SIM.EID)
 	}
 	if out.Snapshot.LastError != "device error" {
 		t.Fatalf("LastError = %q, want fallback", out.Snapshot.LastError)

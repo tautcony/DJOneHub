@@ -426,7 +426,6 @@ function resetSMSOperation() {
 async function loadEsim() {
   try {
     await esimStore.load()
-    void esimStore.loadNotifications()
     viewError.value = ''
   } catch (error) {
     viewError.value = errorText(error, 'esim.unableLoad')
@@ -1194,7 +1193,8 @@ async function triggerNotifierDebug(action: string) {
 
 const viewLoaders: Partial<Record<ViewID, () => Promise<void>>> = {
   overview: async () => {
-    await Promise.all([device.refresh(), loadOverviewNetwork(), loadOverviewTraffic(), loadEsim()])
+    await device.refresh()
+    await Promise.all([loadOverviewNetwork(), loadOverviewTraffic(), loadEsim()])
   },
   calls: async () => Promise.all([loadCalls(), simProfilesStore.load()]).then(() => undefined),
   sms: async () => Promise.all([loadSMS(), simProfilesStore.load()]).then(() => undefined),
