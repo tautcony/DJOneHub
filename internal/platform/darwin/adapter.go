@@ -199,6 +199,7 @@ func (a *Adapter) OpenAT(_ context.Context, candidate device.Candidate) (backend
 	// 设备级 APDU 仲裁器: darwin 纯 AT eSIM 路径与 modem manager 路径共享的
 	// 同一实例, 使 SIM 切换 barrier 与 APDU idle 等待在 USB AT 传输上生效。
 	arbiter := apduarbiter.New(candidate.Identity.StableID, apduarbiter.Options{})
+	commandBackend.SetAPDUArbiter(arbiter)
 	if port, portErr := esim.NewATPort(candidate.Identity.StableID, arbiter, transport.Command, func(ctx context.Context) (string, error) {
 		identity, err := commandBackend.Identity(ctx)
 		return identity.IMEI, err

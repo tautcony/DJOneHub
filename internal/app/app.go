@@ -36,6 +36,8 @@ import (
 	"github.com/iniwex5/vohive/internal/runtime"
 	"github.com/iniwex5/vohive/internal/storage"
 	"github.com/iniwex5/vohive/internal/transport"
+	"github.com/iniwex5/vohive/internal/upstreamproxy"
+	"github.com/iniwex5/vohive/pkg/logger"
 )
 
 // serialESIMPortBuilder 为串口 AT 路径（Linux/Windows）构建 eSIM 服务端口。
@@ -179,6 +181,18 @@ func newApp(r *runtime.Runtime, err error, platformAdapter transport.NetworkCont
 		platformDependencies.Tunnel = tunnel
 	}
 	vowifiService := vowifi.NewService(devices, ops, r, platformDependencies)
+	// 持久化层（国家前置代理、卡策略）与 MCC 国家表初始化。
+	vowifiService.SetStore(database)
+	// eSIM 切卡联动：切卡期间抢占 VoWiFi，切卡成功后自动恢复。
+	esimService.SetVoWiFiSwitcher(vowifiService)
+	countryResult := upstreamproxy.InitCountryTable(context.Background(), upstreamproxy.CountryTableOptions{
+		CachePath: filepath.Join(storeDir, "DJOneHub", "mcc-mnc-table.json"),
+	})
+	if countryResult.Err != nil {
+		logger.Warn("MCC 国家表初始化失败，国家前置代理规则不可用", "source", countryResult.Source, "err", countryResult.Err)
+	} else {
+		logger.Info("MCC 国家表已就绪", "source", countryResult.Source, "rows", countryResult.RowCount, "countries", countryResult.Countries, "cache", countryResult.CachePath)
+	}
 	extraService := extras.NewService(devices, ops, r, database)
 	notificationPreferences := notification.DefaultNotificationPreferences()
 	_ = notificationPreferencesStore.Read(&notificationPreferences)

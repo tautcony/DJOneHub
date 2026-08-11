@@ -183,7 +183,48 @@ export interface VowifiStatus {
   available?: boolean
   state?: string
   reason?: string
+  last_error?: string
+  error_class?: string
   [key: string]: unknown
+}
+
+/** 国家前置代理（VoWiFi 的 ePDG 连接经 SOCKS5 UDP Associate 转发）。 */
+export interface UpstreamProxy {
+  id: string
+  name?: string
+  addr: string
+  username?: string
+  password?: string
+  enabled: boolean
+  created_at?: string
+  updated_at?: string
+}
+
+/** 将 SIM home 国家路由到指定前置代理的规则。 */
+export interface UpstreamProxyCountryRule {
+  country_code: string
+  upstream_proxy_id: string
+  enabled: boolean
+  updated_at?: string
+}
+
+/** 卡片级 VoWiFi 策略开关。 */
+export interface CardPolicy {
+  iccid: string
+  vowifi_enabled: boolean
+  source?: string
+  updated_at?: string
+}
+
+/** MCC 国家表状态。 */
+export interface CountryTableStatus {
+  ready: boolean
+  cache_path?: string
+  source_url?: string
+  source?: string
+  row_count?: number
+  countries?: number
+  error?: string
 }
 
 export interface DeviceControlStatus {

@@ -23,7 +23,10 @@ The source repository includes selected source dependencies under `third_party/`
 | euicc-go | `third_party/euicc-go/LICENSE` |
 | gadb | `third_party/gadb/LICENSE` |
 | github.com/iniwex5/netlink | `third_party/netlink/LICENSE` |
+| github.com/iniwex5/vowifi-go | `third_party/vowifi-go/LICENSE` (GNU Affero General Public License v3) |
 
-The following dependencies are fetched directly through Go modules and retain their upstream licenses and copyright notices: `github.com/damonto/uicc-go`, `github.com/iniwex5/quectel-qmi-go`, `github.com/lestrrat-go/strftime`, `github.com/pkg/errors`, `golang.org/x/sys`, `golang.org/x/text`, and `go.uber.org/multierr`.
+`internal/upstreamproxy`（国家前置代理的 MCC 国家表与 SOCKS5 自检）逐字复制自上游 VoHive 项目（<https://github.com/iniwex5/vohive>），随 VoHive 的 AGPL-3.0 许可使用。
+
+The following dependencies are fetched directly through Go modules and retain their upstream licenses and copyright notices: `github.com/damonto/uicc-go`, `github.com/iniwex5/quectel-qmi-go`, `github.com/lestrrat-go/strftime`, `github.com/pkg/errors`, `golang.org/x/sys`, `golang.org/x/text`, `go.uber.org/multierr`, `github.com/emiago/sipgo`, and the `github.com/pion/*` WebRTC stack (brought in by vowifi-go).
 
 This file is informational and does not replace any component's full license text.

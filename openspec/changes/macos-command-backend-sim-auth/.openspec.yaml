@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-08-11
+goal: Enable truthful VoWiFi capability and SIM authentication over macOS USB AT
+  transport.

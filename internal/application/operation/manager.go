@@ -4,6 +4,7 @@ import (
 	"context"
 	stdErrors "errors"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -175,6 +176,35 @@ func (m *Manager) run(ctx context.Context, status *Status, task Task) {
 	current := clone(*m.items[status.ID])
 	m.mu.RUnlock()
 	m.bus.Publish("operation.completed", current)
+}
+
+// HasActiveKind reports whether any in-flight operation (pending or running)
+// matches one of the given kinds. Used by the VoWiFi host adapter to gate
+// lifecycle changes while an eSIM enable/disable switch is underway.
+func (m *Manager) HasActiveKind(kinds ...string) bool {
+	if len(kinds) == 0 {
+		return false
+	}
+	want := make(map[string]struct{}, len(kinds))
+	for _, kind := range kinds {
+		if kind = strings.TrimSpace(kind); kind != "" {
+			want[kind] = struct{}{}
+		}
+	}
+	if len(want) == 0 {
+		return false
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, status := range m.items {
+		if status.State != Pending && status.State != Running {
+			continue
+		}
+		if _, ok := want[status.Type]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *Manager) Get(id string) (Status, bool) {

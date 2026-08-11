@@ -26,6 +26,15 @@ type confirmationReply struct {
 	Declined bool
 }
 
+// voWiFiSwitcher 是切卡联动的最小接口，由 vowifi.Service 实现
+// （SwitchBegin/SwitchEnd 透传到 vowifihost.Manager）。
+type voWiFiSwitcher interface {
+	// SwitchBegin 切卡前抢占拆除进行中的 VoWiFi 实例。
+	SwitchBegin(context.Context) error
+	// SwitchEnd 切卡成功后以 AllowSwitch 恢复 VoWiFi（RestoreRadio=true）。
+	SwitchEnd(context.Context, bool) error
+}
+
 type Service struct {
 	devices *device.Service
 	ops     *operation.Manager
@@ -33,6 +42,8 @@ type Service struct {
 	// store 为 nil 时通知历史不落库（测试/无存储环境）。
 	store    *storage.SQLiteStore
 	profiles *simprofiles.Service
+	// vowifi 是切卡联动控制器；nil 时切卡不影响 VoWiFi（默认行为）。
+	vowifi voWiFiSwitcher
 
 	confirmationMu sync.Mutex
 	// operationID -> 确认码回复 channel；下载结束（成功/失败/取消）时删除。
@@ -41,6 +52,36 @@ type Service struct {
 
 func (s *Service) SetProfileRegistry(profiles *simprofiles.Service) {
 	s.profiles = profiles
+}
+
+// SetVoWiFiSwitcher 注入切卡联动控制器（上游 pool_esim_switch.go 模式）。
+func (s *Service) SetVoWiFiSwitcher(v voWiFiSwitcher) {
+	s.vowifi = v
+}
+
+// switchBegin / switchEnd 是切卡联动辅助：失败只记日志不阻断切卡
+// （上游 SwitchBegin 失败 warn 后继续的语义）。成功切换后调用
+// SwitchEnd 恢复 VoWiFi；切卡失败时保持拆除状态，不自动恢复。
+func (s *Service) switchBegin(ctx context.Context, iccid string) {
+	if s.vowifi == nil {
+		return
+	}
+	if err := s.vowifi.SwitchBegin(ctx); err != nil {
+		log.Printf("esim switch begin (VoWiFi teardown) failed: %v", err)
+		return
+	}
+	log.Printf("esim switch: VoWiFi teardown done before switching profile %s", iccid)
+}
+
+func (s *Service) switchEnd(ctx context.Context, iccid string) {
+	if s.vowifi == nil {
+		return
+	}
+	if err := s.vowifi.SwitchEnd(ctx, true); err != nil {
+		log.Printf("esim switch end (VoWiFi restore) failed: %v", err)
+		return
+	}
+	log.Printf("esim switch: VoWiFi restored after profile %s", iccid)
 }
 
 func NewService(devices *device.Service, ops *operation.Manager, runtime *runtime.Runtime, store ...*storage.SQLiteStore) *Service {
@@ -232,10 +273,15 @@ func (s *Service) Enable(ctx context.Context, iccid string) (string, error) {
 			return err
 		}
 		defer release()
+		// 切卡联动：切卡前抢占拆除 VoWiFi 实例（IsSwitching 门控在 op 存活期间
+		// 保持拒绝新启用）。锁域说明：本 op 持 ResourceSIM；SwitchBegin/End 是
+		// vowifi lifecycle 命令，不获取 runtime 资源，不会死锁。
+		s.switchBegin(taskCtx, iccid)
 		progress(10, "switching profile")
 		if err := port.Enable(taskCtx, iccid); err != nil {
 			return err
 		}
+		s.switchEnd(taskCtx, iccid)
 		progress(100, "profile enabled")
 		s.ops.Publish("esim.updated", map[string]any{"operation": "enable", "iccid": iccid})
 		return nil
@@ -253,10 +299,13 @@ func (s *Service) Disable(ctx context.Context, iccid string) (string, error) {
 			return err
 		}
 		defer release()
+		// 切卡联动：同 Enable（锁域说明见上）。
+		s.switchBegin(taskCtx, iccid)
 		progress(10, "disabling profile")
 		if err := port.Disable(taskCtx, iccid); err != nil {
 			return err
 		}
+		s.switchEnd(taskCtx, iccid)
 		progress(100, "profile disabled")
 		s.ops.Publish("esim.updated", map[string]any{"operation": "disable", "iccid": iccid})
 		return nil

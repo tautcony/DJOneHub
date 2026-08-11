@@ -30,10 +30,9 @@ export const useDeviceStore = defineStore('device', () => {
 
   const snapshot = computed<Snapshot | null>(() => status.value?.snapshot || null)
   const capabilities = computed(() => snapshot.value?.capabilities || {})
-  const has = (name: string) =>
-    !error.value &&
-    snapshot.value?.state === 'ready' &&
-    Object.prototype.hasOwnProperty.call(capabilities.value, name)
+  // ready 表示设备状态已就绪且无加载错误（不含能力检查）。
+  const ready = computed(() => !error.value && snapshot.value?.state === 'ready')
+  const has = (name: string) => ready.value && Object.prototype.hasOwnProperty.call(capabilities.value, name)
 
   function applyStatus(next: DeviceStatus) {
     if (next.snapshot.state === 'ready') {
@@ -203,6 +202,7 @@ export const useDeviceStore = defineStore('device', () => {
     status,
     snapshot,
     capabilities,
+    ready,
     error,
     connected,
     operations,

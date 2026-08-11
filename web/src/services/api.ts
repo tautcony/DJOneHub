@@ -26,6 +26,10 @@ import type {
   DeviceControlStatus,
   DeviceControlSettings,
   RuntimeDiagnostics,
+  UpstreamProxy,
+  UpstreamProxyCountryRule,
+  CardPolicy,
+  CountryTableStatus,
 } from '../types'
 import type { RawATSMSDiagnostic } from './at'
 
@@ -199,6 +203,25 @@ export const api = {
   vowifiEnable: () => request<{ operation_id: string }>('/vowifi/actions/enable', { method: 'POST' }),
   vowifiDisable: () => request<{ operation_id: string }>('/vowifi/actions/disable', { method: 'POST' }),
   vowifiReconnect: () => request<{ operation_id: string }>('/vowifi/actions/reconnect', { method: 'POST' }),
+  vowifiProxies: () => request<UpstreamProxy[]>('/vowifi/proxies'),
+  vowifiProxyUpsert: (proxy: UpstreamProxy) =>
+    request<{ ok: boolean }>('/vowifi/proxies', { method: 'POST', body: JSON.stringify(proxy) }),
+  vowifiProxyDelete: (id: string) =>
+    request<{ ok: boolean }>(`/vowifi/proxies?id=${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  vowifiCountryRules: () => request<UpstreamProxyCountryRule[]>('/vowifi/proxy-country-rules'),
+  vowifiCountryRuleUpsert: (rule: UpstreamProxyCountryRule) =>
+    request<{ ok: boolean }>('/vowifi/proxy-country-rules', { method: 'POST', body: JSON.stringify(rule) }),
+  vowifiCountryRuleDelete: (countryCode: string) =>
+    request<{ ok: boolean }>(`/vowifi/proxy-country-rules?country_code=${encodeURIComponent(countryCode)}`, {
+      method: 'DELETE',
+    }),
+  vowifiCountryTable: () => request<CountryTableStatus>('/vowifi/country-table'),
+  vowifiCardPolicies: () => request<CardPolicy[]>('/vowifi/card-policies'),
+  vowifiCardPolicySet: (iccid: string, vowifiEnabled: boolean) =>
+    request<{ ok: boolean }>(`/vowifi/card-policies?iccid=${encodeURIComponent(iccid)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ vowifi_enabled: vowifiEnabled }),
+    }),
   notificationDebugInfo: () => request<NotificationDebugInfo>('/notifications/debug'),
   notificationDebug: (payload: NotificationDebugRequest) =>
     request<NotificationDebugResponse>('/notifications/debug', {

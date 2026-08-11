@@ -1,8 +1,9 @@
-go 1.26.3
+go 1.26.4
 
 use (
 	.
 	third_party/euicc-go
 	third_party/gadb
 	third_party/netlink
+	third_party/vowifi-go
 )

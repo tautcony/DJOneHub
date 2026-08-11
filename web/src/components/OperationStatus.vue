@@ -48,6 +48,6 @@ const tone = computed<StatusTone>(() => {
       size="small"
       :status="props.operation.state === 'failed' ? 'exception' : undefined"
     />
-    <p>{{ props.operation.message || props.operation.operation_id }}</p>
+    <p>{{ props.operation.error?.message || props.operation.message || props.operation.operation_id }}</p>
   </a-card>
 </template>

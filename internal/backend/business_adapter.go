@@ -61,6 +61,16 @@ func Adapt(legacy DeviceBackend) *BusinessAdapter {
 
 func (a *BusinessAdapter) Mode() string { return a.legacy.Mode() }
 
+// Legacy returns the wrapped protocol-facing backend. Protocol-level consumers
+// (e.g. the VoWiFi host) use it to reach the SIMAuthProvider and
+// OperatingModeController surfaces the business contract does not carry.
+func (a *BusinessAdapter) Legacy() DeviceBackend {
+	if a == nil {
+		return nil
+	}
+	return a.legacy
+}
+
 func (a *BusinessAdapter) Identity(ctx context.Context) (Identity, error) {
 	provider, ok := a.legacy.(DeviceInfoProvider)
 	if !ok {

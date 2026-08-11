@@ -1,6 +1,6 @@
 module github.com/iniwex5/vohive
 
-go 1.26.3
+go 1.26.4
 
 // Fork patch note: each replace below points at a genuine fork under
 // third_party/ that differs from its upstream module. Before bumping or
@@ -12,12 +12,15 @@ replace github.com/electricbubble/gadb => ./third_party/gadb
 
 replace github.com/iniwex5/netlink => ./third_party/netlink
 
+replace github.com/iniwex5/vowifi-go => ./third_party/vowifi-go
+
 require (
 	github.com/damonto/euicc-go v1.1.3-0.20260628013808-8d873a2dfc98
 	github.com/electricbubble/gadb v0.1.0
 	github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1
 	github.com/gorilla/websocket v1.5.3
 	github.com/iniwex5/quectel-qmi-go v0.6.0
+	github.com/iniwex5/vowifi-go v1.1.2
 	github.com/larksuite/oapi-sdk-go/v3 v3.9.10
 	github.com/lestrrat-go/file-rotatelogs v2.4.0+incompatible
 	github.com/warthog618/sms v0.3.0

@@ -246,6 +246,24 @@ func (s *SQLiteStore) configure() error {
 		);
 		CREATE INDEX IF NOT EXISTS idx_sim_profiles_last_seen
 			ON sim_profiles(last_seen_at DESC);
+		CREATE TABLE IF NOT EXISTS upstream_proxies (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL DEFAULT '',
+			addr TEXT NOT NULL,
+			username TEXT NOT NULL DEFAULT '',
+			password TEXT NOT NULL DEFAULT '',
+			enabled INTEGER NOT NULL DEFAULT 0,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS upstream_proxy_country_rules (
+			country_code TEXT PRIMARY KEY,
+			upstream_proxy_id TEXT NOT NULL DEFAULT '',
+			enabled INTEGER NOT NULL DEFAULT 0,
+			updated_at TEXT NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_upstream_proxy_country_rules_proxy
+			ON upstream_proxy_country_rules(upstream_proxy_id);
 	`)
 	if err != nil {
 		return fmt.Errorf("migrate sqlite schema: %w", err)

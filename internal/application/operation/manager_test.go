@@ -196,3 +196,46 @@ func TestShutdownIsIdempotentAndTimeoutDoesNotPoisonLaterCallers(t *testing.T) {
 		t.Fatalf("operation state = %+v, ok = %v; want cancelled", status, ok)
 	}
 }
+
+func TestManagerHasActiveKind(t *testing.T) {
+	manager := NewManager(nil)
+	if manager.HasActiveKind() {
+		t.Fatal("HasActiveKind() with no kinds = true, want false")
+	}
+	if manager.HasActiveKind("") {
+		t.Fatal("HasActiveKind() with only blank kinds = true, want false")
+	}
+	if manager.HasActiveKind("esim.enable") {
+		t.Fatal("HasActiveKind() before any operation = true, want false")
+	}
+
+	block := make(chan struct{})
+	id, err := manager.Start(context.Background(), "esim.enable", func(context.Context, string, func(int, string)) error {
+		<-block
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer manager.Cancel(id)
+
+	if !manager.HasActiveKind("esim.enable") {
+		t.Fatal("HasActiveKind(esim.enable) during operation = false, want true")
+	}
+	if !manager.HasActiveKind("esim.disable", "esim.enable") {
+		t.Fatal("HasActiveKind(multi) during operation = false, want true")
+	}
+	if manager.HasActiveKind("esim.disable") {
+		t.Fatal("HasActiveKind(esim.disable) during esim.enable = true, want false")
+	}
+
+	close(block)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if !manager.HasActiveKind("esim.enable") {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("HasActiveKind(esim.enable) still true after operation completed")
+}

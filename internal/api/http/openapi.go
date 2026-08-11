@@ -71,6 +71,23 @@ func openAPIDocument() map[string]any {
 			"/api/v1/vowifi/actions/enable":                            commandPath("operation accepted", true),
 			"/api/v1/vowifi/actions/disable":                           commandPath("operation accepted", true),
 			"/api/v1/vowifi/actions/reconnect":                         commandPath("operation accepted", true),
+			"/api/v1/vowifi/proxies": map[string]any{
+				"get":    map[string]any{"responses": responses("upstream proxy list")},
+				"post":   commandPath("upstream proxy upsert", false)["post"],
+				"delete": commandPath("upstream proxy delete", false)["post"],
+			},
+			"/api/v1/vowifi/proxy-country-rules": map[string]any{
+				"get":    map[string]any{"responses": responses("upstream proxy country rules")},
+				"post":   commandPath("upstream proxy country rule upsert", false)["post"],
+				"delete": commandPath("upstream proxy country rule delete", false)["post"],
+			},
+			"/api/v1/vowifi/country-table": map[string]any{
+				"get": map[string]any{"responses": responses("MCC country table status")},
+			},
+			"/api/v1/vowifi/card-policies": map[string]any{
+				"get": map[string]any{"responses": responses("card VoWiFi policies")},
+				"put": commandPath("card VoWiFi policy update", false)["post"],
+			},
 			"/api/v1/notifications/debug": map[string]any{
 				"get":  map[string]any{"responses": responses("notifier debug capabilities")},
 				"post": commandPath("published notifier debug events", false)["post"],

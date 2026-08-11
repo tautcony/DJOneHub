@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/iniwex5/vohive/internal/apduarbiter"
 	"github.com/iniwex5/vohive/internal/domain/device"
 )
 
@@ -176,5 +177,91 @@ func TestCommandBackendNetworkModeAndInteractiveSMSCapability(t *testing.T) {
 	}
 	if len(transport.promptCommands) != 0 {
 		t.Fatal("mode query must not use interactive transport")
+	}
+}
+
+func TestCommandBackendSIMAuth(t *testing.T) {
+	transport := &fakeATTransport{responses: map[string]string{
+		`AT+CCHO="A0000000871002"`: "+CCHO: 2\r\nOK\r\n",
+		`AT+CGLA=2,8,"00A40000"`:   "+CGLA: 8,\"9000\"\r\nOK\r\n",
+		"AT+CCHC=2":                "OK\r\n",
+	}}
+	backend := NewCommandBackend(transport, device.Identity{StableID: "synthetic-sim-auth"})
+	channel, err := backend.OpenLogicalChannel(context.Background(), "a0000000871002")
+	if err != nil || channel != 2 {
+		t.Fatalf("OpenLogicalChannel() = %d, %v", channel, err)
+	}
+	response, err := backend.TransmitAPDU(context.Background(), channel, "00a40000")
+	if err != nil || response != "9000" {
+		t.Fatalf("TransmitAPDU() = %q, %v", response, err)
+	}
+	if err := backend.CloseLogicalChannel(context.Background(), channel); err != nil {
+		t.Fatalf("CloseLogicalChannel(): %v", err)
+	}
+	if !backend.Capabilities(context.Background()).Has(device.CapabilityAPDU) {
+		t.Fatalf("capabilities = %+v", backend.Capabilities(context.Background()))
+	}
+	want := []string{`AT+CCHO="A0000000871002"`, `AT+CGLA=2,8,"00A40000"`, "AT+CCHC=2"}
+	if strings.Join(transport.commands, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("commands = %v, want %v", transport.commands, want)
+	}
+}
+
+func TestCommandBackendSIMAuthRejectsInvalidResponses(t *testing.T) {
+	transport := &fakeATTransport{responses: map[string]string{
+		`AT+CCHO="A0000000871002"`: "+CCHO: 0\r\nOK\r\n",
+	}}
+	backend := NewCommandBackend(transport, device.Identity{StableID: "synthetic-sim-auth-invalid"})
+	if _, err := backend.OpenLogicalChannel(context.Background(), "A0000000871002"); err == nil {
+		t.Fatal("OpenLogicalChannel() error = nil")
+	}
+	if _, err := backend.TransmitAPDU(context.Background(), 1, "GG"); err == nil {
+		t.Fatal("TransmitAPDU() error = nil for invalid hex")
+	}
+}
+
+func TestCommandBackendSIMAuthUsesArbiter(t *testing.T) {
+	transport := &fakeATTransport{responses: map[string]string{
+		`AT+CCHO="A0000000871002"`: "+CCHO: 2\r\nOK\r\n",
+	}}
+	backend := NewCommandBackend(transport, device.Identity{StableID: "synthetic-arbiter"})
+	arbiter := apduarbiter.New("synthetic-arbiter", apduarbiter.Options{})
+	backend.SetAPDUArbiter(arbiter)
+	if _, err := backend.OpenLogicalChannel(context.Background(), "A0000000871002"); err != nil {
+		t.Fatal(err)
+	}
+	stats := arbiter.Stats()
+	if stats.Acquires != 1 || stats.ActiveTransport {
+		t.Fatalf("arbiter stats = %+v", stats)
+	}
+}
+
+func TestCommandBackendVoWiFiNarrowBackendMethods(t *testing.T) {
+	transport := &fakeATTransport{responses: map[string]string{
+		"AT+CGSN":                 "356789012345678\r\nOK\r\n",
+		"AT+CIMI":                 "310280233641503\r\nOK\r\n",
+		"AT+QCCID":                "8901000000000000000\r\nOK\r\n",
+		"AT+CPIN?":                "+CPIN: READY\r\nOK\r\n",
+		"AT+CRSM=176,28589,0,0,4": "+CRSM: 144,0,\"00000003\"\r\nOK\r\n",
+		"AT+CFUN?":                "+CFUN: 4\r\nOK\r\n",
+		"AT+CFUN=1":               "OK\r\n",
+		"AT+CEREG?":               "+CEREG: 0,1\r\nOK\r\n",
+		"AT+COPS?":                "+COPS: 0,0,\"TestNet\",7\r\nOK\r\n",
+		"AT+QNWINFO":              "+QNWINFO: \"FDD LTE\",\"TestNet\",\"LTE BAND 3\",100\r\nOK\r\n",
+		"AT+CSQ":                  "+CSQ: 20,99\r\nOK\r\n",
+		`AT+QENG="servingcell"`:   "ERROR\r\n",
+	}}
+	backend := NewCommandBackend(transport, device.Identity{StableID: "synthetic-vowifi"})
+	if imsi, err := backend.GetIMSI(context.Background()); err != nil || imsi != "310280233641503" {
+		t.Fatalf("GetIMSI() = %q, %v", imsi, err)
+	}
+	if mcc, mnc, err := backend.GetNativeMCCMNC(context.Background()); err != nil || mcc != "310" || mnc != "280" {
+		t.Fatalf("GetNativeMCCMNC() = %q, %q, %v", mcc, mnc, err)
+	}
+	if mode, err := backend.GetOperatingMode(context.Background()); err != nil || mode != ModeRFOff {
+		t.Fatalf("GetOperatingMode() = %v, %v", mode, err)
+	}
+	if err := backend.SetOperatingMode(context.Background(), ModeOnline); err != nil {
+		t.Fatalf("SetOperatingMode(): %v", err)
 	}
 }

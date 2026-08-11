@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/iniwex5/vohive/internal/apduarbiter"
 	"github.com/iniwex5/vohive/internal/domain/device"
 	derrors "github.com/iniwex5/vohive/internal/domain/errors"
 	"github.com/iniwex5/vohive/internal/modem"
@@ -29,11 +30,12 @@ type ATCommandTransport interface {
 // transport. It is used for DJI/Quectel devices that expose AT over USB bulk
 // endpoints instead of a macOS serial node.
 type CommandBackend struct {
-	transport ATCommandTransport
-	identity  device.Identity
-	smsMu     sync.Mutex
-	smsStore  map[int]string
-	esimPort  ESIMPort
+	transport   ATCommandTransport
+	identity    device.Identity
+	smsMu       sync.Mutex
+	smsStore    map[int]string
+	esimPort    ESIMPort
+	apduArbiter *apduarbiter.Arbiter
 }
 
 func NewCommandBackend(transport ATCommandTransport, identity device.Identity) *CommandBackend {
@@ -149,6 +151,106 @@ func (b *CommandBackend) SIM(ctx context.Context) (SIMState, error) {
 		out.ICCID = firstDigits(value, 18, 22)
 	}
 	return out, nil
+}
+
+// The following narrow legacy methods let protocol consumers use the direct
+// USB backend without forcing it through the incompatible legacy SMS surface.
+func (b *CommandBackend) GetIMEI(ctx context.Context) (string, error) {
+	value, err := b.command(ctx, "AT+CGSN", 3*time.Second)
+	if err != nil {
+		return "", err
+	}
+	imei := firstDigits(value, 14, 16)
+	if imei == "" {
+		return "", fmt.Errorf("AT+CGSN returned no IMEI")
+	}
+	return imei, nil
+}
+
+func (b *CommandBackend) GetIMSI(ctx context.Context) (string, error) {
+	value, err := b.command(ctx, "AT+CIMI", 3*time.Second)
+	if err != nil {
+		return "", err
+	}
+	imsi := firstDigits(value, 14, 16)
+	if imsi == "" {
+		return "", fmt.Errorf("AT+CIMI returned no IMSI")
+	}
+	return imsi, nil
+}
+
+func (b *CommandBackend) GetICCID(ctx context.Context) (string, error) {
+	value, err := b.command(ctx, "AT+QCCID", 3*time.Second)
+	if err != nil {
+		return "", err
+	}
+	iccid := firstDigits(value, 18, 22)
+	if iccid == "" {
+		return "", fmt.Errorf("AT+QCCID returned no ICCID")
+	}
+	return iccid, nil
+}
+
+func (b *CommandBackend) IsSimInserted(ctx context.Context) (bool, error) {
+	value, err := b.command(ctx, "AT+CPIN?", 3*time.Second)
+	if err != nil {
+		return false, err
+	}
+	return strings.Contains(strings.ToUpper(value), "READY"), nil
+}
+
+func (b *CommandBackend) GetServingSystem(ctx context.Context) (*ServingSystem, error) {
+	radio, err := b.Radio(ctx)
+	if err != nil {
+		return nil, err
+	}
+	status := 0
+	statusText := "not_registered"
+	if radio.Registered {
+		status = 1
+		statusText = "registered"
+	}
+	return &ServingSystem{
+		RegStatus: status, RegStatusText: statusText, Operator: radio.Operator,
+		NetworkMode: radio.NetworkMode, RadioBand: radio.RadioBand,
+	}, nil
+}
+
+func (b *CommandBackend) GetNativeMCCMNC(ctx context.Context) (string, string, error) {
+	imsi, err := b.GetIMSI(ctx)
+	if err != nil {
+		return "", "", err
+	}
+	var efAD []byte
+	if response, readErr := b.command(ctx, "AT+CRSM=176,28589,0,0,4", 3*time.Second); readErr == nil {
+		sw1, sw2, value, ok := modem.ParseCRSM(response)
+		if ok && sw1 == 144 && sw2 == 0 {
+			efAD, _ = hex.DecodeString(value)
+		}
+	}
+	mcc, mnc, _, _, err := modem.HomeMCCMNCFromIMSIAndEFAD(imsi, efAD)
+	return mcc, mnc, err
+}
+
+func (b *CommandBackend) SetOperatingMode(ctx context.Context, mode OperatingMode) error {
+	_, err := b.command(ctx, fmt.Sprintf("AT+CFUN=%d", int(mode)), 5*time.Second)
+	return err
+}
+
+func (b *CommandBackend) GetOperatingMode(ctx context.Context) (OperatingMode, error) {
+	response, err := b.command(ctx, "AT+CFUN?", 3*time.Second)
+	if err != nil {
+		return ModeOnline, err
+	}
+	match := regexp.MustCompile(`(?m)\+CFUN:\s*(\d+)`).FindStringSubmatch(response)
+	if len(match) != 2 {
+		return ModeOnline, fmt.Errorf("AT+CFUN? returned no operating mode")
+	}
+	value, parseErr := strconv.Atoi(match[1])
+	if parseErr != nil {
+		return ModeOnline, fmt.Errorf("invalid operating mode %q", match[1])
+	}
+	return OperatingMode(value), nil
 }
 
 func (b *CommandBackend) ListSMS(ctx context.Context) ([]SMSMessage, error) {
@@ -311,6 +413,112 @@ func (b *CommandBackend) USSD(context.Context, string) (string, error) {
 func (b *CommandBackend) APDU(context.Context, APDURequest) (APDUResponse, error) {
 	return APDUResponse{}, commandUnsupported("apdu", "apdu")
 }
+
+// SetAPDUArbiter injects the device-level APDU arbiter shared with eSIM.
+func (b *CommandBackend) SetAPDUArbiter(arbiter *apduarbiter.Arbiter) { b.apduArbiter = arbiter }
+
+func (b *CommandBackend) simAuthLease(ctx context.Context, channel int) (*apduarbiter.Lease, error) {
+	if b.apduArbiter == nil {
+		return nil, nil
+	}
+	lease, err := b.apduArbiter.AcquireTransport(ctx, apduarbiter.Request{
+		Owner: "sim_aka", Mode: b.Mode(), Class: apduarbiter.APDUClassUSIMAKA,
+		Channel: channel, Scope: apduarbiter.TransportScopeExclusive,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("acquire SIM authentication APDU lease: %w", err)
+	}
+	lease.Touch()
+	return lease, nil
+}
+
+// OpenLogicalChannel opens a USIM/ISIM logical channel through AT+CCHO.
+func (b *CommandBackend) OpenLogicalChannel(ctx context.Context, aid string) (int, error) {
+	lease, err := b.simAuthLease(ctx, -1)
+	if err != nil {
+		return 0, err
+	}
+	if lease != nil {
+		defer lease.Release()
+	}
+	response, err := b.command(ctx, fmt.Sprintf(`AT+CCHO="%s"`, strings.ToUpper(strings.TrimSpace(aid))), 8*time.Second)
+	if err != nil {
+		return 0, fmt.Errorf("AT+CCHO open logical channel: %w", err)
+	}
+	match := regexp.MustCompile(`(?m)\+CCHO:\s*(\d+)`).FindStringSubmatch(response)
+	if len(match) != 2 {
+		return 0, fmt.Errorf("AT+CCHO did not return a logical channel")
+	}
+	channel, parseErr := strconv.Atoi(match[1])
+	if parseErr != nil || channel <= 0 || channel > 255 {
+		return 0, fmt.Errorf("invalid logical channel %q", match[1])
+	}
+	if lease != nil {
+		lease.Touch()
+	}
+	return channel, nil
+}
+
+// CloseLogicalChannel closes a USIM/ISIM logical channel through AT+CCHC.
+func (b *CommandBackend) CloseLogicalChannel(ctx context.Context, channelID int) error {
+	if channelID <= 0 || channelID > 255 {
+		return fmt.Errorf("invalid logical channel %d", channelID)
+	}
+	lease, err := b.simAuthLease(ctx, channelID)
+	if err != nil {
+		return err
+	}
+	if lease != nil {
+		defer lease.Release()
+	}
+	if _, err := b.command(ctx, fmt.Sprintf("AT+CCHC=%d", channelID), 8*time.Second); err != nil {
+		return fmt.Errorf("AT+CCHC close logical channel %d: %w", channelID, err)
+	}
+	if lease != nil {
+		lease.Touch()
+	}
+	return nil
+}
+
+// TransmitAPDU sends a hexadecimal APDU through AT+CGLA.
+func (b *CommandBackend) TransmitAPDU(ctx context.Context, channelID int, commandHex string) (string, error) {
+	if channelID <= 0 || channelID > 255 {
+		return "", fmt.Errorf("invalid logical channel %d", channelID)
+	}
+	commandHex = strings.ToUpper(strings.TrimSpace(commandHex))
+	if commandHex == "" || len(commandHex)%2 != 0 || !isHex(commandHex) {
+		return "", fmt.Errorf("invalid APDU hex command")
+	}
+	lease, err := b.simAuthLease(ctx, channelID)
+	if err != nil {
+		return "", err
+	}
+	if lease != nil {
+		defer lease.Release()
+	}
+	response, err := b.command(ctx, fmt.Sprintf(`AT+CGLA=%d,%d,"%s"`, channelID, len(commandHex), commandHex), 15*time.Second)
+	if err != nil {
+		return "", fmt.Errorf("AT+CGLA transmit APDU: %w", err)
+	}
+	match := regexp.MustCompile(`(?m)\+CGLA:\s*(?:\d+\s*,\s*)?\d+\s*,\s*"?([0-9A-Fa-f]+)"?`).FindStringSubmatch(response)
+	if len(match) != 2 {
+		return "", fmt.Errorf("AT+CGLA did not return an APDU response")
+	}
+	if lease != nil {
+		lease.Touch()
+	}
+	return strings.ToUpper(match[1]), nil
+}
+
+func isHex(value string) bool {
+	for _, r := range value {
+		if !((r >= '0' && r <= '9') || (r >= 'A' && r <= 'F') || (r >= 'a' && r <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
+
 func (b *CommandBackend) Capabilities(context.Context) device.CapabilitySet {
 	caps := device.CapabilitySet{
 		device.CapabilityDeviceStatus:   "DJI/Quectel USB AT status queries",
@@ -321,6 +529,9 @@ func (b *CommandBackend) Capabilities(context.Context) device.CapabilitySet {
 		device.CapabilityNetworkStatus:  "AT usbnet and radio status queries",
 		device.CapabilityNetworkControl: "AT usbnet mode control",
 		device.CapabilityCallMonitor:    "AT+CLCC voice call monitor",
+	}
+	if b.transport != nil {
+		caps[device.CapabilityAPDU] = "AT+CCHO/CGLA SIM authentication APDU channel"
 	}
 	if _, ok := b.transport.(ATInteractiveTransport); ok {
 		caps[device.CapabilitySMSSend] = "AT+CMGS interactive PDU submission"
