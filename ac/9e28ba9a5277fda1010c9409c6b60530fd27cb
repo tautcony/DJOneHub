@@ -1,0 +1,31 @@
+openspec/specs/esim-management-workbench/spec.md
+  s_0e7219acd80750::t_90903aa1134e06 158-191
+openspec/specs/modem-backends/spec.md
+  s_0e7219acd80750::t_5b84578916b9b6 256-305
+  s_0e7219acd80750::t_90903aa1134e06 238-255
+openspec/specs/vue-management-ui/spec.md
+  s_0e7219acd80750::t_90903aa1134e06 349-379
+openspec/specs/device-services/spec.md
+  s_0e7219acd80750::t_90903aa1134e06 270-298
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "ac9e28ba9a5277fda1010c9409c6b60530fd27cb",
+  "prompts": {},
+  "humans": {
+    "h_3705811fa4502c": {
+      "author": "TautCony <i@tautcony.xyz>"
+    }
+  },
+  "sessions": {
+    "s_0e7219acd80750": {
+      "agent_id": {
+        "tool": "github-copilot",
+        "id": "a28d8eb6-a979-4d03-b53e-dedc0e3d318a",
+        "model": "copilot/mai-code-1.1-flash"
+      },
+      "human_author": "TautCony <i@tautcony.xyz>"
+    }
+  }
+}
