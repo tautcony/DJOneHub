@@ -1,0 +1,195 @@
+internal/application/rawat/service.go
+  s_cc0b4a1e953726::t_c67e0765d3f0b4 8,40-43
+openspec/specs/device-api/spec.md
+  s_cc0b4a1e953726::t_c935568902129c 176-209
+pkg/logger/stdlog_redirect.go
+  s_cc0b4a1e953726::t_2357f1c340ff2a 105-107
+  s_cc0b4a1e953726::t_dce45cfe3fa1b1 87-88,101-104,108-123
+openspec/changes/archive/2026-08-12-improve-api-performance-observability/specs/esim-notifications/spec.md
+  s_e84557deccc23b::t_4cd845a4b08c95 1-16
+internal/application/firmware/service.go
+  s_cc0b4a1e953726::t_a415f4c2bc9569 77-83,351-353,355-362,390-392
+  s_cc0b4a1e953726::t_45981af879fc4a 486,489,495,497,555,557,593,595,1074,1076
+  s_cc0b4a1e953726::t_d855ccbf19719a 22,84-85,102,107,116,118,151-154,156,334-338,345-350,354,363-366,389,393-394,397,410,423
+  s_cc0b4a1e953726::t_1f9d7e26c4b8a8 424-425
+  s_cc0b4a1e953726::t_ac9af1292e0070 426-427
+openspec/changes/archive/2026-08-12-improve-api-performance-observability/specs/device-services/spec.md
+  s_e84557deccc23b::t_873bfc18c5ccb4 1-63
+internal/notify/telegram_test.go
+  s_cc0b4a1e953726::t_188828bbfd7909 64-65,101-102
+  s_cc0b4a1e953726::t_692282e189c9e2 66-100
+internal/domain/at/command.go
+  s_cc0b4a1e953726::t_c67e0765d3f0b4 1-41
+internal/api/http/routes.go
+  s_cc0b4a1e953726::t_c708c6b0c3200a 194-200
+  s_cc0b4a1e953726::t_9c0948be9cb657 292-294,308-310,312-317
+  s_cc0b4a1e953726::t_936be24a7e0aa9 11-12
+  s_cc0b4a1e953726::t_abc92dfc0893a3 54-56,66-69,179-191,204-206,209-221,231,240-245,267-277
+  s_cc0b4a1e953726::t_88da1505737e87 1-10,13-53,57-65,70-178,192,207-208,238-239,246-266,278
+  s_cc0b4a1e953726::t_28abd82b275c0d 193,201-203,222-230,232-237
+  s_cc0b4a1e953726::t_dc65325b71813f 279-291,295-307,311,318-320
+internal/api/http/runtime_diagnostics.go
+  s_cc0b4a1e953726::t_c708c6b0c3200a 59-69,170-172,181-192
+  s_cc0b4a1e953726::t_28abd82b275c0d 15,70,173-174,179-180,193-194
+  s_cc0b4a1e953726::t_19b1244cce694e 195-196
+  s_cc0b4a1e953726::t_3e721aa171ebcb 8
+internal/api/http/routes_test.go
+  s_cc0b4a1e953726::t_bdac49e7974503 174
+  s_cc0b4a1e953726::t_0a0d735fcfa77a 176-177
+  s_cc0b4a1e953726::t_9c498f16d55d29 1-19,23-27,40-49,55,59-68,78-83,87-88,92-102,106-109,113-130,134-135,139-141,145-147,151-157,171
+  s_cc0b4a1e953726::t_0cd00f5984c821 72-77
+  s_cc0b4a1e953726::t_56d09dd198ed25 178
+  s_cc0b4a1e953726::t_1f63ee41b6c988 20-22,28-39,50-54,56-58,69-71,84-86,89-91,103-105,110-112,131-133,136-138,142-144,148-150,158-170
+  s_cc0b4a1e953726::t_82bec40e378914 172-173,175,179-184
+internal/modem/manager.go
+  s_cc0b4a1e953726::t_c67e0765d3f0b4 18,70
+  s_f8dd3630944964::t_c0e8c6ef237921 678,705,714,2011
+  h_3705811fa4502c 84,87
+web/src/i18n.ts
+  s_cc0b4a1e953726::t_e7e83b516277c1 1036,1040-1050,2190,2194-2204
+internal/api/http/server.go
+  s_cc0b4a1e953726::t_6314072c53d4a6 117
+  s_cc0b4a1e953726::t_d82652236e53a6 10,96,103,114-116,1730-1731,1742,1745-1749,1768-1770,1785-1790
+  s_cc0b4a1e953726::t_dc65325b71813f 118
+  s_cc0b4a1e953726::t_abc92dfc0893a3 4,1738-1741,1750-1754
+openspec/specs/device-services/spec.md
+  s_cc0b4a1e953726::t_c935568902129c 209-269
+internal/application/esim/service.go
+  s_cc0b4a1e953726::t_7f538654ec677a 13,53-54,96-99,107-109,114,132-133,162-163,167-169,171,178,433-439,441,455,459,470,474
+  s_cc0b4a1e953726::t_1d3e4f62d11277 106
+  s_cc0b4a1e953726::t_ac9af1292e0070 486-489
+internal/application/device/service.go
+  s_cc0b4a1e953726::t_29464d0eddbfe7 9,26-31,35-42,52-57,84,92,97
+  s_cc0b4a1e953726::t_0c179cf747b3a5 71-72,78,83,91,96
+  s_cc0b4a1e953726::t_ac9af1292e0070 131-134
+docs/code-map/contracts.md
+  s_cc0b4a1e953726::t_564da439aedc58 5,16,18-20,38
+internal/application/network/service.go
+  s_cc0b4a1e953726::t_ae3cec0d8dbd47 14,34,78,83,207,211-221,223-224,228-231
+  s_cc0b4a1e953726::t_b4a0c39fb9cfba 232
+  s_cc0b4a1e953726::t_1f3a44a5846fc6 79-81,208-209,225-226
+  s_cc0b4a1e953726::t_971b1e0f1f454e 5
+  s_cc0b4a1e953726::t_ac9af1292e0070 233-234
+openspec/specs/esim-notifications/spec.md
+  s_cc0b4a1e953726::t_c935568902129c 42-56
+openspec/changes/archive/2026-08-12-improve-api-performance-observability/endpoint-plan.md
+  s_e84557deccc23b::t_077ff26c338c89 1-70
+internal/runtime/traces.go
+  s_cc0b4a1e953726::t_c67e0765d3f0b4 262
+internal/application/snapshot/snapshot_test.go
+  s_cc0b4a1e953726::t_cc3cf4bfecd7bf 138-143
+  s_cc0b4a1e953726::t_29b09e58f747a4 1-83,85-134
+  s_cc0b4a1e953726::t_cb98a90695d39b 84
+  s_cc0b4a1e953726::t_40c1f248261e31 135-137,144-151
+internal/notify/telegram.go
+  s_cc0b4a1e953726::t_188828bbfd7909 9,23-26,29-38,45,50-59
+  s_cc0b4a1e953726::t_692282e189c9e2 27-28,39-44,46-49
+  s_cc0b4a1e953726::t_0dcb3769875229 60
+web/src/views/RuntimeView.vue
+  s_cc0b4a1e953726::t_c67e0765d3f0b4 198-201,218
+openspec/changes/archive/2026-08-12-improve-api-performance-observability/specs/device-api/spec.md
+  s_e84557deccc23b::t_82b32ae3965652 1-35
+docs/code-map/diagnostics.md
+  s_cc0b4a1e953726::t_1850b3de05b8d8 50
+  s_cc0b4a1e953726::t_f9a0982d8ee35b 37
+  s_cc0b4a1e953726::t_564da439aedc58 10,41-49
+openspec/changes/archive/2026-08-12-improve-api-performance-observability/.openspec.yaml
+  s_3e5cc84f745520::t_efbb46e5db2c11 1-2
+openspec/changes/archive/2026-08-12-improve-api-performance-observability/cache-inventory.md
+  s_cc0b4a1e953726::t_e4054f1cbbcb32 1-49
+openspec/changes/archive/2026-08-12-improve-api-performance-observability/proposal.md
+  s_e84557deccc23b::t_8771df8be6daf3 1-67
+internal/runtime/runtime.go
+  s_cc0b4a1e953726::t_30841b5a99288b 103-104,112
+  s_cc0b4a1e953726::t_77c1107fba9252 102,105-111,113-114
+docs/api-performance-audit.md
+  s_cc0b4a1e953726::t_564da439aedc58 397,501-531
+  s_cc0b4a1e953726::t_73ae6eb32700de 394-396
+  s_cc0b4a1e953726::t_a19461311f5a02 1-393,401-497
+  s_cc0b4a1e953726::t_279c49db737cbb 398-400,498-500
+  s_cc0b4a1e953726::t_a9365e0bb90ee1 532-534
+internal/application/snapshot/snapshot.go
+  s_cc0b4a1e953726::t_ac9af1292e0070 89-105
+  s_cc0b4a1e953726::t_d855ccbf19719a 177-188
+  s_cc0b4a1e953726::t_77c1107fba9252 1-40,43-45,51-52,66-83,85-88,106-108,112-119,122-124,128-154,157-158,160-169,171-176,189-208
+  s_cc0b4a1e953726::t_54bda4fb556292 65,84,111,121,127
+  s_cc0b4a1e953726::t_b8b42dd5072098 53-59,61-64
+  s_cc0b4a1e953726::t_30841b5a99288b 41-42,46-50,60,109-110,120,125-126,155-156,159,170
+internal/domain/at/command_test.go
+  s_cc0b4a1e953726::t_c67e0765d3f0b4 1-19
+docs/code-map/backend.md
+  s_cc0b4a1e953726::t_de7fed5d584583 74
+  s_cc0b4a1e953726::t_f9a0982d8ee35b 51,73
+openspec/specs/device-logging/spec.md
+  s_cc0b4a1e953726::t_c935568902129c 30-40
+internal/runtime/events_test.go
+  s_cc0b4a1e953726::t_c67e0765d3f0b4 160-179
+internal/api/http/openapi.go
+  s_cc0b4a1e953726::t_f21c29edd4e5de 6-12,14
+  s_cc0b4a1e953726::t_abc92dfc0893a3 18
+  s_cc0b4a1e953726::t_0cd00f5984c821 3-4,13,52-55,57-74
+openspec/specs/api-performance-observability/spec.md
+  s_cc0b4a1e953726::t_c935568902129c 1-37
+openspec/changes/archive/2026-08-12-improve-api-performance-observability/design.md
+  s_e84557deccc23b::t_ed6387d6dabb68 1-343
+internal/application/device/service_test.go
+  s_cc0b4a1e953726::t_29464d0eddbfe7 171
+openspec/changes/archive/2026-08-12-improve-api-performance-observability/specs/device-logging/spec.md
+  s_e84557deccc23b::t_8493f072baf1b4 1-12
+openspec/changes/archive/2026-08-12-improve-api-performance-observability/specs/api-performance-observability/spec.md
+  s_e84557deccc23b::t_9150c15aa4c788 1-33
+pkg/logger/logger_test.go
+  s_cc0b4a1e953726::t_dce45cfe3fa1b1 117-118,120
+  s_cc0b4a1e953726::t_2357f1c340ff2a 119
+internal/api/http/diagnostics_test.go
+  s_cc0b4a1e953726::t_40c1f248261e31 59-64,68,82,88,98-99
+  s_cc0b4a1e953726::t_cc3cf4bfecd7bf 65-67,69-78,80-81,83-87,89-97
+  s_cc0b4a1e953726::t_20c145645882a6 79
+openspec/changes/archive/2026-08-12-improve-api-performance-observability/tasks.md
+  h_3705811fa4502c 1-84
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "95f498c3fff3fbb7ae5cc85e8e80ad15c90be90d",
+  "prompts": {},
+  "humans": {
+    "h_3705811fa4502c": {
+      "author": "TautCony <i@tautcony.xyz>"
+    }
+  },
+  "sessions": {
+    "s_3e5cc84f745520": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ff0e2-1dc5-7da1-8223-6fcbe3438054",
+        "model": "unknown"
+      },
+      "human_author": "TautCony <i@tautcony.xyz>"
+    },
+    "s_cc0b4a1e953726": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ff3ed-f68d-7de3-a7e2-ea3d7410c16e",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "TautCony <i@tautcony.xyz>"
+    },
+    "s_e84557deccc23b": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ff3d4-4508-7623-a16f-82ac6ef75923",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "TautCony <i@tautcony.xyz>"
+    },
+    "s_f8dd3630944964": {
+      "agent_id": {
+        "tool": "github-copilot",
+        "id": "bf644a3c-6d59-4e2f-a826-f9ecf987f7d5",
+        "model": "copilot/grok-4.5"
+      },
+      "human_author": "TautCony <i@tautcony.xyz>"
+    }
+  }
+}
