@@ -5,12 +5,14 @@ import (
 	"fmt"
 	nethttp "net/http"
 	gort "runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/iniwex5/vohive/internal/application/notification"
 	"github.com/iniwex5/vohive/internal/application/operation"
+	"github.com/iniwex5/vohive/internal/application/snapshot"
 	"github.com/iniwex5/vohive/internal/notify"
 	"github.com/iniwex5/vohive/internal/platform/native"
 	appRuntime "github.com/iniwex5/vohive/internal/runtime"
@@ -54,16 +56,18 @@ type flowDiagnostics struct {
 }
 
 type runtimeDiagnosticsResponse struct {
-	GeneratedAt     time.Time                      `json:"generated_at"`
-	UptimeSeconds   int64                          `json:"uptime_seconds"`
-	Goroutines      int                            `json:"goroutines"`
-	Workers         []workerDiagnostics            `json:"workers"`
-	Channels        []channelDiagnostics           `json:"channels"`
-	EventBus        appRuntime.EventBusDiagnostics `json:"event_bus"`
-	Flows           []flowDiagnostics              `json:"flows"`
-	Topology        topologyDiagnostics            `json:"topology"`
-	Traces          []appRuntime.MessageTrace      `json:"traces"`
-	ChannelRecovery []notify.ChannelRecovery       `json:"channel_recovery"`
+	GeneratedAt      time.Time                      `json:"generated_at"`
+	UptimeSeconds    int64                          `json:"uptime_seconds"`
+	Goroutines       int                            `json:"goroutines"`
+	Workers          []workerDiagnostics            `json:"workers"`
+	Channels         []channelDiagnostics           `json:"channels"`
+	EventBus         appRuntime.EventBusDiagnostics `json:"event_bus"`
+	Flows            []flowDiagnostics              `json:"flows"`
+	Topology         topologyDiagnostics            `json:"topology"`
+	Traces           []appRuntime.MessageTrace      `json:"traces"`
+	ChannelRecovery  []notify.ChannelRecovery       `json:"channel_recovery"`
+	RoutePerformance []RoutePerformanceSummary      `json:"route_performance"`
+	Snapshots        []snapshot.Summary             `json:"snapshots"`
 }
 
 type topologyNodeDiagnostics struct {
@@ -163,11 +167,31 @@ func (s *Server) runtimeDiagnostics(w nethttp.ResponseWriter, r *nethttp.Request
 			{ID: "notification", From: "Notification policy", Via: "Notification sink queue", To: []string{"Native UI", "Telegram", "Feishu", "Webhook", "Bark", "Email", "Pushplus"}, EventTypes: []string{"call.incoming", "call.missed", "sms.received", "device.offline"}},
 			{ID: "operations", From: "HTTP commands / recovery", Via: "Operation manager + Domain EventBus", To: []string{"Workers", "Browser WebSocket"}, EventTypes: []string{"operation.changed", "operation.progress", "operation.log", "operation.completed"}},
 		},
-		Topology:        runtimeTopology(workers, channels, channelStats),
-		Traces:          busTraces(s.config.Runtime),
-		ChannelRecovery: channelStats.Recovering,
+		Topology:         runtimeTopology(workers, channels, channelStats),
+		Traces:           busTraces(s.config.Runtime),
+		ChannelRecovery:  channelStats.Recovering,
+		RoutePerformance: s.metrics.summaries(),
+		Snapshots:        s.snapshotDiagnostics(),
 	}
 	writeJSON(w, nethttp.StatusOK, response)
+}
+
+func (s *Server) snapshotDiagnostics() []snapshot.Summary {
+	var out []snapshot.Summary
+	if s.config.Device != nil {
+		out = append(out, s.config.Device.SnapshotDiagnostics()...)
+	}
+	if s.config.ESIM != nil {
+		out = append(out, s.config.ESIM.SnapshotDiagnostics()...)
+	}
+	if s.config.DeviceControl != nil {
+		out = append(out, s.config.DeviceControl.SnapshotDiagnostics()...)
+	}
+	if s.config.Network != nil {
+		out = append(out, s.config.Network.SnapshotDiagnostics()...)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }
 
 func busTraces(r *appRuntime.Runtime) []appRuntime.MessageTrace {

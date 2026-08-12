@@ -7,7 +7,7 @@ Use this map to find the first code and test for a visible fault. First confirm 
 | Symptom | First source files | First tests or commands |
 | --- | --- | --- |
 | The process does not listen | `cmd/djonehub/main.go` | `go test ./cmd/djonehub`, `./scripts/dev.sh -demo` |
-| The UI gives an API error | `web/src/services/api.ts`, `internal/api/http/server.go` | `go test ./internal/api/http` |
+| The UI gives an API error | `web/src/services/api.ts`, `internal/api/http/routes.go`, `internal/api/http/server.go` | `go test ./internal/api/http` |
 | A write request is rejected | `server.go`, `internal/api/http/boundary.go` | `boundary_test.go`, `server_test.go` |
 | The API stops during shutdown | `main.go`, `app.go`, `operation/manager.go` | `app_stop_test.go`, `shutdown_test.go` |
 | The event socket does not connect | `server.go`, `web/src/stores/device.ts` | `websocket_test.go`, `runtime_stream_test.go` |
@@ -34,8 +34,19 @@ For macOS discovery, read `internal/platform/darwin/adapter.go`. The accepted VI
 | An operation has no progress | Operation manager, feature service | `operation.progress` and operation ID |
 | An operation never becomes final | Operation manager, feature service | Context cancellation and `operation.completed` |
 | A notification is missing | Notification service, native bridge | Event baseline, preferences, sink, and permission |
+| A Raw AT trace has no command domain | `internal/domain/at/command.go`, `application/rawat/service.go`, `runtime/traces.go`, `RuntimeView.vue` | The `at.updated` trace contains only `command_class` and completion state |
 
 Use `/api/v1/runtime/diagnostics` and `/api/v1/runtime/traces` before you add new logging. Use `/api/v1/notifications/debug` for notification state.
+
+The runtime diagnostics response contains bounded `route_performance` and `snapshots` arrays. Route summaries use canonical route templates. Snapshot summaries contain fixed cache names and `hit`, `miss`, `stale`, and `coalesced` counters. These summaries do not contain request paths, query strings, payloads, cached values, identifiers, commands, responses, or raw error text.
+
+Read these files for performance diagnostics:
+
+- `internal/api/http/routes.go` defines route policies and bounded histograms.
+- `internal/application/snapshot/snapshot.go` defines snapshot policy and outcome counters.
+- `internal/api/http/runtime_diagnostics.go` publishes the bounded summaries.
+- `internal/api/http/routes_test.go` verifies route coverage and privacy.
+- `internal/application/snapshot/snapshot_test.go` verifies shared-load behavior.
 
 ## Feature Faults
 

@@ -56,3 +56,44 @@ func TestNotificationDebugExposesEventDropCounters(t *testing.T) {
 		t.Fatalf("active_subscribers after unsubscribe = %v, want empty", active)
 	}
 }
+
+func TestRuntimeDiagnosticsExposeBoundedPerformancePolicies(t *testing.T) {
+	server, _ := newReadyServer(t, allContractCapabilities())
+	server.Handler().ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/v1/device/status", nil))
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/runtime/diagnostics", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var body struct {
+		Routes    []RoutePerformanceSummary `json:"route_performance"`
+		Snapshots []struct {
+			Name     string            `json:"name"`
+			TTLMS    int64             `json:"ttl_ms"`
+			Outcomes map[string]uint64 `json:"outcomes"`
+		} `json:"snapshots"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Routes) == 0 || len(body.Snapshots) != 7 {
+		t.Fatalf("routes=%d snapshots=%#v", len(body.Routes), body.Snapshots)
+	}
+	foundRoute, foundPending := false, false
+	for _, route := range body.Routes {
+		if route.Route == "/api/v1/device/status" {
+			foundRoute = true
+		}
+	}
+	for _, item := range body.Snapshots {
+		if len(item.Outcomes) != 4 {
+			t.Errorf("snapshot %s outcomes=%v", item.Name, item.Outcomes)
+		}
+		if item.Name == "esim.pending_notifications" && item.TTLMS == 5000 {
+			foundPending = true
+		}
+	}
+	if !foundRoute || !foundPending {
+		t.Fatalf("found route=%t pending=%t", foundRoute, foundPending)
+	}
+}

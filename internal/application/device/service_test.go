@@ -91,7 +91,6 @@ func newReadyStatusService(t *testing.T, discovery *statusTestDiscovery, b *stat
 		t.Fatal(err)
 	}
 	service := NewService(rt)
-	service.ttl = time.Second
 	return service, rt, factory
 }
 
@@ -169,8 +168,7 @@ func TestStatusDoesNotReplaceCachedRadioOnFailedRefresh(t *testing.T) {
 		t.Fatalf("first status=%+v err=%v", first, err)
 	}
 	b.radioErr = errors.New("radio unavailable")
-	service.ttl = time.Millisecond
-	time.Sleep(3 * time.Millisecond)
+	service.radio.Invalidate("test_refresh")
 	second, err := service.Status(context.Background())
 	if err != nil {
 		t.Fatal(err)

@@ -99,6 +99,19 @@ func (r *Runtime) Snapshot() device.Snapshot {
 	return out
 }
 
+// Context returns the runtime lifecycle context. The returned context is
+// cancelled when a started runtime stops. Before Start, bounded service work
+// uses a non-cancellable placeholder context for direct tests and setup reads.
+func (r *Runtime) Context() context.Context {
+	r.mu.RLock()
+	ctx := r.ctx
+	r.mu.RUnlock()
+	if ctx != nil {
+		return ctx
+	}
+	return context.TODO()
+}
+
 func (r *Runtime) Events() *EventBus     { return r.bus }
 func (r *Runtime) Locks() *ResourceLocks { return r.locks }
 func (r *Runtime) EDLSessions() *EDLSessionManager {

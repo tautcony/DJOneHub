@@ -157,6 +157,26 @@ func TestMessageTraceRecordsNamedDeliveryWithSafeFields(t *testing.T) {
 	}
 }
 
+func TestATMessageTraceKeepsCommandClassWithoutCommandPayload(t *testing.T) {
+	bus := NewEventBus()
+	event := bus.Publish("at.updated", map[string]any{
+		"command_class": "sim",
+		"completed":     true,
+		"command":       `AT+CPIN="1234"`,
+	})
+
+	trace, ok := bus.MessageTrace(event.ID)
+	if !ok {
+		t.Fatal("message trace missing")
+	}
+	if trace.Fields["command_class"] != "sim" || trace.Fields["completed"] != true {
+		t.Fatalf("trace fields = %#v", trace.Fields)
+	}
+	if _, exists := trace.Fields["command"]; exists {
+		t.Fatalf("trace retained raw command: %#v", trace.Fields)
+	}
+}
+
 func TestMessageTraceStreamingIsNonBlockingAndReportsUpdates(t *testing.T) {
 	bus := NewEventBus()
 	sub := bus.SubscribeMessageTraces(1)

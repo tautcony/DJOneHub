@@ -43,22 +43,6 @@ func TestATCommandDiagnosticSeparatesQueueAndExecutionWithoutPayloads(t *testing
 	}
 }
 
-func TestSafeATCommandClassDoesNotExposeArguments(t *testing.T) {
-	tests := map[string]string{
-		`AT+CCHO="A0000005591010FFFFFFFF8900000100"`: "apdu",
-		`ATD+8613800000000;`:                         "call",
-		`AT+QCCID`:                                   "identity",
-		`AT+QENG="servingcell"`:                      "radio",
-		`AT+CPIN="1234"`:                             "sim",
-		`AT+UNKNOWN="credential"`:                    "other",
-	}
-	for command, want := range tests {
-		if got := safeATCommandClass(command); got != want {
-			t.Fatalf("safeATCommandClass(%q)=%q want %q", command, got, want)
-		}
-	}
-}
-
 func TestManagerExecuteATFailsFastWithoutATPort(t *testing.T) {
 	m, err := New(config.DeviceConfig{
 		ID:            "dev-qmi",

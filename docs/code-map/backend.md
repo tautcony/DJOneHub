@@ -48,7 +48,7 @@ Read these tests for a runtime fault:
 | --- | --- |
 | A backend is not selected | `internal/backend/selector.go`, platform adapter |
 | A feature gives `capability_not_supported` | `internal/backend/contracts.go`, `internal/backend/business_adapter.go` |
-| An AT command or unsolicited result code is wrong | `internal/modem/manager.go`, `internal/modem/transport.go`, `internal/modem/commands.go`, `internal/modem/at_parse.go` |
+| An AT command or unsolicited result code is wrong | `internal/domain/at/command.go`, `internal/modem/manager.go`, `internal/modem/transport.go`, `internal/modem/commands.go`, `internal/modem/at_parse.go` |
 | A QMI or MBIM result is wrong | `internal/backend/qmi_backend.go` or `internal/backend/mbim_backend.go` |
 | An APDU action conflicts | `internal/apduarbiter/arbiter.go`, `internal/esim/apdu_coordinator.go` |
 
@@ -69,6 +69,8 @@ Read these tests for a runtime fault:
 | `internal/storage/` | Local storage | SQLite data and JSON migration support |
 | `internal/notify/` | Remote notices | Notification channel settings and delivery |
 | `pkg/` | Shared packages | MBIM protocol, SMS codec, logging, and SMS utilities |
+
+`internal/domain/at/command.go` maps an AT command to a fixed diagnostic domain. Modem logs and Raw AT events use the same mapping. The mapping must not return command names or arguments.
 
 ## Runtime Wiring
 

@@ -6,6 +6,7 @@ import (
 	"html"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -18,6 +19,44 @@ import (
 
 // telegramMaxMessageLen 是 Telegram 单条消息的字符上限，超出会被 API 拒绝。
 const telegramMaxMessageLen = 4096
+
+var telegramBotTokenPattern = regexp.MustCompile(`(?i)(/bot)[^\s/\"']+`)
+
+type telegramSDKLogger struct{}
+
+var _ tgbotapi.BotLogger = telegramSDKLogger{}
+
+func (telegramSDKLogger) Println(values ...interface{}) {
+	telegramSDKLog(strings.TrimSpace(fmt.Sprintln(values...)))
+}
+
+func (telegramSDKLogger) Printf(format string, values ...interface{}) {
+	telegramSDKLog(strings.TrimSpace(fmt.Sprintf(format, values...)))
+}
+
+func telegramSDKLog(message string) {
+	message = redactTelegramURL(message)
+	lower := strings.ToLower(message)
+	switch {
+	case strings.HasPrefix(lower, "endpoint:"):
+		// SDK debug logs can contain message bodies, chat IDs, and API responses.
+		logger.Info("[notify][telegram] SDK debug details suppressed")
+	case strings.Contains(lower, "retrying"):
+		logger.Warn("[notify][telegram] " + message)
+	case strings.Contains(lower, "stopping the update receiver"):
+		logger.Info("[notify][telegram] " + message)
+	default:
+		logger.Error("[notify][telegram] " + message)
+	}
+}
+
+func redactTelegramURL(message string) string {
+	return telegramBotTokenPattern.ReplaceAllString(message, `${1}<redacted>`)
+}
+
+func init() {
+	_ = tgbotapi.SetLogger(telegramSDKLogger{})
+}
 
 // TelegramChannel 通过 Telegram Bot 推送通知并接收命令。
 type TelegramChannel struct {

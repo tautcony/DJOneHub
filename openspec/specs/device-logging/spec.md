@@ -27,3 +27,14 @@ The device-layer logger SHALL NOT write sensitive identity or content data at de
 #### Scenario: eSIM profile download is logged
 - **WHEN** the eSIM download path logs progress or failure
 - **THEN** the log omits the `matchingID` so the one-time activation code component is not persisted
+
+### Requirement: API completion logs SHALL use route templates
+
+Default API completion and error logs SHALL use the canonical route template,
+HTTP method, workload class, status class, structured error code, response size,
+and duration. They SHALL NOT include concrete request URIs, query strings,
+request bodies, response values, identifiers, credentials, or raw error text.
+
+#### Scenario: Sensitive value appears in a path or query
+- **WHEN** an API request contains an ICCID or notification sequence
+- **THEN** the completion log contains only the canonical route template

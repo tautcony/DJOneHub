@@ -5,6 +5,7 @@ import (
 
 	"github.com/iniwex5/vohive/internal/application/device"
 	"github.com/iniwex5/vohive/internal/backend"
+	domainat "github.com/iniwex5/vohive/internal/domain/at"
 	domain "github.com/iniwex5/vohive/internal/domain/device"
 	"github.com/iniwex5/vohive/internal/runtime"
 )
@@ -36,7 +37,10 @@ func (s *Service) Execute(ctx context.Context, command string) (string, error) {
 	if err == nil {
 		// Raw AT is intentionally observable without exposing the command in
 		// events, because commands can contain SIM or network credentials.
-		s.runtime.Events().Publish("at.updated", map[string]any{"completed": true})
+		s.runtime.Events().Publish("at.updated", map[string]any{
+			"command_class": domainat.CommandClass(command),
+			"completed":     true,
+		})
 	}
 	return response, err
 }

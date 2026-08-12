@@ -84,6 +84,8 @@ func classifyLine(line string, caller *zapcore.EntryCaller) string {
 func heuristicLevel(line string) zapcore.Level {
 	lower := strings.ToLower(line)
 	switch {
+	case strings.Contains(lower, "http request completed"):
+		return httpCompletionLevel(lower)
 	case strings.Contains(lower, "cancel"):
 		return zapcore.WarnLevel
 	case strings.Contains(lower, "error"),
@@ -95,4 +97,27 @@ func heuristicLevel(line string) zapcore.Level {
 	default:
 		return zapcore.InfoLevel
 	}
+}
+
+func httpCompletionLevel(line string) zapcore.Level {
+	if strings.Contains(line, "status_class=4xx") {
+		return zapcore.WarnLevel
+	}
+	if strings.Contains(line, "status_class=5xx") || hasNonEmptyLogField(line, "error_code") {
+		return zapcore.ErrorLevel
+	}
+	return zapcore.InfoLevel
+}
+
+func hasNonEmptyLogField(line, name string) bool {
+	prefix := name + "="
+	index := strings.Index(line, prefix)
+	if index < 0 {
+		return false
+	}
+	value := line[index+len(prefix):]
+	if end := strings.IndexByte(value, ' '); end >= 0 {
+		value = value[:end]
+	}
+	return value != ""
 }

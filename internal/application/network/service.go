@@ -2,6 +2,7 @@ package network
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -10,6 +11,7 @@ import (
 	"github.com/iniwex5/vohive/internal/application/device"
 	"github.com/iniwex5/vohive/internal/application/notification"
 	"github.com/iniwex5/vohive/internal/application/operation"
+	"github.com/iniwex5/vohive/internal/application/snapshot"
 	"github.com/iniwex5/vohive/internal/backend"
 	domain "github.com/iniwex5/vohive/internal/domain/device"
 	derrors "github.com/iniwex5/vohive/internal/domain/errors"
@@ -29,8 +31,7 @@ type Service struct {
 	lastPublished *notification.NetworkUpdateEvent
 	// lastTrafficPublished 记录上一个已发布的流量样本, 用于去重发布。
 	lastTrafficPublished *TrafficUpdateEvent
-	iccid                string
-	iccidChecked         time.Time
+	activeICCID          *snapshot.Snapshot[string]
 
 	// stopMu guards the cancel/done pair created by Start, following the
 	// notification service's Stop pattern so shutdown can join both pollers
@@ -74,7 +75,12 @@ type TrafficRangeStatus struct {
 }
 
 func NewService(devices *device.Service, ops *operation.Manager, runtime *runtime.Runtime, controller transport.NetworkController, store ...*storage.SQLiteStore) *Service {
+	parent := func() context.Context { return context.TODO() }
+	if runtime != nil {
+		parent = runtime.Context
+	}
 	service := &Service{devices: devices, ops: ops, runtime: runtime, controller: controller}
+	service.activeICCID = snapshot.New[string](snapshot.Policy{Name: "network.active_iccid", TTL: 15 * time.Second, LoadTimeout: 30 * time.Second}, parent, nil)
 	if len(store) > 0 {
 		service.store = store[0]
 	}
@@ -198,26 +204,34 @@ func (s *Service) publishTraffic(ctx context.Context) {
 // and AT+QCCID. The identity fallback can send AT+CGSN, AT+CIMI, AT+QCCID,
 // AT+CNUM, and AT+QGMR/AT+CGMR. It never performs eSIM EID discovery.
 func (s *Service) currentICCID(ctx context.Context) (string, error) {
-	s.mu.Lock()
-	if s.iccid != "" && time.Since(s.iccidChecked) < 15*time.Second {
-		iccid := s.iccid
-		s.mu.Unlock()
-		return iccid, nil
+	generation := uint64(0)
+	if s.runtime != nil {
+		generation = s.runtime.Snapshot().Generation
 	}
-	s.mu.Unlock()
-
-	iccid := strings.TrimSpace(s.devices.CurrentICCID(ctx))
-	if iccid == "" {
-		status, err := s.devices.Status(ctx)
-		if err != nil {
-			return "", err
+	iccid, _, err := s.activeICCID.Get(ctx, snapshot.Scope{Generation: generation}, func(loadCtx context.Context) (string, error) {
+		value := strings.TrimSpace(s.devices.CurrentICCID(loadCtx))
+		if value == "" {
+			status, statusErr := s.devices.Status(loadCtx)
+			if statusErr != nil {
+				return "", statusErr
+			}
+			value = strings.TrimSpace(status.Identity.ICCID)
 		}
-		iccid = strings.TrimSpace(status.Identity.ICCID)
+		if value == "" {
+			return "", errEmptyICCID
+		}
+		return value, nil
+	})
+	if errors.Is(err, errEmptyICCID) {
+		return "", nil
 	}
-	s.mu.Lock()
-	s.iccid, s.iccidChecked = iccid, time.Now()
-	s.mu.Unlock()
-	return iccid, nil
+	return iccid, err
+}
+
+var errEmptyICCID = errors.New("active ICCID is empty")
+
+func (s *Service) SnapshotDiagnostics() []snapshot.Summary {
+	return []snapshot.Summary{s.activeICCID.Summary()}
 }
 
 // TrafficDaily reads local traffic counters after currentICCID resolves the

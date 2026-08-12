@@ -259,7 +259,7 @@ func traceFieldAllowlist(eventType string) []string {
 	case strings.HasPrefix(eventType, "operation."):
 		return []string{"operation_id", "type", "state", "progress", "started_at", "finished_at"}
 	case eventType == "at.updated":
-		return []string{"completed"}
+		return []string{"command_class", "completed"}
 	case eventType == "esim.updated":
 		return []string{"operation"}
 	case eventType == "vowifi.updated" || eventType == "vowifi.state.changed":

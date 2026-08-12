@@ -61,3 +61,42 @@ func TestRedactTokenEmptyTokenIsNoop(t *testing.T) {
 		t.Fatalf("redactToken()=%q", got)
 	}
 }
+
+func TestRedactTelegramURLMasksTokenWithoutChangingEndpoint(t *testing.T) {
+	tests := []struct {
+		name    string
+		message string
+		secret  string
+		want    string
+	}{
+		{
+			name:    "official API",
+			message: `Post "https://api.telegram.org/bot123456:fake-secret/getUpdates": unexpected EOF`,
+			secret:  "fake-secret",
+			want:    "/bot<redacted>/getUpdates",
+		},
+		{
+			name:    "custom API",
+			message: `Post "https://telegram.example.test/bot654321:other-secret/sendMessage": timeout`,
+			secret:  "other-secret",
+			want:    "/bot<redacted>/sendMessage",
+		},
+		{
+			name:    "unrelated text",
+			message: "Failed to get updates, retrying in 3 seconds...",
+			want:    "Failed to get updates, retrying in 3 seconds...",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := redactTelegramURL(tt.message)
+			if tt.secret != "" && strings.Contains(got, tt.secret) {
+				t.Fatalf("redacted message contains secret: %q", got)
+			}
+			if !strings.Contains(got, tt.want) {
+				t.Fatalf("redacted message = %q, want substring %q", got, tt.want)
+			}
+		})
+	}
+}

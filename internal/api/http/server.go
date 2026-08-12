@@ -1,12 +1,13 @@
 package httpapi
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"net"
 	nethttp "net/http"
 	"strconv"
 	"strings"
@@ -92,13 +93,14 @@ type Config struct {
 type Server struct {
 	config    Config
 	startedAt time.Time
+	metrics   *routeMetrics
 	// keepalive is captured at construction so tests can shrink the WebSocket
 	// windows per server without racing handler goroutines.
 	keepalive websocketKeepalive
 }
 
 func NewServer(config Config) *Server {
-	return &Server{config: config, startedAt: time.Now().UTC(), keepalive: websocketKeepalive{write: writeWait, pong: pongWait, ping: pingPeriod}}
+	return &Server{config: config, startedAt: time.Now().UTC(), metrics: newRouteMetrics(), keepalive: websocketKeepalive{write: writeWait, pong: pongWait, ping: pingPeriod}}
 }
 
 // SetLoopbackPort records the bound loopback port used to validate Origin and
@@ -109,77 +111,11 @@ func (s *Server) SetLoopbackPort(port int) { s.config.LoopbackPort = port }
 
 func (s *Server) Handler() nethttp.Handler {
 	mux := nethttp.NewServeMux()
-	mux.HandleFunc("/api/v1/device", s.deviceStatus)
-	mux.HandleFunc("/api/v1/device/capabilities", s.deviceCapabilities)
-	mux.HandleFunc("/api/v1/device/status", s.deviceStatus)
-	mux.HandleFunc("/api/v1/device/actions/rescan", s.rescan)
-	mux.HandleFunc("/api/v1/device/actions/reboot", s.reboot)
-	mux.HandleFunc("/api/v1/runtime/diagnostics", s.runtimeDiagnostics)
-	mux.HandleFunc("/api/v1/runtime/traces/stream", s.runtimeTraceStream)
-	mux.HandleFunc("/api/v1/runtime/traces/", s.runtimeTraceByID)
-	mux.HandleFunc("/api/v1/runtime/traces", s.runtimeTraces)
-	mux.HandleFunc("/api/v1/sms/actions/refresh", s.smsRefresh)
-	mux.HandleFunc("/api/v1/sms/actions/send", s.smsSend)
-	mux.HandleFunc("/api/v1/sms/actions/clear", s.smsClear)
-	mux.HandleFunc("/api/v1/esim", s.esimOverview)
-	mux.HandleFunc("/api/v1/esim/actions/download", s.esimDownload)
-	mux.HandleFunc("/api/v1/esim/actions/enable", s.esimEnable)
-	mux.HandleFunc("/api/v1/esim/actions/rename", s.esimRename)
-	mux.HandleFunc("/api/v1/esim/actions/delete", s.esimDelete)
-	mux.HandleFunc("/api/v1/esim/actions/disable", s.esimDisable)
-	mux.HandleFunc("/api/v1/esim/notifications", s.esimNotifications)
-	mux.HandleFunc("/api/v1/esim/notifications/", s.esimNotificationBySequence)
-	mux.HandleFunc("/api/v1/esim/operations/", s.esimConfirmationCodeReply)
-	mux.HandleFunc("/api/v1/network", s.networkStatus)
-	mux.HandleFunc("/api/v1/network/actions/mode", s.networkMode)
-	mux.HandleFunc("/api/v1/network/actions/check", s.networkCheck)
-	mux.HandleFunc("/api/v1/network/actions/traffic", s.networkTraffic)
-	mux.HandleFunc("/api/v1/network/traffic/daily", s.networkTrafficDaily)
-	mux.HandleFunc("/api/v1/network/traffic/range", s.networkTrafficRange)
-	mux.HandleFunc("/api/v1/network/diagnostics", s.networkDiagnostics)
-	mux.HandleFunc("/api/v1/device/actions/raw-at", s.rawAT)
-	// Device Control is the only public namespace for ADB and EDL controls.
-	mux.HandleFunc("/api/v1/device-control", s.deviceControlStatus)
-	mux.HandleFunc("/api/v1/device-control/settings", s.deviceControlSettings)
-	mux.HandleFunc("/api/v1/device-control/actions/adb-unlock", s.deviceControlADBUnlock)
-	mux.HandleFunc("/api/v1/device-control/actions/adb-mode", s.deviceControlADBMode)
-	mux.HandleFunc("/api/v1/device-control/actions/adb/reboot", s.deviceControlADBReboot)
-	mux.HandleFunc("/api/v1/device-control/actions/adb/shell/ws", s.deviceControlADBShellWS)
-	mux.HandleFunc("/api/v1/device-control/actions/usb-id", s.deviceControlUSBID)
-	mux.HandleFunc("/api/v1/device-control/actions/edl", s.deviceControlEDL)
-	mux.HandleFunc("/api/v1/device-control/actions/nand-backup", s.deviceControlBackup)
-	mux.HandleFunc("/api/v1/device-control/actions/select-backup-directory", s.deviceControlBackupSelectDirectory)
-	mux.HandleFunc("/api/v1/device-control/actions/select-edl-directory", s.deviceControlBackupSelectEDLDirectory)
-	mux.HandleFunc("/api/v1/device-control/actions/select-adb-file", s.deviceControlSelectADBFile)
-	mux.HandleFunc("/api/v1/device-control/actions/select-loader-file", s.deviceControlSelectLoaderFile)
-	mux.HandleFunc("/api/v1/device-control/actions/reset", s.deviceControlReset)
-	mux.HandleFunc("/api/v1/vowifi", s.vowifiStatus)
-	mux.HandleFunc("/api/v1/vowifi/actions/enable", s.vowifiEnable)
-	mux.HandleFunc("/api/v1/vowifi/actions/disable", s.vowifiDisable)
-	mux.HandleFunc("/api/v1/vowifi/actions/reconnect", s.vowifiReconnect)
-	mux.HandleFunc("/api/v1/vowifi/proxies", s.vowifiProxies)
-	mux.HandleFunc("/api/v1/vowifi/proxy-country-rules", s.vowifiProxyCountryRules)
-	mux.HandleFunc("/api/v1/vowifi/country-table", s.vowifiCountryTable)
-	mux.HandleFunc("/api/v1/vowifi/card-policies", s.vowifiCardPolicies)
-	mux.HandleFunc("/api/v1/notifications/debug", s.notificationDebug)
-	mux.HandleFunc("/api/v1/notifications/permissions", s.notificationPermissions)
-	mux.HandleFunc("/api/v1/notifications/permissions/request", s.requestNotificationPermission)
-	mux.HandleFunc("/api/v1/notifications/permissions/open-settings", s.openNotificationSettings)
-	mux.HandleFunc("/api/v1/notifications/preferences", s.notificationPreferences)
-	mux.HandleFunc("/api/v1/notifications/channels", s.notificationChannels)
-	mux.HandleFunc("/api/v1/notifications/channels/actions/test", s.testNotificationChannel)
-	mux.HandleFunc("/api/v1/notifications/channels/telegram/chat-ids", s.discoverTelegramChatIDs)
-	mux.HandleFunc("/api/v1/settings/startup", s.startupSettings)
-	mux.HandleFunc("/api/v1/calls", s.calls)
-	mux.HandleFunc("/api/v1/calls/actions/dial", s.callDial)
-	mux.HandleFunc("/api/v1/calls/actions/reject", s.callReject)
-	mux.HandleFunc("/api/v1/esim/health", s.esimHealth)
-	mux.HandleFunc("/api/v1/sim-profiles", s.simProfiles)
-	mux.HandleFunc("/api/v1/sim-profiles/", s.simProfileByICCID)
-	mux.HandleFunc("/api/v1/operations/", s.operationStatus)
-	mux.HandleFunc("/api/v1/openapi.json", s.openapi)
-	mux.HandleFunc("/api/v1/events/ws", s.websocket)
-	return logRequests(admissionGate(s.config.Admission, s.loopbackGuard(mux)))
+	for _, spec := range routeRegistry() {
+		handler := spec.Handler(s)
+		mux.Handle(muxPattern(spec), s.serveRoute(spec, handler))
+	}
+	return admissionGate(s.config.Admission, s.loopbackGuard(registryMethodGuard(mux)))
 }
 
 // admissionGate refuses new requests once the shutdown admission gate is
@@ -1791,27 +1727,31 @@ func writeJSON(w nethttp.ResponseWriter, status int, value any) {
 
 func writeError(w nethttp.ResponseWriter, err error) {
 	structured := toStructuredError(err)
-	method, path, host, origin := "-", "-", "-", "-"
-	if metadata, ok := w.(interface {
-		RequestMetadata() (method, path, host, origin string)
-	}); ok {
-		method, path, host, origin = metadata.RequestMetadata()
+	if recorder, ok := w.(interface{ SetErrorCode(string) }); ok {
+		recorder.SetErrorCode(string(structured.Code))
 	}
-	log.Printf("http error method=%s path=%q host=%q origin=%q code=%s error=%v", method, path, host, origin, structured.Code, err)
 	writeJSON(w, errorStatus(structured.Code), map[string]any{"error": structured})
 }
 
 type statusResponseWriter struct {
 	nethttp.ResponseWriter
-	status int
-	method string
-	path   string
-	host   string
-	origin string
+	status    int
+	method    string
+	path      string
+	bytes     int
+	errorCode string
 }
 
-func (w *statusResponseWriter) RequestMetadata() (string, string, string, string) {
-	return w.method, w.path, w.host, w.origin
+func newStatusResponseWriter(w nethttp.ResponseWriter, method, path string) *statusResponseWriter {
+	return &statusResponseWriter{ResponseWriter: w, method: method, path: path}
+}
+
+func (w *statusResponseWriter) SetErrorCode(code string) { w.errorCode = code }
+func (w *statusResponseWriter) statusCode() int {
+	if w.status == 0 {
+		return nethttp.StatusOK
+	}
+	return w.status
 }
 
 func (w *statusResponseWriter) WriteHeader(status int) {
@@ -1825,7 +1765,9 @@ func (w *statusResponseWriter) Write(payload []byte) (int, error) {
 	if w.status == 0 {
 		w.status = nethttp.StatusOK
 	}
-	return w.ResponseWriter.Write(payload)
+	written, err := w.ResponseWriter.Write(payload)
+	w.bytes += written
+	return written, err
 }
 
 // Flush preserves streaming semantics through the request logging wrapper.
@@ -1840,28 +1782,12 @@ func (w *statusResponseWriter) Flush() {
 	}
 }
 
-func logRequests(next nethttp.Handler) nethttp.Handler {
-	return nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
-		// WebSocket upgraders require the original ResponseWriter interfaces.
-		if isWebSocketRequest(r) {
-			next.ServeHTTP(w, r)
-			return
-		}
-		started := time.Now()
-		recorder := &statusResponseWriter{
-			ResponseWriter: w,
-			method:         r.Method,
-			path:           r.URL.Path,
-			host:           r.Host,
-			origin:         r.Header.Get("Origin"),
-		}
-		next.ServeHTTP(recorder, r)
-		status := recorder.status
-		if status == 0 {
-			status = nethttp.StatusOK
-		}
-		log.Printf("http request method=%s path=%s status=%d duration=%s", r.Method, r.URL.RequestURI(), status, time.Since(started).Round(time.Millisecond))
-	})
+func (w *statusResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return w.ResponseWriter.(nethttp.Hijacker).Hijack()
+}
+
+func (w *statusResponseWriter) CloseNotify() <-chan bool {
+	return w.ResponseWriter.(nethttp.CloseNotifier).CloseNotify()
 }
 
 // toStructuredError 将错误映射为结构化 API 错误。错误消息属于 API 契约

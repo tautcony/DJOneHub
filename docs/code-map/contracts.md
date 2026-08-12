@@ -2,7 +2,7 @@
 
 ## HTTP Boundary
 
-`internal/api/http/server.go` owns the local HTTP boundary. `Server.Handler` registers all `/api/v1` routes. Read this file first when a request has a wrong method, route, response, or error.
+`internal/api/http/routes.go` defines every `/api/v1` method. Each route entry defines the canonical path template, workload class, stream kind, handler, and OpenAPI operation. `internal/api/http/server.go` owns the handler behavior and local HTTP boundary.
 
 `cmd/djonehub/main.go` limits the listener to a loopback address. `Server.SetLoopbackPort` gives the HTTP server the permitted port for Origin and Host checks.
 
@@ -13,8 +13,11 @@ The HTTP server checks these items before it calls a service:
 - The JSON request body for command routes
 - The application admission gate
 - The required capability
+- The workload deadline for a non-stream route
 
-Read `internal/api/http/boundary_test.go`, `server_test.go`, `sanitize_test.go`, and `websocket_test.go` when you change this boundary.
+Read `internal/api/http/routes_test.go`, `boundary_test.go`, `server_test.go`, `sanitize_test.go`, and `websocket_test.go` when you change this boundary.
+
+The route registry is the source for dispatch, OpenAPI paths, completion logs, and route performance labels. Do not add a route directly to `http.ServeMux`.
 
 ## Route Groups
 
@@ -32,7 +35,7 @@ Read `internal/api/http/boundary_test.go`, `server_test.go`, `sanitize_test.go`,
 | `/operations/{id}` | Operation manager | `internal/application/operation/` |
 | `/events/ws` | Runtime event bus | `internal/runtime/events.go` |
 
-`/api/v1/openapi.json` gives the generated route description. Read `internal/api/http/openapi.go` when you change API documentation.
+`/api/v1/openapi.json` gives the generated route description. Read `internal/api/http/routes.go` for path operations. Read `internal/api/http/openapi.go` for shared schemas and responses.
 
 ## Error and Capability Rules
 

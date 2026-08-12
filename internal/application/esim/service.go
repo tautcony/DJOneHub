@@ -2,7 +2,6 @@ package esim
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"strings"
 	"sync"
@@ -11,12 +10,12 @@ import (
 	"github.com/iniwex5/vohive/internal/application/device"
 	"github.com/iniwex5/vohive/internal/application/operation"
 	"github.com/iniwex5/vohive/internal/application/simprofiles"
+	"github.com/iniwex5/vohive/internal/application/snapshot"
 	"github.com/iniwex5/vohive/internal/backend"
 	domain "github.com/iniwex5/vohive/internal/domain/device"
 	derrors "github.com/iniwex5/vohive/internal/domain/errors"
 	"github.com/iniwex5/vohive/internal/runtime"
 	"github.com/iniwex5/vohive/internal/storage"
-	"golang.org/x/sync/singleflight"
 )
 
 // confirmationCodeTimeout 是确认码请求的等待窗口；超时按用户取消处理。
@@ -51,12 +50,8 @@ type Service struct {
 	// operationID -> 确认码回复 channel；下载结束（成功/失败/取消）时删除。
 	confirmationRequests map[string]chan confirmationReply
 
-	overviewMu         sync.RWMutex
-	overviewCache      map[string]any
-	overviewGeneration uint64
-	overviewEpoch      uint64
-	overviewLoadedAt   time.Time
-	overviewFlight     singleflight.Group
+	overview             *snapshot.Snapshot[map[string]any]
+	pendingNotifications *snapshot.Snapshot[[]backend.NotificationItem]
 }
 
 func (s *Service) SetProfileRegistry(profiles *simprofiles.Service) {
@@ -98,16 +93,25 @@ func NewService(devices *device.Service, ops *operation.Manager, runtime *runtim
 	if len(store) > 0 {
 		historyStore = store[0]
 	}
+	parent := func() context.Context { return context.TODO() }
+	if runtime != nil {
+		parent = runtime.Context
+	}
 	return &Service{
 		devices:              devices,
 		ops:                  ops,
 		runtime:              runtime,
 		store:                historyStore,
 		confirmationRequests: make(map[string]chan confirmationReply),
+		overview:             snapshot.New(snapshot.Policy{Name: "esim.overview", TTL: overviewSnapshotTTL, LoadTimeout: 45 * time.Second}, parent, cloneOverviewResult),
+		pendingNotifications: snapshot.New(snapshot.Policy{Name: "esim.pending_notifications", TTL: pendingNotificationsTTL, LoadTimeout: 45 * time.Second}, parent, func(items []backend.NotificationItem) []backend.NotificationItem {
+			return append([]backend.NotificationItem(nil), items...)
+		}),
 	}
 }
 
 const overviewSnapshotTTL = 10 * time.Second
+const pendingNotificationsTTL = 5 * time.Second
 
 func cloneOverviewResult(value map[string]any) map[string]any {
 	if value == nil {
@@ -124,21 +128,9 @@ func cloneOverviewResult(value map[string]any) map[string]any {
 	return out
 }
 
-func (s *Service) cachedOverview(generation uint64) map[string]any {
-	s.overviewMu.RLock()
-	defer s.overviewMu.RUnlock()
-	if s.overviewCache == nil || s.overviewGeneration != generation || time.Since(s.overviewLoadedAt) >= overviewSnapshotTTL {
-		return nil
-	}
-	return cloneOverviewResult(s.overviewCache)
-}
-
 func (s *Service) invalidateOverviewCache() {
-	s.overviewMu.Lock()
-	s.overviewEpoch++
-	s.overviewCache = nil
-	s.overviewLoadedAt = time.Time{}
-	s.overviewMu.Unlock()
+	s.overview.Invalidate("profile_mutation")
+	s.pendingNotifications.Invalidate("profile_mutation")
 }
 
 func (s *Service) port(operationName string) (backend.ESIMPort, error) {
@@ -167,40 +159,23 @@ func (s *Service) Overview(ctx context.Context) (map[string]any, error) {
 		if s.runtime != nil {
 			generation = s.runtime.Snapshot().Generation
 		}
-		if cached := s.cachedOverview(generation); cached != nil {
-			return cached, nil
-		}
-		s.overviewMu.RLock()
-		epoch := s.overviewEpoch
-		s.overviewMu.RUnlock()
-		value, snapshotErr, _ := s.overviewFlight.Do(fmt.Sprintf("%d:%d", generation, epoch), func() (any, error) {
-			if cached := s.cachedOverview(generation); cached != nil {
-				return cached, nil
-			}
-			snapshot, err := snapshotPort.ESIMSnapshot(ctx)
+		value, _, snapshotErr := s.overview.Get(ctx, snapshot.Scope{Generation: generation}, func(loadCtx context.Context) (map[string]any, error) {
+			cardSnapshot, err := snapshotPort.ESIMSnapshot(loadCtx)
 			if err != nil {
 				return nil, err
 			}
-			result := map[string]any{"card_type": "euicc", "eid": snapshot.EID, "profiles": snapshot.Profiles,
-				"free_nvram_bytes": snapshot.Storage.FreeNvramBytes, "free_nvram": snapshot.Storage.FreeNvram,
-				"device_info": snapshot.DeviceInfo}
+			result := map[string]any{"card_type": "euicc", "eid": cardSnapshot.EID, "profiles": cardSnapshot.Profiles,
+				"free_nvram_bytes": cardSnapshot.Storage.FreeNvramBytes, "free_nvram": cardSnapshot.Storage.FreeNvram,
+				"device_info": cardSnapshot.DeviceInfo}
 			if s.profiles != nil {
-				if observeErr := s.profiles.ObserveESIM(snapshot.Profiles); observeErr != nil {
+				if observeErr := s.profiles.ObserveESIM(cardSnapshot.Profiles); observeErr != nil {
 					log.Printf("observe eSIM profiles: %v", observeErr)
 				}
 			}
-			s.overviewMu.Lock()
-			generationCurrent := s.runtime == nil || s.runtime.Snapshot().Generation == generation
-			if s.overviewEpoch == epoch && generationCurrent {
-				s.overviewCache = cloneOverviewResult(result)
-				s.overviewGeneration = generation
-				s.overviewLoadedAt = time.Now()
-			}
-			s.overviewMu.Unlock()
 			return result, nil
 		})
 		if snapshotErr == nil && value != nil {
-			return cloneOverviewResult(value.(map[string]any)), nil
+			return value, nil
 		}
 	}
 	eid, err := port.EID(ctx)
@@ -455,8 +430,15 @@ func (s *Service) ListNotifications(ctx context.Context) ([]backend.Notification
 	if err != nil {
 		return nil, err
 	}
-	items, err := port.ListNotifications(ctx)
+	generation := uint64(0)
+	if s.runtime != nil {
+		generation = s.runtime.Snapshot().Generation
+	}
+	items, _, err := s.pendingNotifications.Get(ctx, snapshot.Scope{Generation: generation}, func(loadCtx context.Context) ([]backend.NotificationItem, error) {
+		return port.ListNotifications(loadCtx)
+	})
 	if err != nil {
+		s.pendingNotifications.Invalidate("validated_target_failure")
 		return nil, err
 	}
 	s.syncNotificationHistory(items)
@@ -470,9 +452,11 @@ func (s *Service) ProcessNotification(ctx context.Context, sequenceNumber int64)
 	}
 	if err := port.ProcessNotification(ctx, sequenceNumber); err != nil {
 		s.recordNotificationState(sequenceNumber, storage.NotificationStateFailed)
+		s.pendingNotifications.Invalidate("notification_process_failure")
 		return err
 	}
 	s.recordNotificationState(sequenceNumber, storage.NotificationStateProcessed)
+	s.pendingNotifications.Invalidate("notification_processed")
 	return nil
 }
 
@@ -483,9 +467,11 @@ func (s *Service) RemoveNotification(ctx context.Context, sequenceNumber int64) 
 	}
 	if err := port.RemoveNotification(ctx, sequenceNumber); err != nil {
 		s.recordNotificationState(sequenceNumber, storage.NotificationStateFailed)
+		s.pendingNotifications.Invalidate("notification_remove_failure")
 		return err
 	}
 	s.recordNotificationState(sequenceNumber, storage.NotificationStateRemoved)
+	s.pendingNotifications.Invalidate("notification_removed")
 	return nil
 }
 
@@ -495,6 +481,10 @@ func (s *Service) NotificationHistory(ctx context.Context, limit int) ([]storage
 		return []storage.NotificationHistoryRecord{}, nil
 	}
 	return s.store.ListNotificationHistory(limit)
+}
+
+func (s *Service) SnapshotDiagnostics() []snapshot.Summary {
+	return []snapshot.Summary{s.overview.Summary(), s.pendingNotifications.Summary()}
 }
 
 // syncNotificationHistory 以一次卡片快照驱动历史落库：快照内的通知 upsert 为

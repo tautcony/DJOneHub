@@ -15,6 +15,7 @@ import (
 
 	"github.com/iniwex5/vohive/internal/apduarbiter"
 	"github.com/iniwex5/vohive/internal/config"
+	domainat "github.com/iniwex5/vohive/internal/domain/at"
 	"github.com/iniwex5/vohive/pkg/logger"
 	"github.com/iniwex5/vohive/pkg/smscodec"
 	"github.com/warthog618/sms/encoding/gsm7"
@@ -56,40 +57,6 @@ type atCommandDiagnostic struct {
 	TimeoutClass   string `json:"timeout_class"`
 }
 
-func safeATCommandClass(command string) string {
-	command = strings.ToUpper(strings.TrimSpace(command))
-	switch {
-	case command == "ATA", command == "ATH", strings.HasPrefix(command, "ATD"):
-		return "call"
-	case command == "AT":
-		return "basic"
-	case !strings.HasPrefix(command, "AT+"):
-		return "other"
-	}
-	name := strings.TrimPrefix(command, "AT+")
-	if index := strings.IndexFunc(name, func(r rune) bool {
-		return (r < 'A' || r > 'Z') && (r < '0' || r > '9')
-	}); index >= 0 {
-		name = name[:index]
-	}
-	switch name {
-	case "CSIM", "CCHO", "CGLA", "CCHC":
-		return "apdu"
-	case "CGSN", "CIMI", "QCCID", "CNUM", "QGMR", "CGMR":
-		return "identity"
-	case "CEREG", "CGREG", "CREG", "COPS", "QNWINFO", "CSQ", "QENG":
-		return "radio"
-	case "QSIMSTAT", "CPIN":
-		return "sim"
-	case "CMGS", "CMGF", "CMGL", "CMGR", "CMGD", "CPMS":
-		return "sms"
-	case "QCFG":
-		return "configuration"
-	default:
-		return "other"
-	}
-}
-
 func commandDiagnostic(req commandRequest, started time.Time, terminalResult, timeoutClass string) atCommandDiagnostic {
 	queueWait := time.Duration(0)
 	if !req.enqueuedAt.IsZero() && started.After(req.enqueuedAt) {
@@ -100,7 +67,7 @@ func commandDiagnostic(req commandRequest, started time.Time, terminalResult, ti
 		execTime = 0
 	}
 	return atCommandDiagnostic{
-		CommandClass: safeATCommandClass(req.cmd), QueueWaitMS: queueWait.Milliseconds(),
+		CommandClass: domainat.CommandClass(req.cmd), QueueWaitMS: queueWait.Milliseconds(),
 		ExecMS: execTime.Milliseconds(), TerminalResult: terminalResult, TimeoutClass: timeoutClass,
 	}
 }
@@ -114,10 +81,10 @@ func (m *Manager) logATCommandDiagnostic(value atCommandDiagnostic) {
 		"timeout_class", value.TimeoutClass,
 	}
 	if value.TerminalResult == "ok" || value.TerminalResult == "prompt" {
-		logger.Info(fmt.Sprintf("[%s] AT 命令完成", m.cfg.ID), fields...)
+		logger.Debug(fmt.Sprintf("[%s] AT 命令完成", m.cfg.ID), fields...)
 		return
 	}
-	logger.Warn(fmt.Sprintf("[%s] AT 命令完成", m.cfg.ID), fields...)
+	logger.Debug(fmt.Sprintf("[%s] AT 命令完成", m.cfg.ID), fields...)
 }
 
 // Manager 管理单个 EC20 模块的 AT 指令通信
@@ -708,7 +675,7 @@ func (m *Manager) handleCommand(req commandRequest) {
 	if _, err := m.port.Write([]byte(req.cmd + "\r\n")); err != nil {
 		terminalResult = "write_error"
 		req.errChan <- err
-		m.handleFatalSerialRuntimeErr(err, "write", safeATCommandClass(req.cmd))
+		m.handleFatalSerialRuntimeErr(err, "write", domainat.CommandClass(req.cmd))
 		return
 	}
 
@@ -735,7 +702,7 @@ RespLoop:
 			m.port.Write([]byte{0x1B})
 			req.errChan <- errors.New("命令执行超时")
 			if failures, tripped := m.recordATTimeout(req); tripped {
-				m.tripATTimeoutWatchdog(safeATCommandClass(req.cmd), failures)
+				m.tripATTimeoutWatchdog(domainat.CommandClass(req.cmd), failures)
 			}
 			m.enterQuarantine()
 			return
@@ -744,7 +711,7 @@ RespLoop:
 			if msg.Err != nil {
 				terminalResult = "read_error"
 				req.errChan <- msg.Err
-				m.handleFatalSerialRuntimeErr(msg.Err, "read", safeATCommandClass(req.cmd))
+				m.handleFatalSerialRuntimeErr(msg.Err, "read", domainat.CommandClass(req.cmd))
 				return
 			}
 
@@ -2041,7 +2008,7 @@ func (m *Manager) executeAT(cmd string, timeout time.Duration, silent, highPrior
 		}
 	case <-time.After(5 * time.Second): // 通道写入超时 (队列满)
 		m.logATCommandDiagnostic(atCommandDiagnostic{
-			CommandClass: safeATCommandClass(cmd), QueueWaitMS: time.Since(req.enqueuedAt).Milliseconds(),
+			CommandClass: domainat.CommandClass(cmd), QueueWaitMS: time.Since(req.enqueuedAt).Milliseconds(),
 			TerminalResult: "queue_timeout", TimeoutClass: "queue",
 		})
 		return "", errors.New("command queue full")

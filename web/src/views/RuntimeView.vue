@@ -195,6 +195,10 @@ function traceFieldLabel(key: string) {
 function traceFieldValue(key: string, value: unknown) {
   if (key === 'state') return traceStateLabel(value)
   if (key === 'update' && value === 'backend_metadata') return t('runtime.traceValues.backendMetadata')
+  if (key === 'command_class') {
+    const translationKey = `runtime.traceValues.commandClasses.${String(value)}`
+    return te(translationKey) ? t(translationKey) : String(value)
+  }
   if (typeof value === 'boolean') return t(`runtime.boolean.${value}`)
   if (typeof value === 'number' && key.endsWith('_bytes')) return formatBytes(value)
   if (typeof value === 'number' && key === 'progress') return `${value}%`
@@ -211,6 +215,7 @@ function traceFieldEntries(trace: RuntimeMessageTrace) {
   const hasChange = !!traceStateChange(trace)
   const priority = [
     'update',
+    'command_class',
     'derived_from',
     'backend_event',
     'state',

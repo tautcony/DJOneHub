@@ -19,6 +19,7 @@ import (
 
 	"github.com/electricbubble/gadb"
 	"github.com/iniwex5/vohive/internal/application/operation"
+	"github.com/iniwex5/vohive/internal/application/snapshot"
 	"github.com/iniwex5/vohive/internal/domain/device"
 	derrors "github.com/iniwex5/vohive/internal/domain/errors"
 	"github.com/iniwex5/vohive/internal/modem"
@@ -73,18 +74,15 @@ func ConfigFromEnvironment() Config {
 }
 
 type Service struct {
-	at       ATExecutor
-	ops      *operation.Manager
-	runtime  *runtime.Runtime
-	config   Config
-	settings Settings
-	adbList  ADBLister
-	mu       sync.Mutex
-	// statusCache 是固件状态短 TTL 缓存 (design D17): 读取不重复运行
-	// AT + ADB 探测序列。
-	statusCacheMu       sync.Mutex
-	cachedStatus        *Status
-	cachedAt            time.Time
+	at                  ATExecutor
+	ops                 *operation.Manager
+	runtime             *runtime.Runtime
+	config              Config
+	settings            Settings
+	adbList             ADBLister
+	mu                  sync.Mutex
+	statusStateMu       sync.Mutex
+	statusSnapshot      *snapshot.Snapshot[Status]
 	lastFirmware        modem.FirmwareRevision
 	lastFirmwareReason  string
 	lastNormalCandidate device.Candidate
@@ -101,12 +99,12 @@ func (s *Service) sessionLocation() (string, error) {
 			return candidate.Identity.PhysicalLocation, nil
 		}
 	}
-	s.statusCacheMu.Lock()
+	s.statusStateMu.Lock()
 	location := strings.TrimSpace(s.lastNormalCandidate.Identity.PhysicalLocation)
 	if location == "" {
 		location = strings.TrimSpace(s.lastEDLCandidate.Identity.PhysicalLocation)
 	}
-	s.statusCacheMu.Unlock()
+	s.statusStateMu.Unlock()
 	if location == "" {
 		// 冷 EDL 启动时运行时只发现正常模式身份 (05c6:9008 仅由 EDL 端口
 		// 匹配), 状态探测也尚未缓存 EDL 候选: 直接询问平台 EDL 端口, 让
@@ -115,9 +113,9 @@ func (s *Service) sessionLocation() (string, error) {
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
 			if candidate, findErr := s.config.EDLPort.FindEDL(ctx, device.Candidate{}); findErr == nil && strings.TrimSpace(candidate.Identity.PhysicalLocation) != "" {
-				s.statusCacheMu.Lock()
+				s.statusStateMu.Lock()
 				s.lastEDLCandidate = candidate
-				s.statusCacheMu.Unlock()
+				s.statusStateMu.Unlock()
 				return candidate.Identity.PhysicalLocation, nil
 			}
 		}
@@ -150,7 +148,12 @@ const edlObservationReuseTTL = 5 * time.Second
 const edlOperationStateReuseTTL = 30 * time.Second
 
 func NewService(at ATExecutor, ops *operation.Manager, rt *runtime.Runtime, config Config) *Service {
+	parent := func() context.Context { return context.TODO() }
+	if rt != nil {
+		parent = rt.Context
+	}
 	service := &Service{at: at, ops: ops, runtime: rt, config: config}
+	service.statusSnapshot = snapshot.New(snapshot.Policy{Name: "device_control.status", TTL: deviceControlStatusCacheTTL, LoadTimeout: 45 * time.Second}, parent, cloneStatus)
 	if config.Store != nil {
 		_ = config.Store.Read(&service.settings)
 	}
@@ -328,24 +331,37 @@ type BackupStatus struct {
 // Status 从短 TTL 缓存提供固件状态; 缓存过期时才运行完整探测序列。
 // 每次返回都会附加当前 (掩码) 会话快照, 供前端展示设备忙状态。
 func (s *Service) Status(ctx context.Context) (Status, error) {
-	s.statusCacheMu.Lock()
-	if s.cachedStatus != nil && time.Since(s.cachedAt) < deviceControlStatusCacheTTL {
-		cached := *s.cachedStatus
-		s.statusCacheMu.Unlock()
-		s.attachEDLSession(&cached)
-		return cached, nil
+	generation := uint64(0)
+	if s.runtime != nil {
+		generation = s.runtime.Snapshot().Generation
 	}
-	s.statusCacheMu.Unlock()
-	status, err := s.statusFresh(ctx)
+	status, _, err := s.statusSnapshot.Get(ctx, snapshot.Scope{Generation: generation}, s.statusFresh)
 	if err == nil {
-		s.statusCacheMu.Lock()
-		copy := status
-		s.cachedStatus = &copy
-		s.cachedAt = time.Now()
-		s.statusCacheMu.Unlock()
 		s.attachEDLSession(&status)
 	}
 	return status, err
+}
+
+func cloneStatus(value Status) Status {
+	value.USBConfigFields = append([]USBConfigField(nil), value.USBConfigFields...)
+	value.EntryMethods = append([]string(nil), value.EntryMethods...)
+	value.ADB.Devices = append([]ADBDeviceStatus(nil), value.ADB.Devices...)
+	if value.EntryMethodReasons != nil {
+		copy := make(map[string]string, len(value.EntryMethodReasons))
+		for key, item := range value.EntryMethodReasons {
+			copy[key] = item
+		}
+		value.EntryMethodReasons = copy
+	}
+	if value.EDL != nil {
+		copy := *value.EDL
+		value.EDL = &copy
+	}
+	if value.EDLSession != nil {
+		copy := *value.EDLSession
+		value.EDLSession = &copy
+	}
+	return value
 }
 
 // attachEDLSession 附加当前 (掩码) 会话快照。不做任何探测, 失败静默。
@@ -370,12 +386,15 @@ func (s *Service) attachEDLSession(status *Status) {
 // The websocket initial snapshot uses it so a connection never triggers
 // AT or USB I/O (including Sahara probing) on the device.
 func (s *Service) StatusSnapshot() (Status, bool) {
-	s.statusCacheMu.Lock()
-	if s.cachedStatus == nil {
-		s.statusCacheMu.Unlock()
+	generation := uint64(0)
+	if s.runtime != nil {
+		generation = s.runtime.Snapshot().Generation
+	}
+	status, ok := s.statusSnapshot.Last(snapshot.Scope{Generation: generation})
+	if !ok {
 		return Status{}, false
 	}
-	status := *s.cachedStatus
+	s.statusStateMu.Lock()
 	location := ""
 	if s.runtime != nil {
 		if candidate, err := s.runtime.Candidate(); err == nil {
@@ -388,7 +407,7 @@ func (s *Service) StatusSnapshot() (Status, bool) {
 	if location == "" {
 		location = strings.TrimSpace(s.lastEDLCandidate.Identity.PhysicalLocation)
 	}
-	s.statusCacheMu.Unlock()
+	s.statusStateMu.Unlock()
 	if location != "" && s.runtime != nil {
 		if snapshot, ok := s.runtime.EDLSessions().Snapshot(location); ok {
 			public := snapshot
@@ -401,10 +420,11 @@ func (s *Service) StatusSnapshot() (Status, bool) {
 }
 
 func (s *Service) invalidateStatusCache() {
-	s.statusCacheMu.Lock()
-	s.cachedStatus = nil
-	s.cachedAt = time.Time{}
-	s.statusCacheMu.Unlock()
+	s.statusSnapshot.Invalidate("device_control_mutation")
+}
+
+func (s *Service) SnapshotDiagnostics() []snapshot.Summary {
+	return []snapshot.Summary{s.statusSnapshot.Summary()}
 }
 
 func (s *Service) statusFresh(ctx context.Context) (Status, error) {
@@ -463,18 +483,18 @@ func (s *Service) statusFresh(ctx context.Context) (Status, error) {
 			status.Firmware = revision.Value
 			status.FirmwareVersionSource = revision.Source
 			status.FirmwareVersionLive = revision.Live
-			s.statusCacheMu.Lock()
+			s.statusStateMu.Lock()
 			s.lastFirmware = revision
 			s.lastFirmwareReason = ""
-			s.statusCacheMu.Unlock()
+			s.statusStateMu.Unlock()
 		} else {
 			status.FirmwareVersionReason = "the modem returned no unambiguous QGMR or CGMR revision"
 		}
 		if s.runtime != nil {
 			if candidate, candidateErr := s.runtime.Candidate(); candidateErr == nil {
-				s.statusCacheMu.Lock()
+				s.statusStateMu.Lock()
 				s.lastNormalCandidate = candidate
-				s.statusCacheMu.Unlock()
+				s.statusStateMu.Unlock()
 			}
 		}
 		status.ADBKeySerial = parseADBKeySerial(responses["adb_key"])
@@ -532,9 +552,9 @@ func (s *Service) statusFresh(ctx context.Context) (Status, error) {
 
 func (s *Service) observeEDLStatus(ctx context.Context, status *Status) {
 	observation := device.EDLObservation{State: device.EDLStateDetected, Protocol: "sahara", Source: "usb", ObservedAt: time.Now().UTC()}
-	s.statusCacheMu.Lock()
+	s.statusStateMu.Lock()
 	original := s.lastNormalCandidate
-	s.statusCacheMu.Unlock()
+	s.statusStateMu.Unlock()
 	if s.runtime != nil {
 		if candidate, err := s.runtime.Candidate(); err == nil && original.Identity.PhysicalLocation == "" {
 			original = candidate
@@ -570,9 +590,9 @@ func (s *Service) observeEDLStatus(ctx context.Context, status *Status) {
 		if original.Identity.PhysicalLocation == "" {
 			original = edlCandidate
 		}
-		s.statusCacheMu.Lock()
+		s.statusStateMu.Lock()
 		s.lastEDLCandidate = edlCandidate
-		s.statusCacheMu.Unlock()
+		s.statusStateMu.Unlock()
 		if s.runtime != nil {
 			_, _ = s.runtime.EDLSessions().Correlate(original, edlCandidate)
 		}
@@ -1051,9 +1071,9 @@ func (s *Service) backupWithFirehose(ctx context.Context, firehose transport.Fir
 		}
 		if original.Identity.PhysicalLocation == "" {
 			original = edlCandidate
-			s.statusCacheMu.Lock()
+			s.statusStateMu.Lock()
 			s.lastEDLCandidate = edlCandidate
-			s.statusCacheMu.Unlock()
+			s.statusStateMu.Unlock()
 		}
 		s.recordEDLState(original, device.EDLStateNANDReading, "NAND read in progress", false)
 	}
