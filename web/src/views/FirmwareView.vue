@@ -70,9 +70,7 @@ const busy = computed(() => {
 })
 // 设备忙 = 服务端有进行中的 device-control 操作且不是本页发起的操作
 // (本页操作由 busy 覆盖)。互斥在服务端, 这里只是展示提示。
-const controlBlocked = computed(
-  () => !!firmware.value?.edl_session?.active_operation && !busy.value,
-)
+const controlBlocked = computed(() => !!firmware.value?.edl_session?.active_operation && !busy.value)
 const controlDisabled = computed(() => busy.value || controlBlocked.value)
 const edlObservation = computed(() => firmware.value?.edl)
 const edlFactsAvailable = computed(() => edlObservation.value?.state === 'sahara_identified')

@@ -43,8 +43,7 @@ const activeManagementTab = ref('proxies')
           class="inline-alert vowifi-error-alert"
           type="error"
           show-icon
-          :message="vowifi.last_error"
-        />
+          :message="vowifi.last_error" />
         <div class="panel-actions vowifi-actions">
           <!-- VoWiFi 可用性 = 设备就绪且后端有 SIM APDU（AKA）能力（has 已含 ready 检查）。 -->
           <a-button type="primary" :disabled="!device.has('apdu')" @click="runVowifi('enable')">{{
