@@ -266,9 +266,9 @@ func TestParseCOPSOperatorResponse(t *testing.T) {
 
 func TestParseCOPSOperatorResponseClassifiesUnsupportedFormat(t *testing.T) {
 	for name, resp := range map[string]string{
-		"format 3":       "\r\n+COPS: 0,3,\"46011\",7\r\n\r\nOK\r\n",
-		"format garbage": "\r\n+COPS: 0,xyz,\"46011\",7\r\n\r\nOK\r\n",
-		"no cops line":   "\r\nOK\r\n",
+		"format 3":        "\r\n+COPS: 0,3,\"46011\",7\r\n\r\nOK\r\n",
+		"format garbage":  "\r\n+COPS: 0,xyz,\"46011\",7\r\n\r\nOK\r\n",
+		"no cops line":    "\r\nOK\r\n",
 		"no format field": "\r\n+COPS: 0\r\n\r\nOK\r\n",
 	} {
 		t.Run(name, func(t *testing.T) {

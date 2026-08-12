@@ -26,8 +26,8 @@ func TestDecodeEFIMSIPinsStandardLayout(t *testing.T) {
 // 数据太短或长度字节越界时返回错误而不是静默坏数据。
 func TestDecodeEFIMSIRejectsShortContent(t *testing.T) {
 	for name, content := range map[string][]byte{
-		"single byte":  {0x08},
-		"empty":        {},
+		"single byte":   {0x08},
+		"empty":         {},
 		"len truncated": {0x08, 0x64, 0x00},
 	} {
 		t.Run(name, func(t *testing.T) {

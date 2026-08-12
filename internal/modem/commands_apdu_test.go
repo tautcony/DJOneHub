@@ -9,12 +9,11 @@ import (
 	"time"
 
 	"github.com/iniwex5/vohive/internal/apduarbiter"
-	"github.com/iniwex5/vohive/internal/config"
 )
 
 func newRunningTestManager(t *testing.T) *Manager {
 	t.Helper()
-	m, err := New(config.DeviceConfig{
+	m, err := New(Config{
 		ID:            "dev-at",
 		DeviceBackend: "at",
 		ATPort:        "/dev/ttyUSB6",

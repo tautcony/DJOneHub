@@ -3,8 +3,6 @@ package modem
 import (
 	"testing"
 	"time"
-
-	"github.com/iniwex5/vohive/internal/config"
 )
 
 // TestRDYSubscriptionReArm 验证 RDY 订阅的一次性语义: dispatchRDY 关闭当前
@@ -12,7 +10,7 @@ import (
 // (internal/backend/at_backend.go Events) 依赖这个契约在每次收到后重新订阅,
 // 否则已关闭的 channel 会让 select 空转成忙循环, 且后续模组重启不再上报。
 func TestRDYSubscriptionReArm(t *testing.T) {
-	m, err := New(config.DeviceConfig{ID: "dev-test", DeviceBackend: "qmi"})
+	m, err := New(Config{ID: "dev-test", DeviceBackend: "qmi"})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

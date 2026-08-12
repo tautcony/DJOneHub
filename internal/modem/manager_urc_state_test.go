@@ -3,13 +3,11 @@ package modem
 import (
 	"testing"
 	"time"
-
-	"github.com/iniwex5/vohive/internal/config"
 )
 
 func newURCTestManager(t *testing.T) *Manager {
 	t.Helper()
-	m, err := New(config.DeviceConfig{
+	m, err := New(Config{
 		ID:            "urc-state-test",
 		DeviceBackend: "at",
 		ATPort:        "/dev/ttyUSB-test",

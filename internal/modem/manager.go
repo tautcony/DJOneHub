@@ -14,7 +14,6 @@ import (
 	"unicode/utf16"
 
 	"github.com/iniwex5/vohive/internal/apduarbiter"
-	"github.com/iniwex5/vohive/internal/config"
 	domainat "github.com/iniwex5/vohive/internal/domain/at"
 	"github.com/iniwex5/vohive/pkg/logger"
 	"github.com/iniwex5/vohive/pkg/smscodec"
@@ -89,7 +88,7 @@ func (m *Manager) logATCommandDiagnostic(value atCommandDiagnostic) {
 
 // Manager 管理单个 EC20 模块的 AT 指令通信
 type Manager struct {
-	cfg      config.DeviceConfig
+	cfg      Config
 	atPort   string
 	port     ATTransport
 	portMode *serial.Mode
@@ -194,6 +193,17 @@ type Manager struct {
 	apduSessions map[int]apduSessionInfo
 }
 
+// Config contains runtime values derived from a discovered modem candidate.
+// It is not loaded from a user configuration file.
+type Config struct {
+	ID                         string
+	ATPort                     string
+	ManagePort                 string
+	ControlDevice              string
+	DeviceBackend              string
+	ATTimeoutWatchdogThreshold int
+}
+
 const (
 	// defaultATTimeoutWatchdogThreshold 是连续超时触发控制面恢复的默认阈值。
 	defaultATTimeoutWatchdogThreshold = 5
@@ -220,7 +230,7 @@ func (m *Manager) DeviceID() string {
 	return m.cfg.ID
 }
 
-func pureQMIBackendConfig(cfg config.DeviceConfig) bool {
+func pureQMIBackendConfig(cfg Config) bool {
 	mode := strings.ToLower(strings.TrimSpace(cfg.DeviceBackend))
 	return mode == "qmi" || mode == "mbim" || (mode == "" && strings.TrimSpace(cfg.ControlDevice) != "")
 }
@@ -229,21 +239,21 @@ func (m *Manager) pureQMIBackend() bool {
 	return pureQMIBackendConfig(m.cfg)
 }
 
-func New(cfg config.DeviceConfig) (*Manager, error) {
+func New(cfg Config) (*Manager, error) {
 	return newManager(cfg, nil)
 }
 
 // NewWithATTransport creates a manager that owns an already-open AT transport.
 // The shared command session uses this path for platform transports that are
 // not exposed as operating-system serial ports, such as macOS USB bulk AT.
-func NewWithATTransport(cfg config.DeviceConfig, transport ATTransport) (*Manager, error) {
+func NewWithATTransport(cfg Config, transport ATTransport) (*Manager, error) {
 	if transport == nil {
 		return nil, errors.New("AT transport is nil")
 	}
 	return newManager(cfg, transport)
 }
 
-func newManager(cfg config.DeviceConfig, transport ATTransport) (*Manager, error) {
+func newManager(cfg Config, transport ATTransport) (*Manager, error) {
 	watchdogThreshold := cfg.ATTimeoutWatchdogThreshold
 	if watchdogThreshold <= 0 {
 		watchdogThreshold = defaultATTimeoutWatchdogThreshold

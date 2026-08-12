@@ -4,8 +4,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/iniwex5/vohive/internal/config"
 )
 
 // timeoutCommandRequest 构造一个固定命令参数的请求。
@@ -204,7 +202,7 @@ func TestURCContainingPromptCharacterDispatchedNotTerminating(t *testing.T) {
 // TestWatchdogThresholdConfigurable: 阈值可通过配置调整，低于阈值不触发恢复。
 func TestWatchdogThresholdConfigurable(t *testing.T) {
 	// 阈值为 2：第二次普通命令超时才触发控制面恢复。
-	m, err := New(config.DeviceConfig{
+	m, err := New(Config{
 		ID: "dev-at", ATPort: "/dev/ttyUSB6", DeviceBackend: "at",
 		ATTimeoutWatchdogThreshold: 2,
 	})

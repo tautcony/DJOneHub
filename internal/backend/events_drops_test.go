@@ -6,7 +6,6 @@ import (
 	"time"
 
 	qmimanager "github.com/iniwex5/quectel-qmi-go/pkg/manager"
-	"github.com/iniwex5/vohive/internal/config"
 	"github.com/iniwex5/vohive/internal/modem"
 )
 
@@ -78,7 +77,7 @@ drained:
 // event channel and a zero drop counter, and that Close unblocks the event
 // goroutine so it cannot leak after shutdown.
 func TestATBackendEventsLifecycle(t *testing.T) {
-	m, err := modem.New(config.DeviceConfig{ID: "dev-test", DeviceBackend: "qmi"})
+	m, err := modem.New(modem.Config{ID: "dev-test", DeviceBackend: "qmi"})
 	if err != nil {
 		t.Fatalf("modem.New: %v", err)
 	}

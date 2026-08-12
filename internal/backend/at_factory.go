@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/iniwex5/vohive/internal/apduarbiter"
-	"github.com/iniwex5/vohive/internal/config"
 	"github.com/iniwex5/vohive/internal/domain/device"
 	"github.com/iniwex5/vohive/internal/modem"
 )
@@ -75,21 +74,15 @@ func (f *ATFactory) Open(ctx context.Context, candidate device.Candidate) (Modem
 	return Adapt(at), "selected AT serial transport", nil
 }
 
-func atManagerConfig(candidate device.Candidate) config.DeviceConfig {
+func atManagerConfig(candidate device.Candidate) modem.Config {
 	atPort := candidate.ATPort
 	if atPort == "" {
 		atPort = "injected-at/" + candidate.Identity.StableID
 	}
-	return config.DeviceConfig{
+	return modem.Config{
 		ID:            candidate.Identity.StableID,
-		Name:          candidate.Identity.Product,
 		ATPort:        atPort,
 		ManagePort:    candidate.ATPort,
 		DeviceBackend: BackendAT,
-		BaudRate:      115200,
-		DataBits:      8,
-		StopBits:      1,
-		Parity:        "none",
-		SMSEnabled:    true,
 	}
 }

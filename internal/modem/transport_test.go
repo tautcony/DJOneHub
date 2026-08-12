@@ -7,8 +7,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/iniwex5/vohive/internal/config"
 )
 
 type scriptedATTransport struct {
@@ -65,7 +63,7 @@ func (t *scriptedATTransport) Write(payload []byte) (int, error) {
 
 func TestManagerInjectedTransportClassifiesTerminalErrors(t *testing.T) {
 	transport := newScriptedATTransport()
-	manager, err := NewWithATTransport(config.DeviceConfig{ID: "injected-at-error-test", DeviceBackend: "at"}, transport)
+	manager, err := NewWithATTransport(Config{ID: "injected-at-error-test", DeviceBackend: "at"}, transport)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +95,7 @@ func (t *scriptedATTransport) SetReadTimeout(timeout time.Duration) error {
 
 func TestManagerUsesInjectedATTransport(t *testing.T) {
 	transport := newScriptedATTransport()
-	manager, err := NewWithATTransport(config.DeviceConfig{
+	manager, err := NewWithATTransport(Config{
 		ID:            "injected-at-test",
 		DeviceBackend: "at",
 	}, transport)
@@ -143,7 +141,7 @@ func TestManagerUsesInjectedATTransport(t *testing.T) {
 }
 
 func TestNewWithATTransportRejectsNil(t *testing.T) {
-	if _, err := NewWithATTransport(config.DeviceConfig{ID: "nil-at-test"}, nil); err == nil {
+	if _, err := NewWithATTransport(Config{ID: "nil-at-test"}, nil); err == nil {
 		t.Fatal("NewWithATTransport() error = nil")
 	}
 }

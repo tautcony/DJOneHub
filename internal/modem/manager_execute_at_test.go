@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/iniwex5/vohive/internal/config"
 	"go.bug.st/serial"
 )
 
@@ -44,7 +43,7 @@ func TestATCommandDiagnosticSeparatesQueueAndExecutionWithoutPayloads(t *testing
 }
 
 func TestManagerExecuteATFailsFastWithoutATPort(t *testing.T) {
-	m, err := New(config.DeviceConfig{
+	m, err := New(Config{
 		ID:            "dev-qmi",
 		DeviceBackend: "qmi",
 	})
@@ -64,7 +63,7 @@ func TestManagerExecuteATFailsFastWithoutATPort(t *testing.T) {
 }
 
 func TestManagerNewAllowsResolvedQMIWithoutATPort(t *testing.T) {
-	m, err := New(config.DeviceConfig{
+	m, err := New(Config{
 		ID:            "dev-qmi-resolved",
 		ControlDevice: "/dev/cdc-wdm0",
 	})
@@ -80,7 +79,7 @@ func TestManagerNewAllowsResolvedQMIWithoutATPort(t *testing.T) {
 }
 
 func TestManagerExecuteATFailsFastWhenNotRunning(t *testing.T) {
-	m, err := New(config.DeviceConfig{
+	m, err := New(Config{
 		ID:            "dev-qmi",
 		DeviceBackend: "qmi",
 		ATPort:        "/dev/ttyUSB6",
@@ -101,7 +100,7 @@ func TestManagerExecuteATFailsFastWhenNotRunning(t *testing.T) {
 }
 
 func TestManagerStartSkipsATManagerForPureQMIBackend(t *testing.T) {
-	m, err := New(config.DeviceConfig{
+	m, err := New(Config{
 		ID:            "dev-qmi",
 		DeviceBackend: "qmi",
 		ATPort:        "/dev/vohive-test-at-port-that-must-not-open",
@@ -125,7 +124,7 @@ func TestManagerStartSkipsATManagerForPureQMIBackend(t *testing.T) {
 }
 
 func TestManagerStartSkipsATManagerForResolvedQMIBackend(t *testing.T) {
-	m, err := New(config.DeviceConfig{
+	m, err := New(Config{
 		ID:            "dev-qmi-resolved",
 		ControlDevice: "/dev/cdc-wdm0",
 		ATPort:        "/dev/vohive-test-at-port-that-must-not-open",
@@ -146,7 +145,7 @@ func TestManagerStartSkipsATManagerForResolvedQMIBackend(t *testing.T) {
 }
 
 func TestManagerCanExecuteATWhenRunning(t *testing.T) {
-	m, err := New(config.DeviceConfig{
+	m, err := New(Config{
 		ID:            "dev-at",
 		DeviceBackend: "at",
 		ATPort:        "/dev/ttyUSB6",
@@ -163,7 +162,7 @@ func TestManagerCanExecuteATWhenRunning(t *testing.T) {
 }
 
 func TestManagerStopAndWaitWaitsForBackgroundLoops(t *testing.T) {
-	m, err := New(config.DeviceConfig{
+	m, err := New(Config{
 		ID:            "dev-qmi",
 		DeviceBackend: "qmi",
 	})
@@ -262,7 +261,7 @@ func (p *timeoutSerialPort) Close() error {
 func (p *timeoutSerialPort) Break(time.Duration) error { return nil }
 
 func TestHandleCommandNotifiesDisconnectOnFatalWriteError(t *testing.T) {
-	m, err := New(config.DeviceConfig{ID: "dev-at", ATPort: "/dev/ttyUSB6", DeviceBackend: "at"})
+	m, err := New(Config{ID: "dev-at", ATPort: "/dev/ttyUSB6", DeviceBackend: "at"})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -298,7 +297,7 @@ func TestHandleCommandNotifiesDisconnectOnFatalWriteError(t *testing.T) {
 }
 
 func TestHandleCommandTriggersWatchdogAfterConsecutiveNormalTimeouts(t *testing.T) {
-	m, err := New(config.DeviceConfig{ID: "dev-at", ATPort: "/dev/ttyUSB6", DeviceBackend: "at"})
+	m, err := New(Config{ID: "dev-at", ATPort: "/dev/ttyUSB6", DeviceBackend: "at"})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -346,7 +345,7 @@ func TestHandleCommandTriggersWatchdogAfterConsecutiveNormalTimeouts(t *testing.
 }
 
 func TestHandleCommandIgnoresHighPriorityTimeoutsForWatchdog(t *testing.T) {
-	m, err := New(config.DeviceConfig{ID: "dev-at", ATPort: "/dev/ttyUSB6", DeviceBackend: "at"})
+	m, err := New(Config{ID: "dev-at", ATPort: "/dev/ttyUSB6", DeviceBackend: "at"})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -381,7 +380,7 @@ func TestHandleCommandIgnoresHighPriorityTimeoutsForWatchdog(t *testing.T) {
 }
 
 func TestHandleCommandResetsTimeoutWatchdogOnDeviceError(t *testing.T) {
-	m, err := New(config.DeviceConfig{ID: "dev-at", ATPort: "/dev/ttyUSB6", DeviceBackend: "at"})
+	m, err := New(Config{ID: "dev-at", ATPort: "/dev/ttyUSB6", DeviceBackend: "at"})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -439,7 +438,7 @@ func TestHandleCommandResetsTimeoutWatchdogOnDeviceError(t *testing.T) {
 }
 
 func TestExecuteATReturnsFatalSerialErrorBeforeManagerStopped(t *testing.T) {
-	m, err := New(config.DeviceConfig{ID: "dev-at", ATPort: "/dev/ttyUSB6", DeviceBackend: "at"})
+	m, err := New(Config{ID: "dev-at", ATPort: "/dev/ttyUSB6", DeviceBackend: "at"})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -466,7 +465,7 @@ func TestExecuteATReturnsFatalSerialErrorBeforeManagerStopped(t *testing.T) {
 }
 
 func TestManagerIsURCTreatsCGLAAsSynchronousResponse(t *testing.T) {
-	m, err := New(config.DeviceConfig{
+	m, err := New(Config{
 		ID:            "dev-qmi",
 		DeviceBackend: "qmi",
 		ATPort:        "/dev/ttyUSB6",
@@ -480,7 +479,7 @@ func TestManagerIsURCTreatsCGLAAsSynchronousResponse(t *testing.T) {
 }
 
 func TestManagerExecuteATReturnsResponseWhenRunning(t *testing.T) {
-	m, err := New(config.DeviceConfig{
+	m, err := New(Config{
 		ID:            "dev-at",
 		DeviceBackend: "at",
 		ATPort:        "/dev/ttyUSB6",
@@ -506,7 +505,7 @@ func TestManagerExecuteATReturnsResponseWhenRunning(t *testing.T) {
 }
 
 func TestManagerExecuteATRawRequestsTerminalResponse(t *testing.T) {
-	m, err := New(config.DeviceConfig{
+	m, err := New(Config{
 		ID:            "dev-at-raw",
 		DeviceBackend: "at",
 		ATPort:        "/dev/ttyUSB6",
@@ -535,7 +534,7 @@ func TestManagerExecuteATRawRequestsTerminalResponse(t *testing.T) {
 }
 
 func TestHandleCommandRawResponseIncludesObservedTerminalLine(t *testing.T) {
-	m, err := New(config.DeviceConfig{
+	m, err := New(Config{
 		ID:            "dev-at-raw-handle",
 		DeviceBackend: "at",
 		ATPort:        "/dev/ttyUSB6",

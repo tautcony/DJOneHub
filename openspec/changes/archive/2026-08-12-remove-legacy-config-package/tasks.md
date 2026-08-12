@@ -1,0 +1,5 @@
+- [x] 1.1 Add the minimal `internal/modem.Config` type and migrate manager constructors and fields.
+- [x] 1.2 Migrate `internal/backend/at_factory.go` and all modem/backend tests from `config.DeviceConfig`.
+- [x] 1.3 Delete `internal/config` source and tests after confirming no remaining production references.
+- [x] 1.4 Remove obsolete YAML dependencies with `go mod tidy` and update source/code-map documentation.
+- [x] 1.5 Run focused tests, full Go tests, vet, frontend checks, and residual-reference validation.
