@@ -1,0 +1,67 @@
+internal/modem/manager_at_quarantine_test.go
+  s_b588d546621061::t_c77c5f04413299 205
+openspec/specs/modem-backends/spec.md
+  s_b588d546621061::t_97d1fa0a73d28a 306-318
+internal/modem/manager_pure_backend_test.go
+  s_b588d546621061::t_c77c5f04413299 8,11,14,17
+internal/modem/manager_rdy_test.go
+  s_b588d546621061::t_c77c5f04413299 13
+go.mod
+  h_3705811fa4502c 37-40,48-53
+  s_b588d546621061::t_426b4dc619ce4b 59
+internal/backend/at_factory.go
+  s_b588d546621061::t_a3a92322d025a8 82
+  s_b588d546621061::t_48ea23ea022b4b 77
+internal/modem/at_parse_test.go
+  s_b588d546621061::t_d5464e604da932 269-271
+internal/modem/commands_imsi_test.go
+  s_b588d546621061::t_d5464e604da932 29-30
+internal/modem/transport_test.go
+  s_b588d546621061::t_c77c5f04413299 66,98,144
+internal/modem/commands_apdu_test.go
+  s_b588d546621061::t_c77c5f04413299 16
+internal/modem/manager_execute_at_test.go
+  s_b588d546621061::t_c77c5f04413299 46,66,82,103,127,148,165,264,300,348,383,441,468,482,508,537
+internal/modem/manager.go
+  s_b588d546621061::t_48ea23ea022b4b 256
+  s_b588d546621061::t_a3a92322d025a8 91,196-206,233,242,249
+internal/backend/events_drops_test.go
+  s_b588d546621061::t_3a9f17574cdfb1 80
+internal/modem/manager_urc_state_test.go
+  s_b588d546621061::t_c77c5f04413299 10
+openspec/changes/archive/2026-08-12-remove-legacy-config-package/.openspec.yaml
+  s_b588d546621061::t_e5743d390246cc 1-2
+openspec/changes/archive/2026-08-12-remove-legacy-config-package/README.md
+  s_b588d546621061::t_2d58657cb284f9 1-3
+openspec/changes/archive/2026-08-12-remove-legacy-config-package/design.md
+  s_b588d546621061::t_6054b561553ead 1-19
+openspec/changes/archive/2026-08-12-remove-legacy-config-package/proposal.md
+  s_b588d546621061::t_9b2575d395df65 1-29
+openspec/changes/archive/2026-08-12-remove-legacy-config-package/specs/modem-backends/spec.md
+  s_b588d546621061::t_6e1102bf32b4a8 1-15
+openspec/changes/archive/2026-08-12-remove-legacy-config-package/tasks.md
+  s_b588d546621061::t_fcca79e00a364e 1-5
+go.sum
+  h_3705811fa4502c 8-9,12-17,50-61,109
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "b246a36a89522d862609f3e453e05bbf1c3124f8",
+  "prompts": {},
+  "humans": {
+    "h_3705811fa4502c": {
+      "author": "TautCony <i@tautcony.xyz>"
+    }
+  },
+  "sessions": {
+    "s_b588d546621061": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ff62c-7972-7f81-a155-3ba63b19d3b8",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "TautCony <i@tautcony.xyz>"
+    }
+  }
+}
